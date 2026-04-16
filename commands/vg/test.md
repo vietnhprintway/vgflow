@@ -57,6 +57,22 @@ Run the claim command ONCE at start of 5c (browser steps), store `$MCP_PREFIX`. 
 Every browser tool call = `{MCP_PREFIX}browser_navigate`, `{MCP_PREFIX}browser_snapshot`, `{MCP_PREFIX}browser_click`, etc.
 **NEVER call bare `browser_navigate`** — always use the full prefixed tool name.
 
+<step name="00_session_lifecycle">
+**Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
+
+Follow `.claude/commands/vg/_shared/session-lifecycle.md`.
+
+```bash
+PHASE_NUMBER=$(echo "$ARGUMENTS" | awk '{print $1}')
+PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+
+session_start "test" "${PHASE_NUMBER:-unknown}"
+[ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "test" "$PHASE_DIR_CANDIDATE"
+[ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
+session_mark_step "0-parse-args"
+```
+</step>
+
 <step name="0_parse_and_validate">
 Parse `$ARGUMENTS`: phase_number, flags (--skip-deploy, --regression-only, --smoke-only, --fix-only).
 

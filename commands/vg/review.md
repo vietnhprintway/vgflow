@@ -64,6 +64,27 @@ If ALL 5 servers locked → BLOCK. The lock manager auto-sweeps stale locks (TTL
 on every claim — if still no slot free, it's genuinely contended. Do NOT manually cleanup other sessions' locks.
 </CRITICAL_MCP_RULE>
 
+<step name="00_session_lifecycle">
+**Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
+
+Follow `.claude/commands/vg/_shared/session-lifecycle.md` helper.
+
+```bash
+PHASE_NUMBER=$(echo "$ARGUMENTS" | awk '{print $1}')
+PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+
+# Emit session-start banner → distinct separator for Claude Code tail UI
+session_start "review" "${PHASE_NUMBER:-unknown}"
+# Register EXIT trap emitting "━━━ review Phase X EXITED at step=Y ━━━" on any exit path
+# Sweep stale state from previous interrupted runs (>config.session.stale_hours old)
+[ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "review" "$PHASE_DIR_CANDIDATE"
+# Kill orphan dev servers on declared ports before pre-flight
+[ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
+
+session_mark_step "0-parse-args"
+```
+</step>
+
 <step name="0_parse_and_validate">
 Parse `$ARGUMENTS`: phase_number, flags.
 

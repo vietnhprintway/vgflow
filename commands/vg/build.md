@@ -52,6 +52,22 @@ Key difference from V4 execute: executors read API-CONTRACTS.md to ensure BE rou
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first.
 
+<step name="0_session_lifecycle">
+**Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
+
+Follow `.claude/commands/vg/_shared/session-lifecycle.md`.
+
+```bash
+PHASE_ARG=$(echo "$ARGUMENTS" | awk '{print $1}')
+PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_ARG}* 2>/dev/null | head -1)
+
+session_start "build" "${PHASE_ARG:-unknown}"
+[ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "build" "$PHASE_DIR_CANDIDATE"
+[ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
+session_mark_step "1-parse-args"
+```
+</step>
+
 <step name="1_parse_args">
 Parse `$ARGUMENTS`:
 - First positional token → `PHASE_ARG`
