@@ -10,9 +10,9 @@ allowed-tools:
 ---
 
 <objective>
-Detect current position in the V5 6-step pipeline and immediately invoke the next command.
+Detect current position in the 7-step phase pipeline and immediately invoke the next command.
 
-Pipeline order: scope → blueprint → build → review → test → accept
+Pipeline order: specs → scope → blueprint → build → review → test → accept
 </objective>
 
 <process>
@@ -65,7 +65,7 @@ if [ -f "$PIPELINE_STATE" ]; then
 import json
 s = json.load(open('${PIPELINE_STATE}', encoding='utf-8'))
 steps = s.get('steps', {})
-order = ['scope','blueprint','build','review','test','accept']
+order = ['specs','scope','blueprint','build','review','test','accept']
 for st in order:
     if steps.get(st, {}).get('status') == 'in_progress':
         print(st); break
@@ -76,7 +76,7 @@ for st in order:
 import json
 s = json.load(open('${PIPELINE_STATE}', encoding='utf-8'))
 steps = s.get('steps', {})
-order = ['scope','blueprint','build','review','test','accept']
+order = ['specs','scope','blueprint','build','review','test','accept']
 last_done = -1
 for i, st in enumerate(order):
     if steps.get(st, {}).get('status') == 'done':

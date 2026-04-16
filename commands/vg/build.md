@@ -39,7 +39,7 @@ argument-instructions: |
 <objective>
 Step 3 of V5 pipeline. Execute code based on blueprint (plans + API contracts).
 
-Pipeline: scope → blueprint → **build** → review → test → accept
+Pipeline: specs → scope → blueprint → **build** → review → test → accept
 
 Key difference from V4 execute: executors read API-CONTRACTS.md to ensure BE routes match contract fields and FE calls match contract endpoints.
 </objective>

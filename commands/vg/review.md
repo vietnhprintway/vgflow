@@ -35,7 +35,7 @@ allowed-tools:
 <objective>
 Step 4 of V5.1 pipeline. Replaces old "audit" step. Combines static code scan + live browser discovery + iterative fix loop + goal comparison.
 
-Pipeline: scope → blueprint → build → **review** → test → accept
+Pipeline: specs → scope → blueprint → build → **review** → test → accept
 
 4 Phases:
 - Phase 1: CODE SCAN — grep contracts + count elements (fast, automated, <10 sec)

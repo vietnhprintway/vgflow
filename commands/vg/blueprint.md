@@ -32,7 +32,7 @@ allowed-tools:
 <objective>
 Step 2 of V5 pipeline. Heaviest planning step — 4 sub-steps produce PLAN.md + API-CONTRACTS.md, both verified.
 
-Pipeline: scope → **blueprint** → build → audit → test → accept
+Pipeline: specs → scope → **blueprint** → build → review → test → accept
 
 Sub-steps:
 - 2a: PLAN — GSD planner creates tasks + acceptance criteria (~300 lines)

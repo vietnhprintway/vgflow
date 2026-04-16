@@ -1,116 +1,135 @@
 # VGFlow
 
-Config-driven AI development pipeline. 6 steps — `scope → blueprint → build → review → test → accept`. Works với Claude Code, Codex CLI, Gemini CLI. Zero hardcoded stack values — mọi thứ đến từ `vg.config.md`.
+> **Languages:** [English](README.md) · [Tiếng Việt](README.vi.md)
 
-**Version:** 1.0.0 · **Language:** Vietnamese (chat) + English (code/docs) · **License:** MIT
+Config-driven AI development pipeline for Claude Code, Codex CLI, and Gemini CLI. Zero hardcoded stack values — everything flows from `vg.config.md`.
+
+**Version:** 1.1.0 · **License:** MIT
+
+---
+
+## The Pipeline (Two Tiers)
+
+### Project-level setup (once per project / milestone)
+
+```
+/vg:init      →  /vg:project    →  /vg:roadmap   →  /vg:map          →  /vg:prioritize
+(config)        (PROJECT.md,      (ROADMAP.md,     (optional —          (which phase
+                REQUIREMENTS)      phase list)     graphify codebase)    to work next)
+```
+
+### Per-phase execution (7 steps)
+
+```
+/vg:specs  →  /vg:scope  →  /vg:blueprint  →  /vg:build  →  /vg:review  →  /vg:test  →  /vg:accept
+(goal,        (discussion    (PLAN.md +        (wave-based     (scan + fix    (goal verify    (human UAT
+scope,        → CONTEXT.md   API-CONTRACTS +    parallel        loop →         + codegen       → UAT.md)
+constraints)   with D-XX)    TEST-GOALS)        execute)        RUNTIME-MAP)   regression)
+```
+
+Full pipeline shortcut: `/vg:phase {X}` runs all 7 per-phase steps with resume support.
+Advance step-by-step: `/vg:next` auto-detects current position and invokes the next command.
 
 ---
 
 ## Install (fresh project)
 
-**Quick (curl | bash):**
 ```bash
 cd /path/to/your-project
 curl -fsSL https://raw.githubusercontent.com/vietdev99/vgflow/main/install.sh -o /tmp/vgflow-install.sh
 bash /tmp/vgflow-install.sh .
 ```
 
-**Manual clone:**
+Or manual:
 ```bash
 git clone https://github.com/vietdev99/vgflow.git /tmp/vgflow
 bash /tmp/vgflow/install.sh /path/to/your-project
 ```
 
-Install script will:
-- Copy `commands/vg/` → `.claude/commands/vg/`
-- Copy `skills/api-contract/` + `skills/vg-*/` → `.claude/skills/`
-- Copy scripts + templates
-- Deploy Codex skills → `.codex/skills/vg-*/` (optional) + `~/.codex/skills/` (global)
-- Generate `.claude/vg.config.md` from template (với defaults)
+The installer copies commands, skills, scripts, templates, and generates `.claude/vg.config.md` from the template. Codex + Gemini CLI skills are deployed to `.codex/skills/` and `~/.codex/skills/` (global) when detected.
 
 ## Update existing install
 
-Check for updates:
 ```
-/vg:update --check
-```
-
-Apply latest release:
-```
-/vg:update
+/vg:update --check                   # peek at latest version without applying
+/vg:update                           # apply latest release
+/vg:update --accept-breaking         # required for major version bumps
+/vg:reapply-patches                  # resolve conflicts from /vg:update
 ```
 
-Update does:
-1. Query `api.github.com/repos/vietdev99/vgflow/releases/latest`
-2. Compare with `.claude/VGFLOW-VERSION`
-3. Download tarball + verify SHA256
-4. 3-way merge per file (ancestor = installed version, current = user edits, upstream = latest)
-5. Clean merges apply silently
-6. Conflicts parked in `.claude/vgflow-patches/` with `.patches-manifest.json`
+Update flow: query GitHub API → download tarball + SHA256 verify → 3-way merge (preserves your local edits) → park conflicts in `.claude/vgflow-patches/`.
 
-Resolve conflicts:
-```
-/vg:reapply-patches
-```
+## Command reference
 
-Breaking changes (major version bump) require explicit opt-in:
-```
-/vg:update --accept-breaking
-```
-
-## Commands
-
+### Project setup
 | Command | Purpose |
 |---------|---------|
-| `/vg:init` | Generate `vg.config.md` for new project |
+| `/vg:init` | Interactive config generation → `.claude/vg.config.md` |
 | `/vg:project` | Define PROJECT.md + REQUIREMENTS.md |
-| `/vg:roadmap` | Derive phases → ROADMAP.md |
-| `/vg:specs {X}` | SPECS.md cho phase |
-| `/vg:scope {X}` | 5-round discussion → enriched CONTEXT.md |
-| `/vg:blueprint {X}` | PLAN.md + API-CONTRACTS.md + TEST-GOALS.md + CrossAI |
-| `/vg:build {X}` | Wave-based parallel execution → SUMMARY.md |
-| `/vg:review {X}` | Code scan + browser discovery → RUNTIME-MAP.json |
-| `/vg:test {X}` | Goal verification + codegen → SANDBOX-TEST.md |
-| `/vg:accept {X}` | Human UAT → UAT.md |
-| `/vg:phase {X}` | Run full pipeline specs→accept |
-| `/vg:next` | Auto-advance to next step |
-| `/vg:progress` | Status all phases + update check |
+| `/vg:roadmap` | Derive phases from REQUIREMENTS.md → ROADMAP.md |
+| `/vg:map` | Rebuild graphify knowledge graph → `codebase-map.md` |
+| `/vg:prioritize` | Rank phases by impact + readiness |
+
+### Phase execution (7-step pipeline)
+| Step | Command | Output |
+|------|---------|--------|
+| 1 | `/vg:specs {X}` | SPECS.md (goal, scope, constraints, success criteria) |
+| 2 | `/vg:scope {X}` | CONTEXT.md (enriched with decisions D-XX) + DISCUSSION-LOG.md |
+| 3 | `/vg:blueprint {X}` | PLAN.md + API-CONTRACTS.md + TEST-GOALS.md + CrossAI review |
+| 4 | `/vg:build {X}` | Code + SUMMARY.md (wave-based parallel execution) |
+| 5 | `/vg:review {X}` | RUNTIME-MAP.json (browser discovery + fix loop) |
+| 6 | `/vg:test {X}` | SANDBOX-TEST.md (goal verification + codegen regression) |
+| 7 | `/vg:accept {X}` | UAT.md (human acceptance) |
+
+### Management
+| Command | Purpose |
+|---------|---------|
+| `/vg:phase {X}` | Run full 7-step phase pipeline with resume support |
+| `/vg:next` | Auto-detect + advance to next step |
+| `/vg:progress` | Status across all phases + update check |
+| `/vg:amend {X}` | Mid-phase change — update CONTEXT.md, cascade impact |
+| `/vg:add-phase` | Insert a new phase into ROADMAP.md |
+| `/vg:remove-phase` | Archive + delete a phase |
+| `/vg:regression` | Re-run all tests from accepted phases |
+| `/vg:migrate {X}` | Convert legacy GSD artifacts to VG format (also backfills infra registers) |
+
+### Distribution + infra
+| Command | Purpose |
+|---------|---------|
 | `/vg:update` | Pull latest release from GitHub |
 | `/vg:reapply-patches` | Resolve conflicts from `/vg:update` |
-| `/vg:sync` | Dev-side source↔mirror sync |
+| `/vg:sync` | Dev-side source↔mirror sync (maintainer only) |
 | `/vg:telemetry` | Summarize workflow telemetry |
-| `/vg:security-audit-milestone` | Cross-phase security audit |
-
-Full list: `ls commands/vg/`
+| `/vg:security-audit-milestone` | Cross-phase security correlation |
 
 ## Repository layout
 
 ```
 vgflow/
-├── VERSION                   ← SemVer, cut per release
+├── VERSION                   ← SemVer (e.g. "1.1.0")
 ├── CHANGELOG.md              ← curated per release
 ├── commands/vg/              ← Claude Code slash commands
 ├── skills/                   ← api-contract, vg-* skills
-├── codex-skills/             ← Codex CLI parity (vg-review, vg-test)
+├── codex-skills/             ← Codex CLI parity
 ├── gemini-skills/            ← Gemini CLI parity
-├── scripts/                  ← Python helpers (graphify, visual-diff, vg_update)
+├── scripts/                  ← Python helpers (vg_update, graphify, visual-diff, …)
 ├── templates/vg/             ← commit-msg hook template
 ├── vg.config.template.md     ← schema seed for new projects
-├── migrations/               ← vN_to_vN+1.md (breaking-change guides)
+├── migrations/               ← vN_to_vN+1.md breaking-change guides
 ├── install.sh                ← fresh install entrypoint
-└── sync.sh                   ← dev-side source↔mirror
+└── sync.sh                   ← dev-side source↔mirror (maintainer)
 ```
 
 ## Release channel
 
 - **Tags:** SemVer — `v1.2.3`
-- **Tarballs:** GitHub Releases page, attached to each tag (auto-built via `.github/workflows/release.yml`)
-- **Changelog:** `CHANGELOG.md` in repo, also in Release body
-- **Breaking changes:** `migrations/vN_to_vN+1.md` — required reading when major version bumps
+- **Tarballs:** attached to each GitHub Release (auto-built via `.github/workflows/release.yml`)
+- **Changelog:** `CHANGELOG.md` + rendered in each Release body
+- **Breaking changes:** `migrations/vN_to_vN+1.md` shown before update proceeds
 
 ## Contributing
 
-Public repo maintained by [@vietdev99](https://github.com/vietdev99). Not accepting external PRs for now — feel free to open issues for bug reports or questions.
+Maintained by [@vietdev99](https://github.com/vietdev99). Not accepting external PRs at this stage — bug reports welcome as issues.
 
 ## License
 

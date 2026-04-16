@@ -591,7 +591,7 @@ Prerequisite (before pipeline):
   /vg:specs {X}         — Create SPECS.md (phase goal + scope + constraints)
 
 Available commands:
-  /vg:phase {X}         — Full V5 6-step pipeline (scope→blueprint→build→review→test→accept)
+  /vg:phase {X}         — Full 7-step phase pipeline (specs→scope→blueprint→build→review→test→accept)
   /vg:scope {X}         — Step 1: Guided scope discussion → CONTEXT.md
   /vg:blueprint {X}     — Step 2: Plan + API contracts + TEST-GOALS (auto-triggers design-extract)
   /vg:build {X}         — Step 3: Contract-aware wave execution → SUMMARY*.md

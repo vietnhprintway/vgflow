@@ -1,6 +1,6 @@
 ---
 name: vg:phase
-description: Run full V5.1 6-step pipeline for a phase — scope → blueprint → build → review → test → accept
+description: Run full 7-step phase pipeline — specs → scope → blueprint → build → review → test → accept
 argument-hint: "<phase> [--from=<step>] [--auto]"
 allowed-tools:
   - Read
@@ -24,8 +24,8 @@ Phase planning:   /vg:prioritize → /vg:specs → /vg:scope → /vg:scope-revie
 Phase execution:  /vg:blueprint → /vg:build → /vg:review → /vg:test → /vg:accept
 ```
 
-This command runs the **phase execution** stage (6 steps): scope → blueprint → build → review → test → accept.
-For project init or phase planning, use the individual commands listed above.
+This command runs the **phase execution** stage (7 steps): specs → scope → blueprint → build → review → test → accept.
+For project init (`/vg:init` → `/vg:project` → `/vg:roadmap` → `/vg:map`) or phase planning (`/vg:prioritize`), use the individual commands listed above.
 
 Flags:
 - `--from={step}` — resume from specific step (e.g., `--from=review`)
@@ -44,7 +44,7 @@ Parse `$ARGUMENTS`:
 - Optional `--from={step}` → `START_STEP` (default: auto-detect)
 - Optional `--auto` → auto-advance mode
 
-Valid step names: `scope`, `blueprint`, `build`, `review`, `test`, `accept`
+Valid step names: `specs`, `scope`, `blueprint`, `build`, `review`, `test`, `accept`
 
 Resolve `PHASE_DIR` from `PHASE_ARG`:
 ```bash
@@ -193,7 +193,7 @@ Run steps sequentially. **For each step:**
 
 **Fast-path (AI-recommended):**
 Before starting, assess scope complexity:
-- Small change (1-2 files, no new pages) → recommend skip review: "Phase scope is small. Recommend: scope → blueprint → build → test → accept (skip review). Approve?"
+- Small change (1-2 files, no new pages) → recommend skip review: "Phase scope is small. Recommend: specs → scope → blueprint → build → test → accept (skip review). Approve?"
 - If approved: `TaskUpdate: taskId=TASK_REVIEW, status="completed"` (mark skipped)
 - Medium/large change → full pipeline
 </step>

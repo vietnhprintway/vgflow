@@ -7,7 +7,7 @@ Before any /vg:* command routes or runs a step, call this script to:
   2. Classify into 10 buckets (v6_current / v5_numbered_plan / legacy_gsd /
      legacy_superseded / versioned_rot / scan_intermediate / work_intermediate /
      user_convention / v6_marker / orphan)
-  3. Detect pipeline position per step (scope/blueprint/build/review/test/accept)
+  3. Detect pipeline position per step (specs/scope/blueprint/build/review/test/accept)
   4. Propose migration candidates (legacy → V6 artifact)
   5. Flag rot (versioned files, stale intermediates)
   6. Write .recon-state.json (machine) + .recon-report.md (human)
@@ -42,7 +42,7 @@ VALID_PROFILES = {
     "library",
 }
 
-PIPELINE_STEPS = ["scope", "blueprint", "build", "review", "test", "accept"]
+PIPELINE_STEPS = ["specs", "scope", "blueprint", "build", "review", "test", "accept"]
 
 # ---- Classification tables -------------------------------------------------
 

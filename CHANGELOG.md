@@ -2,6 +2,21 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.2.0] - 2026-04-17
+
+### Fixed
+- **Phase pipeline accuracy:** commands/docs consistently reference the correct 7-step pipeline `specs → scope → blueprint → build → review → test → accept` (was showing 6 steps, missing `specs` at front)
+- `next.md` PIPELINE_STEPS order now includes `specs` — `/vg:next` can advance from specs-only state to scope
+- `scripts/phase-recon.py` PIPELINE_STEPS now includes `specs` — phase reconnaissance detects specs-only phase correctly
+- `phase.md` description, args, and inline docs reflect 7 steps
+- `amend.md`, `blueprint.md`, `build.md`, `review.md`, `test.md` header pipelines include `specs` prefix
+- `init.md` help text reflects 7-step phase pipeline
+
+### Added
+- `README.vi.md` — Vietnamese translation of README with cross-link back to English
+- `README.md` — rewritten with clear 2-tier pipeline explanation (project setup + per-phase execution)
+- Both READMEs now show the project-level setup chain (`/vg:init → /vg:project → /vg:roadmap → /vg:map → /vg:prioritize`) before the per-phase pipeline
+
 ## [1.1.0] - 2026-04-17
 
 ### Added
