@@ -1,0 +1,184 @@
+# CrossAI Invocation (Shared Reference)
+
+Referenced by discuss.md, plan.md, crossai-check.md, test-specs.md.
+For full XML schema and mode details, see `.claude/skills/vg-crossai/SKILL.md`.
+
+## Prerequisites
+
+The calling command must prepare:
+1. `$CONTEXT_FILE` — path to context file with prompt + artifacts
+2. `$OUTPUT_DIR` — path to save CLI results (e.g., `${PHASE_DIR}/crossai/`)
+3. `$LABEL` — descriptive label (e.g., `discuss-review`, `plan-review`, `total-check`)
+
+## Load Config
+
+Read `.claude/commands/vg/_shared/config-loader.md` if not already loaded.
+Read `config.crossai_clis` — this is the list of configured CLIs.
+
+**If `config.crossai_clis` is empty → skip invocation entirely. Return immediately with no results.**
+
+## Adaptive Spawn Strategy
+
+The number and identity of CLIs is config-driven. Strategy adapts to CLI count:
+
+| CLI Count | Strategy |
+|-----------|----------|
+| 0 | Skip — no CLIs configured, return immediately |
+| 1 | Single — run the one CLI, use its result directly (no consensus needed) |
+| 2 | Fast-fail always — run both; if they agree → done; if disagree → flag for user |
+| 3+ | Depends on `$LABEL` (see below) |
+
+### For 3+ CLIs — Strategy by Label
+
+| Label | Strategy | Rationale |
+|-------|----------|-----------|
+| `total-check` | Full (all CLIs always) | Final quality gate — no shortcuts |
+| `discuss-review`, `plan-review`, `spec-review` | Fast-fail (first 2 CLIs) | Light reviews — 80% of time 2 CLIs agree |
+
+### Spawn Execution
+
+```bash
+mkdir -p "$OUTPUT_DIR"
+
+# Read CLIs from config
+# config.crossai_clis = [
+#   { name: "codex", command: "codex exec -m gpt-5.4 \"{prompt}\"", label: "Codex GPT 5.4" },
+#   { name: "gemini", command: "cat \"{context}\" | gemini -m gemini-2.5-pro -p \"{prompt}\" --yolo", label: "Gemini Pro High 3.1" },
+#   { name: "claude", command: "cat \"{context}\" | claude --model sonnet -p \"{prompt}\"", label: "Claude Sonnet 4.6" }
+# ]
+
+PROMPT="Review artifacts and output crossai_review XML per format specified"
+
+# For each CLI in the spawn set:
+#   1. Substitute {prompt} → $PROMPT and {context} → $CONTEXT_FILE in cli.command
+#   2. Redirect output to "$OUTPUT_DIR/result-${cli.name}.xml"
+#   3. Run as background process, capture PID
+
+# Example for a 3-CLI config:
+CROSSAI_TIMEOUT=120  # seconds — kill CLI if it hangs
+
+declare -A CLI_STATUS  # name -> "ok|timeout|malformed|crash"
+
+for cli in "${CROSSAI_CLIS[@]}"; do
+  CMD=$(echo "${cli.command}" | sed "s|{prompt}|${PROMPT}|g" | sed "s|{context}|${CONTEXT_FILE}|g")
+  # Run with explicit exit-code capture via wrapper file
+  (
+    timeout ${CROSSAI_TIMEOUT} bash -c "$CMD" > "$OUTPUT_DIR/result-${cli.name}.xml" 2>&1
+    echo "$?" > "$OUTPUT_DIR/result-${cli.name}.exit"
+  ) &
+  PIDS+=($!)
+done
+
+wait "${PIDS[@]}"
+
+# ⛔ HARD GATE (tightened 2026-04-17): distinguish timeout from empty.
+# Previously both collapsed into "skip silently" — timeouts were treated as implicit agreement.
+for cli in "${CROSSAI_CLIS[@]}"; do
+  RESULT_FILE="$OUTPUT_DIR/result-${cli.name}.xml"
+  EXIT_FILE="$OUTPUT_DIR/result-${cli.name}.exit"
+  EXIT_CODE=$(cat "$EXIT_FILE" 2>/dev/null || echo "999")
+
+  if [ "$EXIT_CODE" = "124" ]; then
+    # GNU timeout signals exit 124 on timeout hit
+    echo "⚠ ${cli.name} TIMEOUT after ${CROSSAI_TIMEOUT}s — marking as inconclusive (NOT skipped)."
+    CLI_STATUS[${cli.name}]="timeout"
+    mv "$RESULT_FILE" "$RESULT_FILE.timeout" 2>/dev/null || true
+  elif [ ! -s "$RESULT_FILE" ]; then
+    echo "⚠ ${cli.name} CRASH (empty output, exit=${EXIT_CODE}) — marking as inconclusive."
+    CLI_STATUS[${cli.name}]="crash"
+    rm -f "$RESULT_FILE"
+  elif ! grep -q '<verdict>' "$RESULT_FILE" 2>/dev/null; then
+    echo "⚠ ${cli.name} MALFORMED (no <verdict> tag, exit=${EXIT_CODE}) — marking as inconclusive."
+    CLI_STATUS[${cli.name}]="malformed"
+    mv "$RESULT_FILE" "$RESULT_FILE.malformed"
+  else
+    CLI_STATUS[${cli.name}]="ok"
+  fi
+done
+
+# Count successful vs inconclusive
+OK_COUNT=0
+INCONCLUSIVE_COUNT=0
+for status in "${CLI_STATUS[@]}"; do
+  [ "$status" = "ok" ] && OK_COUNT=$((OK_COUNT + 1))
+  [ "$status" != "ok" ] && INCONCLUSIVE_COUNT=$((INCONCLUSIVE_COUNT + 1))
+done
+
+# HARD RULE: if ALL CLIs inconclusive → verdict = INCONCLUSIVE (blocks pipeline unless --allow-crossai-inconclusive)
+TOTAL_CLIS=${#CROSSAI_CLIS[@]}
+if [ "$OK_COUNT" -eq 0 ] && [ "$TOTAL_CLIS" -gt 0 ]; then
+  echo "⛔ All ${TOTAL_CLIS} CrossAI CLIs returned inconclusive (timeout/crash/malformed)."
+  echo "   Cannot treat silence as consensus."
+  CROSSAI_VERDICT="inconclusive"
+  # Caller must decide to block or proceed with override
+fi
+```
+
+### Fast-Fail Logic (for 2+ CLIs in fast-fail mode)
+
+```bash
+# After first 2 CLIs complete:
+CLI1_VERDICT=$(sed -n 's/.*<verdict>\([^<]*\)<.*/\1/p' "$OUTPUT_DIR/result-${CLI1_NAME}.xml" 2>/dev/null)
+CLI2_VERDICT=$(sed -n 's/.*<verdict>\([^<]*\)<.*/\1/p' "$OUTPUT_DIR/result-${CLI2_NAME}.xml" 2>/dev/null)
+
+# Guard: empty verdicts = timeout/crash, NOT agreement
+if [ -z "$CLI1_VERDICT" ] && [ -z "$CLI2_VERDICT" ]; then
+  echo "⚠ All CLIs timed out or returned empty. CrossAI check INCONCLUSIVE — proceeding with warning."
+  CROSSAI_VERDICT="inconclusive"
+elif [ -z "$CLI1_VERDICT" ] || [ -z "$CLI2_VERDICT" ]; then
+  CROSSAI_VERDICT="${CLI1_VERDICT:-$CLI2_VERDICT}"
+  echo "⚠ One CLI empty. Using single verdict: $CROSSAI_VERDICT"
+elif [[ "$CLI1_VERDICT" == "$CLI2_VERDICT" ]]; then
+  # Agreement — skip remaining CLIs, build consensus from 2
+  echo "Fast-fail: ${CLI1_NAME}+${CLI2_NAME} agree ($CLI1_VERDICT). Skipping remaining."
+else
+  # Disagreement — spawn next CLI as tiebreaker
+  echo "Disagreement: ${CLI1_NAME}=$CLI1_VERDICT, ${CLI2_NAME}=$CLI2_VERDICT. Spawning tiebreaker."
+  # Run CLI 3 (or flag for user if only 2 CLIs configured)
+fi
+```
+
+After CLIs finish: verify each result file exists and is non-empty. Minimum requirement:
+- 1 CLI configured → 1 result required
+- 2 CLIs configured → 2 results required
+- 3+ CLIs configured → minimum 2 results required
+
+## Build Consensus
+
+Read the result files. Parse `<verdict>`, `<score>`, `<findings>` from each.
+**Only count CLIs where `CLI_STATUS[name] == "ok"` (tightened 2026-04-17).** Inconclusive CLIs do NOT vote.
+
+**Severity rules (tightened 2026-04-17 — 3-way majority with flag fallback):**
+- 1 CLI ok → use its severity directly
+- 2 CLIs ok & agree → use agreed severity
+- 2 CLIs ok & disagree → escalate to higher of the two
+- 3+ CLIs ok & majority (≥ ⌈N/2⌉+1 same) → use majority severity
+- 3+ CLIs ok & no majority (3-way split) → escalate to **major** (NOT the highest — prevents single alarmist CLI from forcing critical)
+
+**Finding rules:**
+- 2+ CLIs report same issue → **agreed finding**, use highest severity among those reporting
+- Only 1 CLI reports → **disputed finding**, severity held at what that CLI said (NOT auto-escalated to major — wastes user attention on noise)
+- Single CLI mode → all findings are **agreed** (nothing to dispute)
+
+**Verdict rules (tightened 2026-04-17 — majority-based, safe fallback):**
+- All ok CLIs agree → use that verdict
+- Mixed verdicts:
+  - Any **block** from ≥2 CLIs → **block**
+  - Single **block** + others pass/flag → **flag** (safe middle ground, not full block — 1 alarmist ≠ real block)
+  - 2+ **flag** → **flag**
+  - 2+ **pass**, 1 **flag** → **pass** (with notes)
+- Average score (across ok CLIs) < 6.0 → override to **flag** (not **block** — score is advisory signal, not hard fail)
+- If consensus remains indeterminate after above rules → **flag** (safe default — forces user review)
+- Caller (blueprint/review/test) interprets **flag** verdict per its own gate policy (usually: surface to user, don't auto-block unless critical gate).
+
+## Save Consensus
+
+Write consensus XML to `$OUTPUT_DIR/$LABEL.xml`. Format per vg-crossai SKILL.md.
+
+## Cleanup
+
+```bash
+rm -f "$CONTEXT_FILE"
+```
+
+Keep CLI result files in `$OUTPUT_DIR/` for audit trail.

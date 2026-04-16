@@ -1,0 +1,209 @@
+---
+name: vg:_shared:telemetry
+description: Telemetry Pipeline (Shared Reference) — append-only jsonl event log for gate hits, overrides, fix routing, timing. Consumed by /vg:telemetry summarize.
+---
+
+# Telemetry — Shared Helper
+
+Every workflow decision point emits a structured JSON event to `.planning/telemetry.jsonl`. Data-driven workflow improvement: which gates fire most, which override flags get abused, which fix-routing tier wins, average phase duration.
+
+## Config (add to `.claude/vg.config.md`)
+
+```yaml
+telemetry:
+  enabled: true
+  path: ".planning/telemetry.jsonl"
+  retention_days: 90                # events older than N days deleted on next emit (cheap)
+  sample_rate: 1.0                  # 0.0–1.0 fraction of events to record (1.0 = all)
+  event_types_skip: []              # optional blocklist: ["narration", "debug"]
+```
+
+## Event schema
+
+```json
+{
+  "ts": "2026-04-17T09:12:33Z",
+  "event": "gate_blocked",
+  "phase": "7.12",
+  "step": "review.4c-pre",
+  "session_id": "abc123",           // random per invocation
+  "git_sha": "d484589f",            // HEAD at time of event
+  "meta": {                          // event-specific payload
+    "reason": "NOT_SCANNED=5, FAILED=2",
+    "count": 7
+  }
+}
+```
+
+## Standard event types
+
+| Event | When | Meta fields |
+|-------|------|-------------|
+| `gate_hit` | any hard gate fires | `gate_id`, `passed` (bool), `reason` |
+| `gate_blocked` | gate blocks execution | `gate_id`, `count`, `reason` |
+| `override_used` | --allow/--skip/--override flag accepted | `flag`, `severity`, `debt_id` |
+| `fix_routed` | Review 3-tier decision | `tier` (inline/spawn/escalated), `severity`, `model` |
+| `crossai_result` | CrossAI consensus reached | `vendors`, `verdict`, `tie_break` (bool) |
+| `phase_step_start` | step begins | `step_name` |
+| `phase_step_end` | step completes | `step_name`, `duration_s`, `exit_code` |
+| `debt_escalated` | debt entry auto-escalates (age) | `debt_id`, `severity`, `age_days` |
+| `security_threat_added` | new threat in SECURITY-REGISTER | `threat_id`, `severity`, `stride_category` |
+| `visual_regression_fail` | baseline diff > threshold | `view`, `diff_pct`, `threshold_pct` |
+| `graphify_skip` | /vg:map skipped (fresh) | `commits_since`, `reason` |
+| `graphify_incremental` | incremental rebuild | `files_changed`, `nodes_affected` |
+
+## API
+
+```bash
+# Init once per VG command invocation (top of command)
+telemetry_init() {
+  [ "${CONFIG_TELEMETRY_ENABLED:-true}" = "true" ] || return 0
+  export TELEMETRY_SESSION_ID="${TELEMETRY_SESSION_ID:-$(openssl rand -hex 8 2>/dev/null || printf '%08x%08x' $RANDOM $RANDOM)}"
+  export TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  mkdir -p "$(dirname "$TELEMETRY_PATH")" 2>/dev/null || true
+
+  # Cheap retention: truncate events older than retention_days (only rewrite if cutoff reached)
+  local retain="${CONFIG_TELEMETRY_RETENTION_DAYS:-90}"
+  if [ -f "$TELEMETRY_PATH" ]; then
+    local size_kb
+    size_kb=$(wc -c < "$TELEMETRY_PATH" 2>/dev/null || echo 0)
+    # Only prune if file > 1MB (avoid rewrite cost on small files)
+    [ "$((size_kb / 1024))" -gt 1024 ] && telemetry_prune
+  fi
+}
+
+# Emit one event
+emit_telemetry() {
+  [ "${CONFIG_TELEMETRY_ENABLED:-true}" = "true" ] || return 0
+  local event="$1" phase="$2" step="$3" meta_json="${4:-{}}"
+  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+
+  # Sampling
+  local rate="${CONFIG_TELEMETRY_SAMPLE_RATE:-1.0}"
+  if [ "$rate" != "1.0" ]; then
+    local r
+    r=$(${PYTHON_BIN:-python3} -c "import random; print(random.random())" 2>/dev/null || echo 0)
+    awk -v r="$r" -v rate="$rate" 'BEGIN{exit (r<rate)?0:1}' || return 0
+  fi
+
+  # Skip list
+  local skip="${CONFIG_TELEMETRY_EVENT_TYPES_SKIP:-}"
+  case " $skip " in *" $event "*) return 0 ;; esac
+
+  local ts git_sha
+  ts=$(date -u +%FT%TZ)
+  git_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+  ${PYTHON_BIN:-python3} - "$event" "$phase" "$step" "$TELEMETRY_SESSION_ID" "$git_sha" "$ts" "$meta_json" "$path" <<'PY'
+import json, sys
+event, phase, step, sid, sha, ts, meta_raw, path = sys.argv[1:9]
+try:
+  meta = json.loads(meta_raw) if meta_raw else {}
+except json.JSONDecodeError:
+  meta = {"_raw": meta_raw}
+with open(path, 'a', encoding='utf-8') as f:
+  f.write(json.dumps({
+    "ts": ts, "event": event, "phase": phase, "step": step,
+    "session_id": sid, "git_sha": sha, "meta": meta
+  }, ensure_ascii=False) + "\n")
+PY
+}
+
+# Retention pruner
+telemetry_prune() {
+  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local days="${CONFIG_TELEMETRY_RETENTION_DAYS:-90}"
+  [ -f "$path" ] || return 0
+  ${PYTHON_BIN:-python3} - "$path" "$days" <<'PY'
+import sys, json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+path = Path(sys.argv[1]); days = int(sys.argv[2])
+cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+kept = []
+for line in path.read_text(encoding='utf-8').splitlines():
+  if not line.strip(): continue
+  try:
+    ev = json.loads(line)
+    ts = datetime.fromisoformat(ev["ts"].replace("Z", "+00:00"))
+    if ts >= cutoff: kept.append(line)
+  except Exception:
+    kept.append(line)  # keep malformed lines (avoid silent data loss)
+path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding='utf-8')
+PY
+}
+
+# Phase timing helpers
+telemetry_step_start() {
+  local phase="$1" step="$2"
+  export "STEP_START_${step//[^a-zA-Z0-9]/_}=$(date +%s)"
+  emit_telemetry "phase_step_start" "$phase" "$step" "{}"
+}
+
+telemetry_step_end() {
+  local phase="$1" step="$2" exit_code="${3:-0}"
+  local var_name="STEP_START_${step//[^a-zA-Z0-9]/_}"
+  local start="${!var_name:-}"
+  local duration=0
+  [ -n "$start" ] && duration=$(( $(date +%s) - start ))
+  emit_telemetry "phase_step_end" "$phase" "$step" \
+    "{\"duration_s\":${duration},\"exit_code\":${exit_code}}"
+}
+```
+
+## Integration pattern
+
+**Top of every VG command** (after config load):
+```bash
+telemetry_init
+```
+
+**At every gate hit:**
+```bash
+if [ "$NOT_SCANNED" -gt 0 ]; then
+  emit_telemetry "gate_blocked" "$PHASE_NUMBER" "review.4c-pre" \
+    "{\"gate_id\":\"not-scanned-defer\",\"count\":${NOT_SCANNED},\"reason\":\"intermediate-status\"}"
+  exit 1
+fi
+```
+
+**At every override accept:**
+```bash
+if [[ "$ARGUMENTS" =~ --allow-intermediate ]]; then
+  log_override_debt "--allow-intermediate" "$PHASE_NUMBER" "review.4c-pre" "..."
+  # override-debt.md already emits override_used event, no double-log needed
+fi
+```
+
+**At fix routing:**
+```bash
+emit_telemetry "fix_routed" "$PHASE_NUMBER" "review.3c" \
+  "{\"tier\":\"${TIER}\",\"severity\":\"${SEVERITY}\",\"model\":\"${MODEL:-inline}\"}"
+```
+
+**At step boundaries:**
+```bash
+telemetry_step_start "$PHASE_NUMBER" "build.wave-3"
+# ... work ...
+telemetry_step_end "$PHASE_NUMBER" "build.wave-3" $?
+```
+
+## Instrumentation checklist
+
+| Command | Events to emit |
+|---------|---------------|
+| `build` | gate_hit (wave-commits, test-infra, design-manifest), override_used, phase_step_start/end (per wave), crossai_result (if planner CrossAI runs) |
+| `review` | gate_hit (4c-pre intermediate), fix_routed (3c), phase_step_start/end (phase 2/3/4), crossai_result |
+| `test` | gate_hit (NOT_SCANNED, verdict compute), phase_step_start/end (5a-5g), visual_regression_fail (if F11 enabled) |
+| `accept` | gate_hit (debt, regression), override_used |
+| `blueprint` | gate_hit (stale-refs, planner-validation), crossai_result |
+| `map` | graphify_skip, graphify_incremental |
+| `secure-phase` | security_threat_added, security_threat_resolved |
+
+## Success criteria
+
+- Every gate hit logged (pass AND fail events — not just blocks)
+- Phase timing measurable (step_start/end pairs)
+- Zero cost if disabled (`config.telemetry.enabled: false` → all emit calls return early)
+- File stays bounded via retention_days auto-prune
+- Schema forward-compatible (meta is arbitrary JSON — new fields don't break readers)

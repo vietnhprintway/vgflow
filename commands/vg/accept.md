@@ -1,0 +1,782 @@
+---
+name: vg:accept
+description: Human UAT acceptance — structured checklist driven by VG artifacts (SPECS, CONTEXT, TEST-GOALS, RIPPLE-ANALYSIS)
+argument-hint: "<phase>"
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Bash
+  - Glob
+  - Grep
+  - AskUserQuestion
+  - Task
+  - TaskCreate
+  - TaskUpdate
+---
+
+<rules>
+1. **All pipeline artifacts required** — SPECS → CONTEXT → PLAN → API-CONTRACTS → TEST-GOALS → SUMMARY → RUNTIME-MAP → GOAL-COVERAGE-MATRIX → SANDBOX-TEST. Missing = BLOCK.
+2. **Step markers mandatory** — every profile-applicable step from /vg:build, /vg:review, /vg:test MUST have its `.step-markers/{step}.done` file. Missing = BLOCK (AI skipped silently).
+3. **SANDBOX-TEST verdict gate** — must be `PASSED` or `GAPS_FOUND`. `FAILED` → BLOCK with redirect.
+4. **UAT is data-driven** — checklist items are GENERATED from VG artifacts (D-XX from CONTEXT, G-XX from TEST-GOALS, HIGH callers from RIPPLE-ANALYSIS, design-refs from PLAN). No hardcoded checks.
+5. **No auto-accept** — every non-N/A item requires explicit user Pass/Fail/Skip.
+6. **Ripple gate** — if RIPPLE-ANALYSIS has HIGH severity callers, user MUST acknowledge each before proceeding.
+7. **Write UAT.md atomic** — at end, all results persisted. Rejected phase still writes UAT.md (audit trail).
+8. **Zero hardcode** — all paths from `$REPO_ROOT`, `$PHASE_DIR`, `$PYTHON_BIN`, etc. resolved by config-loader.
+</rules>
+
+<objective>
+Step 6 of V6 pipeline (final). Data-driven Human UAT over VG artifacts — not a generic GSD verify pass. User reviews each decision, goal, ripple, design ref explicitly.
+
+Pipeline: specs → scope → blueprint → build → review → test → **accept**
+</objective>
+
+<process>
+
+<step name="0_load_config">
+Follow `.claude/commands/vg/_shared/config-loader.md`.
+
+Resolves: `$REPO_ROOT`, `$PYTHON_BIN`, `$VG_TMP`, `$GRAPHIFY_GRAPH_PATH`, `$GRAPHIFY_ACTIVE`, `$PROFILE` (from config).
+
+Parse first positional argument → `PHASE_ARG`.
+```bash
+PHASE_ARG="${1:-}"
+if [ -z "$PHASE_ARG" ]; then
+  echo "⛔ Phase number required. Usage: /vg:accept <phase>"
+  exit 1
+fi
+
+# Locate phase dir (handles both "7.6" and "07.6")
+PHASE_DIR=$(find .planning/phases -maxdepth 1 -type d \( -name "${PHASE_ARG}*" -o -name "0${PHASE_ARG}*" \) 2>/dev/null | head -1)
+if [ -z "$PHASE_DIR" ]; then
+  echo "⛔ Phase dir not found for: $PHASE_ARG"
+  exit 1
+fi
+PHASE_NUMBER=$(basename "$PHASE_DIR" | grep -oE '^[0-9]+(\.[0-9]+)*')
+echo "Phase: $PHASE_NUMBER ($PHASE_DIR)"
+```
+</step>
+
+<step name="1_artifact_precheck">
+**Gate 1: All required artifacts exist**
+
+```bash
+MISSING=""
+REQUIRED=(
+  "SPECS.md"
+  "CONTEXT.md"
+  "API-CONTRACTS.md"
+  "TEST-GOALS.md"
+  "GOAL-COVERAGE-MATRIX.md"
+)
+for f in "${REQUIRED[@]}"; do
+  [ -f "${PHASE_DIR}/${f}" ] || MISSING="$MISSING $f"
+done
+# Plans (numbered or not)
+ls "${PHASE_DIR}"/*PLAN*.md >/dev/null 2>&1 || MISSING="$MISSING PLAN*.md"
+ls "${PHASE_DIR}"/*SUMMARY*.md >/dev/null 2>&1 || MISSING="$MISSING SUMMARY*.md"
+ls "${PHASE_DIR}"/*SANDBOX-TEST.md >/dev/null 2>&1 || MISSING="$MISSING SANDBOX-TEST.md"
+# RUNTIME-MAP only required for web profiles
+case "$PROFILE" in
+  web-fullstack|web-frontend-only)
+    [ -f "${PHASE_DIR}/RUNTIME-MAP.json" ] || MISSING="$MISSING RUNTIME-MAP.json"
+    ;;
+  mobile-*)
+    # Mobile profile: build-state.log MUST exist (it holds mobile-gate-* entries).
+    # Screenshots from phase2_mobile_discovery are optional — host may lack simulator/emulator.
+    [ -f "${PHASE_DIR}/build-state.log" ] || MISSING="$MISSING build-state.log"
+    ;;
+esac
+
+if [ -n "$MISSING" ]; then
+  echo "⛔ Missing required artifacts:$MISSING"
+  echo "   Run prior pipeline steps first (/vg:build, /vg:review, /vg:test)"
+  exit 1
+fi
+```
+</step>
+
+<step name="2_marker_precheck">
+**Gate 2: Step markers (deterministic — AI did not skip silently)**
+
+Profile determines which steps must have markers. Use `filter-steps.py` to compute the expected set per command, then verify each marker exists.
+
+```bash
+MARKER_DIR="${PHASE_DIR}/.step-markers"
+mkdir -p "$MARKER_DIR"
+
+MISSED=""
+for cmd in build review test; do
+  CMD_FILE=".claude/commands/vg/${cmd}.md"
+  [ -f "$CMD_FILE" ] || continue
+  EXPECTED=$(${PYTHON_BIN} .claude/scripts/filter-steps.py \
+    --command "$CMD_FILE" --profile "$PROFILE" --output-ids 2>/dev/null)
+  [ -z "$EXPECTED" ] && continue
+  for step in $(echo "$EXPECTED" | tr ',' ' '); do
+    if [ ! -f "${MARKER_DIR}/${step}.done" ]; then
+      MISSED="$MISSED ${cmd}:${step}"
+    fi
+  done
+done
+
+if [ -n "$(echo "$MISSED" | xargs)" ]; then
+  echo "⛔ Missing step markers — pipeline incomplete per profile '$PROFILE':"
+  for m in $MISSED; do echo "   - $m"; done
+  echo ""
+  echo "   Resume: /vg:next  (auto-detects which step to rerun)"
+  exit 1
+fi
+echo "✓ All expected step markers present for profile: $PROFILE"
+```
+</step>
+
+<step name="3_sandbox_verdict_gate">
+**Gate 3: Test verdict**
+
+```bash
+SANDBOX=$(ls "${PHASE_DIR}"/*SANDBOX-TEST.md 2>/dev/null | head -1)
+VERDICT=$(grep -iE "^\s*\*\*Verdict:?\*\*|^\s*Verdict:" "$SANDBOX" | head -1 | grep -oiE "PASSED|GAPS_FOUND|FAILED" | tr '[:lower:]' '[:upper:]')
+
+case "$VERDICT" in
+  PASSED|GAPS_FOUND)
+    echo "✓ Test verdict: $VERDICT"
+    ;;
+  FAILED)
+    # ⛔ HARD GATE (tightened 2026-04-17): FAILED = exit 1 unconditionally.
+    # No advisory path, no override. Must fix + re-test + re-accept.
+    echo "⛔ Test verdict: FAILED. Cannot accept."
+    echo "   Fix failures first: /vg:build ${PHASE_NUMBER} --gaps-only → /vg:test ${PHASE_NUMBER}"
+    exit 1
+    ;;
+  *)
+    echo "⛔ Test verdict not parseable from $SANDBOX — cannot determine pass/fail state."
+    echo "   Re-run /vg:test ${PHASE_NUMBER} to regenerate SANDBOX-TEST with a clear verdict."
+    exit 1
+    ;;
+esac
+
+# ⛔ HARD GATE (tightened 2026-04-17): build-state regression overrides surface here.
+# If build was accepted with --override-reason=, accept step must acknowledge.
+BUILD_STATE="${PHASE_DIR}/build-state.log"
+if [ -f "$BUILD_STATE" ]; then
+  OVERRIDES=$(grep -E "^(override|regression-guard.*OVERRIDE|regression-guard.*WARN|skip-design-check|missing-summaries)" "$BUILD_STATE" 2>/dev/null)
+  if [ -n "$OVERRIDES" ]; then
+    echo "⚠ Build-phase overrides detected (require human acknowledgment):"
+    echo "$OVERRIDES" | sed 's/^/   /'
+    echo ""
+    echo "   Proceeding will record these in UAT.md 'Build Overrides' section."
+    # Write to be picked up by write_uat_md step
+    echo "$OVERRIDES" > "${VG_TMP}/uat-build-overrides.txt"
+  fi
+fi
+
+# Git cleanliness check (non-blocking, informational)
+DIRTY=$(git status --porcelain 2>/dev/null | head -5)
+if [ -n "$DIRTY" ]; then
+  echo "⚠ Working tree has uncommitted changes — may or may not be intentional:"
+  echo "$DIRTY" | head -5 | sed 's/^/   /'
+fi
+
+# ⛔ HARD GATE (tightened 2026-04-17): regression surface check
+# If /vg:regression ran and REGRESSION-REPORT.md has REGRESSION_COUNT > 0 without --fix,
+# block accept unless user explicitly overrides.
+REG_REPORT=$(ls "${PHASE_DIR}"/REGRESSION-REPORT*.md 2>/dev/null | head -1)
+if [ -n "$REG_REPORT" ]; then
+  REG_COUNT=$(grep -oE 'REGRESSION_COUNT:\s*[0-9]+' "$REG_REPORT" | grep -oE '[0-9]+' | head -1)
+  REG_FIXED=$(grep -q "fix-loop: applied" "$REG_REPORT" && echo "yes" || echo "no")
+  if [ -n "$REG_COUNT" ] && [ "$REG_COUNT" -gt 0 ] && [ "$REG_FIXED" != "yes" ]; then
+    echo "⛔ Regressions detected in ${REG_REPORT}: ${REG_COUNT} goals regressed, fix-loop NOT run."
+    echo "   Fix: /vg:regression --fix  (auto-fix loop then re-run accept)"
+    if [[ ! "$ARGUMENTS" =~ --override-regressions= ]]; then
+      exit 1
+    else
+      echo "⚠ --override-regressions set — recording in UAT.md"
+    fi
+  fi
+fi
+```
+</step>
+
+<step name="4_build_uat_checklist">
+**Build data-driven UAT checklist from VG artifacts.**
+
+The checklist has 5 sections. Each section pulls directly from phase data — no hardcoded items.
+
+### Section A: Decisions (from CONTEXT.md)
+
+Parse `CONTEXT.md` for `D-XX` blocks. Each becomes a UAT item: "Was decision D-XX implemented as specified?"
+
+```bash
+${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-decisions.txt"
+import re
+from pathlib import Path
+text = Path("${PHASE_DIR}/CONTEXT.md").read_text(encoding="utf-8")
+# Match D-XX heading + first descriptive line
+for m in re.finditer(r'^##?\s*(D-\d+)[:\s-]+([^\n]+)', text, re.MULTILINE):
+    did = m.group(1)
+    title = m.group(2).strip().rstrip('*').strip()[:100]
+    print(f"{did}\t{title}")
+PY
+```
+
+### Section B: Goals (from TEST-GOALS.md + GOAL-COVERAGE-MATRIX.md)
+
+Parse goals + their coverage status. Items: "Goal G-XX verified working?" for each READY goal. BLOCKED/UNREACHABLE goals flagged as known gaps.
+
+```bash
+${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-goals.txt"
+import re
+from pathlib import Path
+goals_text = Path("${PHASE_DIR}/TEST-GOALS.md").read_text(encoding="utf-8")
+coverage_path = Path("${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md")
+coverage = coverage_path.read_text(encoding="utf-8") if coverage_path.exists() else ""
+
+for m in re.finditer(r'^##?\s*(G-\d+)[:\s-]+([^\n]+)', goals_text, re.MULTILINE):
+    gid = m.group(1)
+    title = m.group(2).strip().rstrip('*').strip()[:100]
+    # Look up status in coverage matrix (simple substring)
+    status = "UNKNOWN"
+    for line in coverage.splitlines():
+        if gid in line:
+            for tag in ("READY", "BLOCKED", "UNREACHABLE", "PARTIAL"):
+                if tag in line.upper():
+                    status = tag
+                    break
+            break
+    print(f"{gid}\t{status}\t{title}")
+PY
+```
+
+### Section C: Ripple acknowledgment (from RIPPLE-ANALYSIS.md or .ripple.json)
+
+If ripple data exists, HIGH-severity callers need explicit acknowledgment.
+
+```bash
+RIPPLE_JSON="${PHASE_DIR}/.ripple.json"
+RIPPLE_MD="${PHASE_DIR}/RIPPLE-ANALYSIS.md"
+
+if [ -f "$RIPPLE_JSON" ]; then
+  ${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-ripples.txt"
+import json
+from pathlib import Path
+d = json.loads(Path("$RIPPLE_JSON").read_text(encoding="utf-8"))
+count = 0
+for r in d.get("ripples", []):
+    for c in r.get("callers", []):
+        # Print one line per unique caller (dedup in bash later)
+        print(f"{c['file']}:{c.get('line','?')}\t{c.get('symbol','?')}\t{r['changed_file']}")
+        count += 1
+print(f"# TOTAL_CALLERS={count}", flush=True)
+PY
+elif [ -f "$RIPPLE_MD" ]; then
+  # Check if RIPPLE-ANALYSIS.md is a "SKIPPED" stub (graphify was unavailable)
+  if grep -qi "SKIPPED\|unavailable\|not available\|stub" "$RIPPLE_MD" 2>/dev/null; then
+    echo "# RIPPLE_SKIPPED=true" > "${VG_TMP}/uat-ripples.txt"
+  else
+    : > "${VG_TMP}/uat-ripples.txt"
+  fi
+else
+  # No ripple data at all — no gate
+  : > "${VG_TMP}/uat-ripples.txt"
+fi
+```
+
+### Section D: Design fidelity (if phase has <design-ref>)
+
+Extract <design-ref> attributes from PLAN tasks. Each becomes a spot-check item.
+For mobile profiles, ALSO emit simulator/emulator screenshots captured during
+`phase2_mobile_discovery` — each screenshot is a "built output" candidate to
+visually compare against the design-ref.
+
+```bash
+${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-designs.txt"
+import re
+from pathlib import Path
+for plan in Path("${PHASE_DIR}").glob("*PLAN*.md"):
+    text = plan.read_text(encoding="utf-8")
+    for m in re.finditer(r'<design-ref>([^<]+)</design-ref>', text):
+        ref = m.group(1).strip()
+        # ref format like "sites-list.default" or "sites-list.modal-add"
+        print(ref)
+PY
+# Dedupe
+sort -u "${VG_TMP}/uat-designs.txt" -o "${VG_TMP}/uat-designs.txt"
+
+# Mobile-only: collect simulator/emulator screenshots from phase2_mobile_discovery.
+# These sit in ${PHASE_DIR}/discover/ and are named like "G-XX-ios.png", "G-XX-android.png".
+# We write them to uat-mobile-screenshots.txt — interactive step shows path so user
+# opens file manager to compare vs design-normalized ref.
+: > "${VG_TMP}/uat-mobile-screenshots.txt"
+case "$PROFILE" in
+  mobile-*)
+    if [ -d "${PHASE_DIR}/discover" ]; then
+      find "${PHASE_DIR}/discover" -maxdepth 2 -type f \
+        \( -name '*.png' -o -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null \
+        | sort > "${VG_TMP}/uat-mobile-screenshots.txt"
+    fi
+    ;;
+esac
+
+### Section E: Deliverables summary (from SUMMARY*.md — for spot-check only)
+
+High-level summary of what was built — presented to user as context, not gated.
+
+```bash
+${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-summary.txt"
+import re
+from pathlib import Path
+for summary in sorted(Path("${PHASE_DIR}").glob("*SUMMARY*.md")):
+    text = summary.read_text(encoding="utf-8")
+    # Extract "## Task N — title" or similar
+    for m in re.finditer(r'^##?\s*(Task\s+\d+|Deliverable\s*\d+)[:\s-]+([^\n]+)', text, re.MULTILINE):
+        title = m.group(2).strip().rstrip('*').strip()[:100]
+        print(f"{summary.name}\t{m.group(1)}\t{title}")
+PY
+```
+
+### Section F: Mobile gates (mobile profiles only)
+
+Parse `build-state.log` for `mobile-gate-N: <name> status=<passed|failed|skipped> [reason=...] ts=...`
+lines. Each gate becomes an acknowledgment row: user confirms the outcome makes
+sense (e.g., "Gate 7 skipped because signing certs not yet provisioned — OK").
+
+For web profiles this file stays empty and Section F is suppressed.
+
+```bash
+: > "${VG_TMP}/uat-mobile-gates.txt"
+case "$PROFILE" in
+  mobile-*)
+    BUILD_LOG="${PHASE_DIR}/build-state.log"
+    if [ -f "$BUILD_LOG" ]; then
+      ${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-mobile-gates.txt"
+import re
+from pathlib import Path
+log = Path("${BUILD_LOG}").read_text(encoding="utf-8")
+# Keep only the last entry per gate id — later runs overwrite earlier ones.
+latest = {}
+for m in re.finditer(r'mobile-gate-(\d+):\s*([a-z_]+)\s+status=(\w+)(?:\s+reason=([^\s]+))?\s*(?:ts=(\S+))?', log):
+    gid, name, status, reason, ts = m.group(1), m.group(2), m.group(3), m.group(4) or '', m.group(5) or ''
+    latest[gid] = (name, status, reason, ts)
+# Emit in gate-id order (6,7,8,9,10)
+for gid in sorted(latest.keys(), key=int):
+    name, status, reason, ts = latest[gid]
+    print(f"G{gid}\t{name}\t{status}\t{reason}\t{ts}")
+PY
+    fi
+    ;;
+esac
+
+# Also collect mobile security audit findings if present (from /vg:test step 5f_mobile_security_audit)
+: > "${VG_TMP}/uat-mobile-security.txt"
+case "$PROFILE" in
+  mobile-*)
+    SEC_REPORT="${PHASE_DIR}/mobile-security/report.md"
+    if [ -f "$SEC_REPORT" ]; then
+      # Surface the summary counts only (details live in the report file)
+      grep -E "^(CRITICAL|HIGH|MEDIUM|LOW)\|" "$SEC_REPORT" > "${VG_TMP}/uat-mobile-security.txt" 2>/dev/null || true
+    fi
+    ;;
+esac
+```
+
+**Now present SECTION COUNTS to user:**
+```
+UAT Checklist for Phase {PHASE_NUMBER}:
+  Section A — Decisions (CONTEXT D-XX):     {count} items
+  Section B — Goals (TEST-GOALS G-XX):      {count} items
+  Section C — Ripple callers (HIGH):        {count} callers need acknowledgment
+  Section D — Design refs:                  {count} refs + {mobile_count} simulator shots
+  Section E — Deliverables (summary):       {count} tasks
+  Section F — Mobile gates (mobile only):   {count} gate rows + {N} sec findings  [OMITTED for web]
+  Test verdict:                              {VERDICT from Gate 3}
+
+Proceed with UAT? (y/n/abort)
+```
+
+If user aborts → stop, write UAT.md with status `ABORTED`.
+</step>
+
+<step name="5_interactive_uat">
+**Run interactive checklist — one item at a time.**
+
+For each section:
+
+### A. Decisions
+For each line in `${VG_TMP}/uat-decisions.txt`:
+```
+AskUserQuestion:
+  "Decision {D-XX}: {title}
+   Was this implemented as specified in CONTEXT.md?
+
+   [p] Pass — verified in code/runtime
+   [f] Fail — not implemented correctly (note the issue)
+   [s] Skip — cannot verify right now (deferred)"
+```
+
+### B. Goals
+For each line in `${VG_TMP}/uat-goals.txt` where status = READY:
+```
+AskUserQuestion:
+  "Goal {G-XX}: {title}   [STATUS: READY per coverage matrix]
+   Verified working in runtime?
+
+   [p] Pass — functions as TEST-GOALS.md success criteria
+   [f] Fail — doesn't work / wrong behavior
+   [s] Skip — not testable here (deferred)"
+```
+
+For BLOCKED/UNREACHABLE goals: show info block, no question asked:
+```
+  ⚠ Goal {G-XX}: {title}   [STATUS: BLOCKED/UNREACHABLE]
+      Known gap — not gated here. Address in next phase or /vg:build --gaps-only.
+```
+
+### C. Ripple acknowledgment (MANDATORY if any HIGH callers)
+
+**If `uat-ripples.txt` contains `RIPPLE_SKIPPED=true`** (graphify was unavailable):
+```
+⚠ Cross-module ripple analysis was SKIPPED (graphify unavailable during review).
+  Downstream callers of changed symbols were NOT checked.
+  Manual regression testing of affected modules is strongly advised.
+
+  [y] Acknowledged — I will manually verify affected modules
+  [s] Accept risk — proceed without ripple verification (recorded in UAT.md)
+  [n] Abort — need to enable graphify and re-run /vg:review first
+```
+
+**Otherwise**, present the list, ask single acknowledgment question:
+```
+AskUserQuestion:
+  "Ripple callers (HIGH severity) that were NOT updated in this phase:
+
+   [list first 10, + '... and N more' if > 10]
+
+   Each should have been manually reviewed or explicitly cited.
+   Have you verified these callers still work with the changed symbols?
+
+   [y] Yes — verified (per RIPPLE-ANALYSIS.md + code review)
+   [n] No — need to review before accepting (ABORT UAT)
+   [s] Skip — accept risk (record in UAT.md)"
+```
+
+If `n` → abort UAT, write UAT.md status = `DEFERRED_PENDING_RIPPLE_REVIEW`.
+
+### D. Design fidelity (if design refs exist)
+For each unique design-ref in `${VG_TMP}/uat-designs.txt`:
+```
+AskUserQuestion:
+  "Design ref: {ref}
+   Screenshot: .planning/design-normalized/screenshots/{ref}.png (or similar)
+   Built output matches screenshot (layout, spacing, components)?
+
+   [p] Pass — visual match
+   [f] Fail — significant drift (describe)
+   [s] Skip — no design ref available / cannot verify"
+```
+
+**Mobile extension** (runs ONLY when `$PROFILE` matches `mobile-*`):
+For each simulator/emulator screenshot in `${VG_TMP}/uat-mobile-screenshots.txt`:
+```
+AskUserQuestion:
+  "Simulator capture: {path}
+   Captured by /vg:review phase2_mobile_discovery. Compare against closest
+   design-ref (above) — does the running app match the intended layout?
+
+   [p] Pass — visual match vs design-ref
+   [f] Fail — drift (typography, color, spacing, or content off)
+   [s] Skip — no matching design-ref to compare against"
+```
+If no screenshots exist (host lacked simulator/emulator), inform user:
+```
+  ⚠ No mobile screenshots captured — host OS/tooling could not run simulator/emulator.
+    Section D mobile sub-checks skipped (expected on Windows for iOS).
+```
+
+### E. Deliverables (informational only — no per-item question)
+Present `${VG_TMP}/uat-summary.txt` as a final summary block. No questions.
+
+### F. Mobile gates (mobile profiles only — skipped for web)
+
+Present the gate table from `${VG_TMP}/uat-mobile-gates.txt`. Example:
+```
+  G6  permission_audit        passed
+  G7  cert_expiry             skipped (disabled)
+  G8  privacy_manifest        passed
+  G9  native_module_linking   skipped (no-tool)
+  G10 bundle_size             passed
+```
+
+Plus security audit findings (if any) from `${VG_TMP}/uat-mobile-security.txt`:
+```
+  CRITICAL|hardcoded_secrets|3 match(es) — see mobile-security/hardcoded-secrets.txt
+  MEDIUM|weak_crypto|1 MD5 usage — see mobile-security/weak-crypto.txt
+```
+
+```
+AskUserQuestion (once, covers entire Section F):
+  "Mobile gate outcomes look correct for this phase?
+   (e.g. 'cert_expiry skipped because no signing yet' = OK if pre-release;
+    'hardcoded_secrets=3' requires explanation before accept)
+
+   [y] Acknowledged — outcomes match phase intent
+   [n] Not OK — gate output points to an actual issue (ABORT / REJECT)
+   [s] Skip — accept risk (record in UAT.md)"
+```
+
+If `n` → abort UAT, set phase verdict = REJECTED with reason `mobile-gate-review-fail`.
+
+After all sections, present totals:
+```
+UAT Progress:
+  Decisions (A):     {N} passed / {N} failed / {N} skipped
+  Goals (B):         {N} passed / {N} failed / {N} skipped (+ {N} known gaps)
+  Ripples (C):       {acknowledged | abort | accepted-risk}
+  Designs (D):       {N} passed / {N} failed / {N} skipped  ({Nmob} mobile screenshots)
+  Mobile gates (F):  {acknowledged | rejected | risk-accepted}  [only for mobile-*]
+```
+
+### Final verdict question
+```
+AskUserQuestion:
+  "Overall phase verdict?
+
+   [a] ACCEPT — phase complete (all critical items pass)
+   [r] REJECT — issues found, need /vg:build --gaps-only
+   [d] DEFER — partial accept, revisit later (record open items)"
+```
+
+Record all responses with timestamps in orchestrator memory for step 6.
+</step>
+
+<step name="6_write_uat_md">
+Write `${PHASE_DIR}/${PHASE_NUMBER}-UAT.md` with ALL collected data.
+
+```markdown
+# Phase {PHASE_NUMBER} — UAT Results
+
+**Date:** {ISO timestamp}
+**Tester:** {git user.name} (human UAT driven by VG artifacts)
+**Profile:** {PROFILE}
+**Verdict:** {ACCEPTED | REJECTED | DEFERRED}
+**Test verdict (pre-UAT):** {VERDICT from SANDBOX-TEST.md}
+
+## A. Decisions (CONTEXT.md D-XX)
+| D-XX | Title | Result | Note |
+|------|-------|--------|------|
+| D-01 | {...} | PASS / FAIL / SKIP | {...} |
+| ... | ... | ... | ... |
+
+Totals: {passed}P / {failed}F / {skipped}S
+
+## B. Goals (TEST-GOALS.md G-XX)
+| G-XX | Title | Coverage Status | UAT Result | Note |
+|------|-------|----------------|------------|------|
+| G-01 | {...} | READY | PASS | {...} |
+| G-02 | {...} | BLOCKED | — | Known gap |
+| ... | ... | ... | ... | ... |
+
+Totals: {passed}P / {failed}F / {skipped}S  (+ {N} pre-known gaps not gated)
+
+## C. Ripple Acknowledgment (RIPPLE-ANALYSIS.md)
+- Total HIGH callers: {N}
+- Response: {acknowledged | risk-accepted | review-deferred}
+- Affected files: {first 20}
+
+## D. Design Fidelity (PLAN <design-ref>)
+| Design ref | Result | Note |
+|------------|--------|------|
+| {ref} | PASS / FAIL / SKIP | {...} |
+
+Totals: {passed}P / {failed}F / {skipped}S
+
+### D.1 Mobile simulator captures (mobile-* only; omit for web)
+| Screenshot path | Compared against | Result | Note |
+|-----------------|------------------|--------|------|
+| {phase/discover/G-01-ios.png} | {design-ref} | PASS / FAIL / SKIP | {...} |
+
+## E. Deliverables (informational, from SUMMARY)
+- {N} tasks built, see SUMMARY*.md
+
+## F. Mobile Gates (mobile-* profiles only; omit for web)
+
+Parsed from `build-state.log` (latest occurrence per gate kept).
+
+| Gate | Name | Status | Reason | Timestamp |
+|------|------|--------|--------|-----------|
+| G6 | permission_audit | passed / failed / skipped | {disabled | no-paths | ...} | {UTC iso} |
+| G7 | cert_expiry | ... | ... | ... |
+| G8 | privacy_manifest | ... | ... | ... |
+| G9 | native_module_linking | ... | ... | ... |
+| G10 | bundle_size | ... | ... | ... |
+
+### F.1 Mobile security audit findings (from /vg:test 5f_mobile_security_audit)
+
+| Severity | Category | Summary | Evidence file |
+|----------|----------|---------|---------------|
+| {CRITICAL | HIGH | MEDIUM | LOW} | {category} | {count} match(es) | mobile-security/{category}.txt |
+
+Reviewer acknowledgment: {ACK / REJECT / RISK-ACCEPTED}
+
+## Issues Found
+{bulleted list of FAIL items across all sections, or "None"}
+
+## Overall Summary
+- Total items: {N_total}
+- Passed: {N_passed}
+- Failed: {N_failed}
+- Skipped/deferred: {N_skipped}
+- Known pre-existing gaps (not gated): {N_gaps}
+
+## Next Step
+{
+  ACCEPTED: "Phase complete. Run /vg:next or proceed to next phase.",
+  REJECTED: "Address failed items via /vg:build ${PHASE_NUMBER} --gaps-only, then re-run /vg:test + /vg:accept.",
+  DEFERRED: "Partial accept — open items: {list}. Revisit with /vg:accept ${PHASE_NUMBER} --resume."
+}
+
+---
+_Generated by /vg:accept — data-driven UAT over VG artifacts._
+```
+
+Touch marker:
+```bash
+touch "${PHASE_DIR}/.step-markers/accept.done"
+```
+</step>
+
+<step name="7_post_accept_actions">
+### If ACCEPTED
+
+**Cleanup scan intermediates** (large JSON files from review, not needed after accept):
+```bash
+rm -f "${PHASE_DIR}"/scan-*.json
+rm -f "${PHASE_DIR}"/probe-*.json
+rm -f "${PHASE_DIR}"/nav-discovery.json
+rm -f "${PHASE_DIR}"/discovery-state.json
+rm -f "${PHASE_DIR}"/view-assignments.json
+rm -f "${PHASE_DIR}"/element-counts.json
+rm -f "${PHASE_DIR}"/.ripple-input.txt
+rm -f "${PHASE_DIR}"/.ripple.json     # aggregated into UAT.md
+rm -f "${PHASE_DIR}"/.callers.json    # served its purpose during build
+rm -f "${PHASE_DIR}"/.god-nodes.json
+rm -rf "${PHASE_DIR}"/.wave-context
+rm -rf "${PHASE_DIR}"/.wave-tasks
+
+# Keep: SPECS, CONTEXT, PLAN*, API-CONTRACTS, TEST-GOALS, SUMMARY*,
+#       RUNTIME-MAP.json, GOAL-COVERAGE-MATRIX.md, SANDBOX-TEST.md,
+#       RIPPLE-ANALYSIS.md, UAT.md, .step-markers/
+```
+
+**Cleanup root-leaked screenshots** (banned location per project convention):
+```bash
+rm -f ./${PHASE_NUMBER}-*.png 2>/dev/null || true
+```
+
+**Prune git worktrees + playwright locks**:
+```bash
+git worktree prune 2>/dev/null || true
+[ -x "${HOME}/.claude/playwright-locks/playwright-lock.sh" ] && \
+  bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" cleanup 0 all 2>/dev/null || true
+```
+
+**Update VG-native state:**
+```bash
+# VG-native state update (no GSD dependency)
+PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
+${PYTHON_BIN} -c "
+import json; from pathlib import Path
+p = Path('${PIPELINE_STATE}')
+s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+s['status'] = 'complete'; s['pipeline_step'] = 'accepted'
+s['updated_at'] = __import__('datetime').datetime.now().isoformat()
+p.write_text(json.dumps(s, indent=2))
+" 2>/dev/null
+
+# VG-native ROADMAP update (grep + sed)
+if [ -f ".planning/ROADMAP.md" ]; then
+  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* complete/" ".planning/ROADMAP.md" 2>/dev/null || true
+fi
+```
+
+**Commit UAT.md**:
+```bash
+git add "${PHASE_DIR}/${PHASE_NUMBER}-UAT.md" "${PHASE_DIR}/.step-markers/accept.done"
+git commit -m "docs(${PHASE_NUMBER}-accept): UAT accepted — {N_passed}/{N_total} items pass
+
+Covers goal: accept phase ${PHASE_NUMBER}"
+```
+
+Display:
+```
+Phase {PHASE_NUMBER} ACCEPTED ✓
+Artifacts preserved: SPECS, CONTEXT, PLAN, API-CONTRACTS, TEST-GOALS, SUMMARY,
+                     RUNTIME-MAP, GOAL-COVERAGE-MATRIX, SANDBOX-TEST, RIPPLE-ANALYSIS, UAT
+Cleaned: scan-*.json, probe-*.json, .wave-context, discovery intermediates
+State: GSD roadmap updated (if installed)
+▶ /vg:next
+```
+
+### If REJECTED
+
+Extract failed items from UAT.md per section into a gap list. Suggest next step:
+```
+Phase {PHASE_NUMBER} REJECTED — {N_failed} issues.
+
+Failed items:
+  [A] Decisions: {list of failed D-XX}
+  [B] Goals:     {list of failed G-XX}
+  [C] Ripples:   {if deferred}
+  [D] Designs:   {list of failed refs}
+
+Next: /vg:build ${PHASE_NUMBER} --gaps-only  (auto-creates gap-closure plans from UAT.md FAIL items)
+      Then: /vg:test ${PHASE_NUMBER} → /vg:accept ${PHASE_NUMBER}
+```
+
+### If DEFERRED
+
+```bash
+# ⛔ HARD GATE (tightened 2026-04-17): DEFERRED marks phase incomplete.
+# /vg:next must BLOCK until these items are resolved — previously DEFERRED silently
+# allowed next phase to start, compounding tech debt.
+PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
+${PYTHON_BIN} -c "
+import json; from pathlib import Path
+p = Path('${PIPELINE_STATE}')
+s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+s['status'] = 'deferred-incomplete'
+s['deferred_at'] = __import__('datetime').datetime.now().isoformat()
+s['deferred_items_count'] = ${N_failed:-0}
+p.write_text(json.dumps(s, indent=2))
+"
+touch "${PHASE_DIR}/.deferred-incomplete"
+```
+
+```
+Phase {PHASE_NUMBER} DEFERRED — partial accept.
+
+⛔ /vg:next is BLOCKED for this phase until deferred items resolved.
+   Open items recorded in UAT.md ({N_failed} FAIL items).
+   
+Resume with: /vg:accept ${PHASE_NUMBER} --resume  (reopens deferred items only)
+Force-advance (NOT RECOMMENDED): /vg:next --allow-deferred
+```
+</step>
+
+</process>
+
+<success_criteria>
+- All artifacts + step markers verified BEFORE UAT starts
+- Checklist items generated FROM VG data (not hardcoded)
+- Every D-XX, G-XX (READY), HIGH-ripple caller, design-ref addressed by user
+- UAT.md written atomically with structured pass/fail/skip per section
+- If ACCEPTED: cleanup + commit + state update
+- If REJECTED: clear gap list pointing to /vg:build --gaps-only
+- No dependency on GSD verify-work (VG-native)
+- **Mobile (mobile-*) only**: Section D iterates simulator captures from
+  `${PHASE_DIR}/discover/`; Section F presents gate outcomes parsed from
+  `build-state.log` + security findings from `mobile-security/report.md`.
+  User acknowledgment of Section F is required — rejection aborts UAT.
+- **Cross-platform portability**: all paths are config-relative; no
+  hardcoded device names, sim names, team IDs, or OS-specific commands.
+</success_criteria>
