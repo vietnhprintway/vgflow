@@ -2,6 +2,59 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.2.4] - 2026-04-18
+
+### Phase 4b/4d matrix merger runnable
+
+**Gap discovered post-v1.9.2.3:** v1.9.2.3 added surface probe execution in Phase 4a (writes `.surface-probe-results.json`). But Phase 4b/4d "integration" was prose-only — no runnable bash to merge RUNTIME-MAP.goal_sequences + probe-results → unified GOAL-COVERAGE-MATRIX.md.
+
+Result: even after probes ran, backend goals fell back to NOT_SCANNED because matrix generation was pseudo-code template.
+
+### Fix — `_shared/lib/matrix-merger.sh` (new ~150 LOC)
+
+`merge_and_write_matrix(phase_dir, test_goals, runtime_map, probe_results, output_md)`:
+
+**Merge precedence:**
+- UI goals (surface=ui/ui-mobile) → RUNTIME-MAP.goal_sequences[gid].result → READY/BLOCKED/FAILED/NOT_SCANNED
+- Backend goals (api/data/integration/time-driven) → probe_results[gid].status → READY/BLOCKED/INFRA_PENDING/SKIPPED (SKIPPED maps to NOT_SCANNED)
+
+**Output:** canonical GOAL-COVERAGE-MATRIX.md with:
+1. Summary (all 6 statuses counted)
+2. By Priority table (critical=100%/important=80%/nice-to-have=50% thresholds + pass % + gate verdict per priority)
+3. Goal Details table (each goal with surface + status + evidence)
+4. Gate verdict (✅ PASS / ⛔ BLOCK / ⚠️ INTERMEDIATE) with next-action hints
+
+**Verdict logic:** Intermediate (NOT_SCANNED+FAILED>0) → INTERMEDIATE; else any priority under threshold → BLOCK; else PASS.
+
+### Phase 7.12 live result (after v1.9.2.4)
+
+```
+VERDICT=INTERMEDIATE
+TOTAL=39
+READY=10
+BLOCKED=15
+NOT_SCANNED=14 (6 UI no browser + 8 probe SKIPPED)
+```
+
+Priority breakdown:
+- critical: 2/12 ready (16.7%) ⛔
+- important: 7/20 ready (35.0%) ⛔
+- nice-to-have: 1/7 ready (14.3%) ⛔
+
+Each goal row has concrete evidence: `handler=apps/pixel/src/routes/event.route.ts/event`, `migration=infra/clickhouse/migrations/007_conversion_events.sql|table=conversion_events`, etc. No more "??? reason unknown" — users can act on each BLOCKED.
+
+### review.md patch
+
+Phase 4d section replaces prose template with `merge_and_write_matrix` invocation. Exports `$VERDICT $READY $BLOCKED $NOT_SCANNED $INTERMEDIATE` env vars for 4c-pre gate + write-artifacts step.
+
+### Bug fixed during implementation
+
+Priority regex `(\w+)` stopped at dash → "nice-to-have" captured as "nice" → by-priority table showed 0 nice-to-have. Fixed to `(\w[\w-]*)`.
+
+### Migration v1.9.2.3 → v1.9.2.4
+
+Transparent. Review now writes real matrix with real evidence instead of pseudo-template. Legacy phases re-run review to regenerate.
+
 ## [1.9.2.3] - 2026-04-17
 
 ### Mixed-phase surface probes — fix NOT_SCANNED black hole for backend goals

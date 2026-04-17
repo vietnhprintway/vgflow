@@ -2857,29 +2857,66 @@ Note: UNREACHABLE/INFRA_PENDING goals count trong total_count nhưng KHÔNG tron
       Đây là cơ chế tự nhiên pressure user fix thay vì accumulate tech debt.
 ```
 
-### 4d: Write GOAL-COVERAGE-MATRIX.md
+### 4d: Write GOAL-COVERAGE-MATRIX.md (v1.9.2.4 runnable merger)
+
+```bash
+# Call matrix-merger.sh helper — reads RUNTIME-MAP + probe-results + TEST-GOALS,
+# computes per-goal status with priority precedence (browser > probe > code_exists),
+# writes canonical GOAL-COVERAGE-MATRIX.md with summary + by-priority + details + gate.
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/matrix-merger.sh" 2>/dev/null || true
+if type -t merge_and_write_matrix >/dev/null 2>&1; then
+  MERGE_OUTPUT=$(merge_and_write_matrix "$PHASE_DIR" \
+    "${PHASE_DIR}/TEST-GOALS.md" \
+    "${PHASE_DIR}/RUNTIME-MAP.json" \
+    "${PHASE_DIR}/.surface-probe-results.json" \
+    "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>&1)
+
+  # Extract machine-readable counts + verdict
+  VERDICT=$(echo "$MERGE_OUTPUT" | grep '^VERDICT=' | cut -d= -f2)
+  READY=$(echo "$MERGE_OUTPUT" | grep '^READY=' | cut -d= -f2)
+  BLOCKED=$(echo "$MERGE_OUTPUT" | grep '^BLOCKED=' | cut -d= -f2)
+  NOT_SCANNED=$(echo "$MERGE_OUTPUT" | grep '^NOT_SCANNED=' | cut -d= -f2)
+  INTERMEDIATE=$(echo "$MERGE_OUTPUT" | grep '^INTERMEDIATE=' | cut -d= -f2)
+  export VERDICT READY BLOCKED NOT_SCANNED INTERMEDIATE
+
+  echo "✓ GOAL-COVERAGE-MATRIX.md: VERDICT=$VERDICT (ready=$READY blocked=$BLOCKED not_scanned=$NOT_SCANNED)"
+else
+  echo "⚠ matrix-merger.sh missing — falling back to manual matrix write (legacy path)"
+  # Legacy path: orchestrator writes matrix directly using template below
+fi
+```
+
+**Generated matrix format (canonical, from matrix-merger):**
 
 ```markdown
 # Goal Coverage Matrix — Phase {phase}
+**Generated:** {ISO-timestamp}
+**Source:** RUNTIME-MAP.json + .surface-probe-results.json
+**Merger:** _shared/lib/matrix-merger.sh v1.9.2.4
 
 ## Summary
-- Goals: {total}
-- Ready: {N} | Blocked: {N} | Unreachable: {N}
+- Total goals: {N}
+- READY: {N}
+- BLOCKED: {N}
+- NOT_SCANNED: {N} (intermediate)
+- UNREACHABLE: {N}
+- INFRA_PENDING: {N}
+- FAILED: {N} (intermediate)
 
 ## By Priority
-| Priority | Ready | Total | Threshold | Status |
-|----------|-------|-------|-----------|--------|
-| critical | {N} | {N} | 100% | {PASS|BLOCK} |
-| important | {N} | {N} | 80% | {PASS|BLOCK} |
-| nice-to-have | {N} | {N} | 50% | {PASS|BLOCK} |
+| Priority | Ready | Blocked | Other | Total | Threshold | Pass % | Status |
+|----------|-------|---------|-------|-------|-----------|--------|--------|
+| critical | {N} | {N} | {N} | {N} | 100% | {X%} | ✅ PASS/⛔ BLOCK |
+| important | {N} | {N} | {N} | {N} | 80% | {X%} | ... |
+| nice-to-have | {N} | {N} | {N} | {N} | 50% | {X%} | ... |
 
 ## Goal Details
-| Goal | Priority | Status | RUNTIME-MAP Path | Notes |
-|------|----------|--------|------------------|-------|
-(populated from runtime mapping — values from RUNTIME-MAP.json)
+| Goal | Priority | Surface | Status | Evidence |
+|------|----------|---------|--------|----------|
+| G-01 | critical | api | READY | handler=apps/api/src/... |
 
-## Gate: {PASS|BLOCK}
-{If BLOCK: specific goals that failed threshold + suggested action}
+## Gate: ✅/⛔/⚠️ {VERDICT}
+{PASS|BLOCK|INTERMEDIATE message with next-action hints}
 ```
 
 ### 4e: Gate Decision
