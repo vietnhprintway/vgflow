@@ -357,7 +357,23 @@ if grep -l "<design-ref>" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
     echo "   Fix: /vg:design-extract  (blueprint should have auto-triggered this)"
     echo "   Override (NOT RECOMMENDED): /vg:build {phase} --skip-design-check"
     if [[ ! "$ARGUMENTS" =~ --skip-design-check ]]; then
-      exit 1
+      # v1.9.2 P4 — try block_resolve before hard exit
+      source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+      if type -t block_resolve >/dev/null 2>&1; then
+        export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="build.design-manifest"
+        BR_GATE_CONTEXT="Tasks in PLAN reference design slugs, but referenced assets missing in ${DESIGN_OUTPUT_DIR}: ${MISSING_DESIGN}. Executor needs ground-truth UI to produce faithful code."
+        BR_EVIDENCE=$(printf '{"missing":"%s","output_dir":"%s"}' "$MISSING_DESIGN" "$DESIGN_OUTPUT_DIR")
+        BR_CANDIDATES='[{"id":"auto-extract","cmd":"echo \"Would trigger /vg:design-extract — orchestrator must call SlashCommand tool\" && exit 1","confidence":0.5,"rationale":"design-extract regenerates missing assets from configured sources"}]'
+        BR_RESULT=$(block_resolve "build-design-missing" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+        BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+        case "$BR_LEVEL" in
+          L1) echo "✓ L1 auto-extracted — continuing" >&2 ;;
+          L2) echo "▸ L2 architect proposal — orchestrator invokes AskUserQuestion (L3)" >&2; exit 2 ;;
+          *)  exit 1 ;;
+        esac
+      else
+        exit 1
+      fi
     else
       # v1.9.0 T1: rationalization guard before honoring --skip-design-check
       RATGUARD_RESULT=$(rationalization_guard_check "design-check" \
@@ -911,6 +927,18 @@ if [ -z "$FAILED_GATE" ]; then
           echo "⛔ test_unit_cmd required but missing (test_unit_required=true)."
           echo "   Fix: add test_unit_cmd to .claude/vg.config.md"
           echo "   Or: run with --allow-no-tests (logged to build-state.log)"
+          # v1.9.2 P4 — block-resolver handoff before declaring gate fail
+          source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+          if type -t block_resolve >/dev/null 2>&1; then
+            export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="build.gate3-test-unit"
+            BR_GATE_CONTEXT="test_unit_required=true but test_unit_cmd empty and no auto-detect match in package.json scripts. Phase has src/ changes that need test coverage."
+            BR_EVIDENCE=$(printf '{"wave":"%d","unit_cmd":"%s"}' "$N" "${UNIT_CMD}")
+            BR_CANDIDATES='[{"id":"autodetect-vitest","cmd":"[ -f vitest.config.ts ] && echo \"vitest config detected — suggest: pnpm vitest run\" && exit 1","confidence":0.6,"rationale":"vitest.config.ts present — likely safe default"}]'
+            BR_RESULT=$(block_resolve "build-test-unit-missing" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+            BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+            [ "$BR_LEVEL" = "L1" ] && echo "✓ L1 resolved — test_unit_cmd suggestion applied" >&2
+            [ "$BR_LEVEL" = "L2" ] && { echo "▸ L2 architect proposal for test infra" >&2; exit 2; }
+          fi
           FAILED_GATE="test_unit_missing"
         fi
       else

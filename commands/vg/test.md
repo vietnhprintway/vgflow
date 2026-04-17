@@ -1032,13 +1032,25 @@ Display:
     print(chains)
     ")
     ```
-  - If `CHAIN_COUNT > 0` → **WARN** (do not silently skip):
-    ```
-    ⚠ FLOW-SPEC.md absent but {CHAIN_COUNT} goal dependency chains >= 3 detected.
-    Multi-page flows (login → create → edit → delete) need continuity testing.
-    Options:
-      (a) Re-run /vg:blueprint {phase} --from=2b7  → auto-generate FLOW-SPEC.md
-      (b) --skip-flow                               → proceed without flow tests (risk: state-machine bugs)
+  - If `CHAIN_COUNT > 0` → **block-resolver handoff** (v1.9.2 P4 — no bare A/B prompt):
+    ```bash
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="test.5c-flow"
+      BR_GATE_CONTEXT="FLOW-SPEC.md absent but ${CHAIN_COUNT} goal dependency chains (>=3) detected. Multi-page flows need continuity testing — without FLOW-SPEC, codegen cannot produce flow tests."
+      BR_EVIDENCE=$(printf '{"chain_count":%d,"phase":"%s"}' "$CHAIN_COUNT" "$PHASE_NUMBER")
+      BR_CANDIDATES='[{"id":"regen-flow-spec","cmd":"echo \"would re-run /vg:blueprint '"$PHASE_NUMBER"' --from=2b7 to auto-generate FLOW-SPEC.md — requires orchestrator\" && exit 1","confidence":0.4,"rationale":"Re-run blueprint sub-step 2b7 generates FLOW-SPEC from goal chains"}]'
+      BR_RESULT=$(block_resolve "flow-spec-missing" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+      BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      case "$BR_LEVEL" in
+        L1) echo "✓ L1 resolved — FLOW-SPEC generated inline" >&2 ;;
+        L2) echo "▸ L2 architect proposal — orchestrator invokes AskUserQuestion (L3) with proposal JSON" >&2
+            echo "  Users option: /vg:blueprint ${PHASE_NUMBER} --from=2b7  (auto-gen flow spec)" >&2
+            echo "                /vg:test ${PHASE_NUMBER} --skip-flow     (proceed without flow tests; debt logged)" >&2
+            exit 2 ;;
+        *)  echo "  Falling back to legacy warn — recommend /vg:blueprint ${PHASE_NUMBER} --from=2b7" >&2 ;;
+      esac
+    fi
     ```
   - If `CHAIN_COUNT == 0` → skip silently (no flows needed, phase is simple)
 
@@ -1136,7 +1148,23 @@ if [ -n "$DYN_FOUND" ]; then
   echo "  Fix: /vg:review ${PHASE_NUMBER} --retry-failed  (re-record with stable selectors)"
   echo "  Override (NOT RECOMMENDED): /vg:test ${PHASE_NUMBER} --allow-dynamic-ids"
   if [[ ! "$ARGUMENTS" =~ --allow-dynamic-ids ]]; then
-    exit 1
+    # v1.9.2 P4 — block-resolver: try inline reclassification first (L1), architect L2 if stuck
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="test.codegen.dynamic-ids"
+      BR_GATE_CONTEXT="Dynamic ID selectors in RUNTIME-MAP.json goal_sequences will produce flaky tests. Review must re-record using stable selectors (role/text). Alternatives: --retry-failed (re-record), --allow-dynamic-ids + ratguard (override with debt)."
+      BR_EVIDENCE=$(printf '{"dyn_found":"%s"}' "$(echo "$DYN_FOUND" | head -c 800 | tr '\n' ';')")
+      BR_CANDIDATES='[{"id":"retry-failed-rescan","cmd":"echo \"would re-trigger review --retry-failed to re-record selectors; requires orchestrator\" && exit 1","confidence":0.4,"rationale":"Re-scan often yields stable role-based locators if DOM updated"}]'
+      BR_RESULT=$(block_resolve "dynamic-ids" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+      BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      case "$BR_LEVEL" in
+        L1) echo "✓ L1 resolved — selectors re-recorded with stable locators" >&2 ;;
+        L2) echo "▸ L2 architect proposal — orchestrator invokes AskUserQuestion (L3)" >&2; exit 2 ;;
+        *)  exit 1 ;;
+      esac
+    else
+      exit 1
+    fi
   else
     # v1.9.0 T1: rationalization guard — dynamic IDs = flaky tests. Should rarely pass.
     RATGUARD_RESULT=$(rationalization_guard_check "dynamic-ids" \

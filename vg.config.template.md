@@ -402,6 +402,50 @@ commit_msg_hook:
   require_contract_cite: true        # commit touching src/ must cite API-CONTRACTS or CONTEXT
   pattern: '^(feat|fix|refactor|test|chore|docs)\([0-9]+(\.[0-9]+)*-[0-9]+\): '
 
+# === Phase Profiles (v1.9.2 P5 — orthogonal to R1 surface taxonomy) ===
+# Phase profile decides WHICH artifacts a phase needs and WHICH review/test mode runs.
+# Orthogonal to R1: surface routes GOALS → runners; profile routes PHASES → pipelines.
+# Detection in _shared/lib/phase-profile.sh (pure bash). Override per-phase by adding
+# `phase_profile: <name>` at top of SPECS.md (future — config-driven override).
+phase_profiles:
+  feature:
+    required_artifacts: [SPECS.md, CONTEXT.md, PLAN.md, API-CONTRACTS.md, TEST-GOALS.md, SUMMARY.md]
+    skip_artifacts: []
+    review_mode: "full"
+    test_mode: "full"
+    goal_coverage: "TEST-GOALS"
+  infra:
+    required_artifacts: [SPECS.md, PLAN.md, SUMMARY.md]
+    skip_artifacts: [TEST-GOALS.md, API-CONTRACTS.md, CONTEXT.md, RUNTIME-MAP.json]
+    review_mode: "infra-smoke"
+    test_mode: "infra-smoke"
+    goal_coverage: "SPECS.success_criteria"
+  hotfix:
+    required_artifacts: [SPECS.md, PLAN.md, SUMMARY.md]
+    skip_artifacts: [TEST-GOALS.md, API-CONTRACTS.md, CONTEXT.md]
+    inherits_from: "parent_phase"
+    review_mode: "delta"
+    test_mode: "parent-goals-regression"
+    goal_coverage: "parent_phase.TEST-GOALS"
+  bugfix:
+    required_artifacts: [SPECS.md, PLAN.md, SUMMARY.md]
+    skip_artifacts: [API-CONTRACTS.md, CONTEXT.md]
+    review_mode: "regression"
+    test_mode: "issue-specific"
+    goal_coverage: "SPECS.fixes_bug"
+  migration:
+    required_artifacts: [SPECS.md, PLAN.md, SUMMARY.md, ROLLBACK.md]
+    skip_artifacts: [API-CONTRACTS.md, TEST-GOALS.md, RUNTIME-MAP.json]
+    review_mode: "schema-verify"
+    test_mode: "schema-roundtrip"
+    goal_coverage: "SPECS.migration_plan"
+  docs:
+    required_artifacts: [SPECS.md]
+    skip_artifacts: [CONTEXT.md, PLAN.md, API-CONTRACTS.md, TEST-GOALS.md, RUNTIME-MAP.json, SUMMARY.md]
+    review_mode: "link-check"
+    test_mode: "markdown-lint"
+    goal_coverage: "SPECS.doc_targets"
+
 # =====================================================================
 # === Mobile Configuration =============================================
 # =====================================================================

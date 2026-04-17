@@ -75,6 +75,11 @@ if [ "$SKIP_SOURCE" = "false" ] && [ -d "$REPO_ROOT/.claude/commands/vg" ]; then
   # Also sync non-markdown support files (yaml string tables, etc.)
   sync_dir "$REPO_ROOT/.claude/commands/vg/_shared" "$SCRIPT_DIR/commands/vg/_shared" "*.yaml" "_shared-yaml"
   sync_dir "$REPO_ROOT/.claude/commands/vg/_shared" "$SCRIPT_DIR/commands/vg/_shared" "*.yml" "_shared-yml"
+  # v1.9.2 FIX: sync runnable bash helpers (lib/*.sh + lib/test-runners/*.sh)
+  # Previously missed — caused /vg:doctor + test-runners to silently degrade when distributed via vgflow/.
+  sync_dir "$REPO_ROOT/.claude/commands/vg/_shared/lib" "$SCRIPT_DIR/commands/vg/_shared/lib" "*.sh" "_shared-lib-sh"
+  sync_dir "$REPO_ROOT/.claude/commands/vg/_shared/lib" "$SCRIPT_DIR/commands/vg/_shared/lib" "*.md" "_shared-lib-md"
+  sync_dir "$REPO_ROOT/.claude/commands/vg/_shared/lib/test-runners" "$SCRIPT_DIR/commands/vg/_shared/lib/test-runners" "*.sh" "test-runners"
 
   # Shared Claude skills that VG workflow depends on
   for skill in api-contract vg-design-scanner vg-design-gap-hunter vg-haiku-scanner vg-crossai; do

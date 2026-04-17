@@ -78,6 +78,53 @@ done
    Run first: /vg:specs {phase}
    ```
 
+**Phase profile detection (P5, v1.9.2) — short-circuit for non-feature phases.**
+
+```bash
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/phase-profile.sh" 2>/dev/null || true
+if type -t detect_phase_profile >/dev/null 2>&1; then
+  PHASE_PROFILE=$(detect_phase_profile "$PHASE_DIR")
+  phase_profile_summarize "$PHASE_DIR" "$PHASE_PROFILE"
+
+  case "$PHASE_PROFILE" in
+    infra|hotfix|bugfix|migration|docs)
+      echo "ℹ Phase profile='${PHASE_PROFILE}' — scope discussion không cần 5 vòng đầy đủ."
+      echo "  Tạo CONTEXT.md rút gọn + thoát sớm. Blueprint sẽ chỉ tạo PLAN (+ ROLLBACK nếu migration)."
+      # Generate minimal CONTEXT.md if not exists
+      if [ ! -f "${PHASE_DIR}/CONTEXT.md" ]; then
+        ${PYTHON_BIN} - "${PHASE_DIR}/CONTEXT.md" "$PHASE_NUMBER" "$PHASE_PROFILE" <<'PY'
+import sys
+from datetime import datetime
+out, phase, profile = sys.argv[1], sys.argv[2], sys.argv[3]
+content = f"""# Phase {phase} — Scope context ({profile} profile)
+
+**Profile:** {profile}  
+**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  
+**Scope mode:** short-circuit (no 5-round discussion — profile does not require feature-depth scoping)
+
+## Decisions
+
+_Non-feature profiles typically don't have architectural decisions — execution details live in SPECS.md.  
+If you discover a decision worth recording, add it here with ID `P{phase}.D-XX`._
+
+## Next
+
+Run `/vg:blueprint {phase}` — will skip scope/contract/test-goals generation for non-feature profile.
+"""
+open(out, 'w', encoding='utf-8').write(content)
+print(f"✓ CONTEXT.md stub written for profile={profile}")
+PY
+      fi
+      echo "✓ Scope short-circuit done. Next: /vg:blueprint ${PHASE_NUMBER}"
+      exit 0
+      ;;
+    feature|*)
+      # default path — 5 rounds
+      ;;
+  esac
+fi
+```
+
 **If CONTEXT.md already exists:**
 ```
 AskUserQuestion:

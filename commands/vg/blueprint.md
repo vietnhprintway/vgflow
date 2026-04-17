@@ -79,7 +79,56 @@ Each sub-step should: `TaskUpdate: status="in_progress"` at start, `status="comp
 </step>
 
 <step name="2_verify_prerequisites">
-Check `${PHASES_DIR}/{phase_dir}/CONTEXT.md` exists.
+**Phase profile detection (P5, v1.9.2) — done BEFORE prerequisite check.**
+
+```bash
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/phase-profile.sh" 2>/dev/null || true
+if type -t detect_phase_profile >/dev/null 2>&1; then
+  PHASE_PROFILE=$(detect_phase_profile "$PHASE_DIR")
+  SKIP_ARTIFACTS=$(phase_profile_skip_artifacts "$PHASE_PROFILE")
+  export PHASE_PROFILE SKIP_ARTIFACTS
+  phase_profile_summarize "$PHASE_DIR" "$PHASE_PROFILE"
+else
+  PHASE_PROFILE="feature"
+  SKIP_ARTIFACTS=""
+fi
+```
+
+**CONTEXT.md required ONLY for feature profile** (other profiles skip scope + CONTEXT).
+
+```bash
+needs_context=true
+for a in $SKIP_ARTIFACTS; do
+  [ "$a" = "CONTEXT.md" ] && needs_context=false
+done
+
+if [ "$needs_context" = "true" ] && [ ! -f "${PHASES_DIR}/${phase_dir}/CONTEXT.md" ]; then
+  echo "⛔ CONTEXT.md not found for Phase ${PHASE_NUMBER} (profile=${PHASE_PROFILE} requires it)."
+
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+  if type -t block_resolve >/dev/null 2>&1; then
+    export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="blueprint.2-verify-prereq"
+    BR_GATE_CONTEXT="Feature profile requires CONTEXT.md (scope decisions). User must run /vg:scope first."
+    BR_EVIDENCE=$(printf '{"profile":"%s","missing":"CONTEXT.md"}' "$PHASE_PROFILE")
+    BR_CANDIDATES='[]'
+    BR_RESULT=$(block_resolve "blueprint-no-context" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+    BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+    [ "$BR_LEVEL" = "L2" ] && exit 2
+  fi
+  echo "   Run first: /vg:scope ${PHASE_NUMBER}"
+  exit 1
+fi
+
+# For non-feature profiles, skip scope and contracts generation.
+# Blueprint for infra/hotfix/bugfix/migration/docs only produces PLAN (and ROLLBACK for migration).
+if [ "$PHASE_PROFILE" != "feature" ]; then
+  echo "ℹ Blueprint profile-aware mode: PHASE_PROFILE=${PHASE_PROFILE} — bỏ qua (skip) sub-steps 2b, 2b5, 2b7 (contracts/test-goals/flow)."
+  echo "   Chỉ tạo PLAN.md (+ ROLLBACK.md nếu migration). CrossAI review vẫn áp dụng để kiểm tra PLAN quality."
+  export BLUEPRINT_PROFILE_SHORT_CIRCUIT=true
+fi
+```
+
+**Legacy fallback (profile detection unavailable):** Check `${PHASES_DIR}/{phase_dir}/CONTEXT.md` exists.
 
 Missing → BLOCK:
 ```

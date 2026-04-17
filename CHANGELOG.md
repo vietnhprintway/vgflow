@@ -2,6 +2,83 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.2] - 2026-04-17
+
+### Phase profile system + full block-resolver coverage + sync.sh fix
+
+**User-flagged critical defect**: `/vg:review 07.12.1` (pixel-infra-provisioning — hotfix phase with SPECS success_criteria bash checklist, NO TEST-GOALS) blocked with "BLOCK — prerequisites missing" then fell back to the BANNED anti-pattern "list 3 options A/B/C, stop, wait". 2 root causes:
+
+1. **VG workflow assumed every phase = feature** (needs TEST-GOALS + API-CONTRACTS + full pipeline). Reality: strategic apps have phase types (infra, hotfix, bugfix, migration, docs).
+2. **v1.9.1 block_resolve coverage was partial** — only 4 flagship sites, 8+ secondary sites fell back to anti-pattern.
+
+### Added — P5 Phase Profile System
+
+- **NEW** `_shared/lib/phase-profile.sh` (354 LOC, 9 exported functions):
+  - `detect_phase_profile(phase_dir)` — 7 rules, stops first match, idempotent pure function
+  - `phase_profile_required_artifacts` / `_skip_artifacts` / `_review_mode` / `_test_mode` / `_goal_coverage_source` — static profile tables
+  - `parse_success_criteria(specs_path)` — Python JSON array from SPECS `## Success criteria` checklist
+  - `phase_profile_summarize` — Vietnamese narration on stderr
+  - `phase_profile_check_required` — gate helper
+
+- **6 phase profiles** with distinct artifact requirements + review/test modes:
+  - **feature** (default) — full pipeline: SPECS → scope → blueprint → build → review → test → accept
+  - **infra** — SPECS success_criteria bash checklist, NO TEST-GOALS/API-CONTRACTS/CONTEXT. review_mode=`infra-smoke` (parse bash → run → READY/FAILED → implicit goals S-01..S-NN)
+  - **hotfix** — parent_phase field, small patch, inherits parent goals. ≥3 infra bash cmds promoted to `infra`
+  - **bugfix** — issue_id/bug_ref field, regression-focused
+  - **migration** — migration keyword + touches schema paths, rollback plan required
+  - **docs** — markdown-only file changes
+
+- **`vg.config.md.phase_profiles`** schema (template + project config) — `required_artifacts`, `skip_artifacts`, `review_mode`, `test_mode`, `goal_coverage` per profile
+
+### Added — P4 Block Resolver Full Coverage
+
+**12 block_resolve sites across 5 files** (8 new + 4 pre-existing from v1.9.1):
+- `review.md` × 4: prereq-missing (NEW), infra-smoke-not-ready (NEW), infra-unavailable (Scenario F patched), not-scanned-defer
+- `test.md` × 3: flow-spec-missing (patched), dynamic-ids (patched), goal-test-binding
+- `build.md` × 2: design-missing (patched), test-unit-missing (patched)
+- `accept.md` × 2: regression (patched), unreachable (patched)
+- `blueprint.md` × 1: no-context (NEW profile-aware)
+
+**Banned anti-pattern eliminated**: no more "list 3 options, stop, wait" without L1 inline / L2 architect Haiku / L3 user choice attempt.
+
+### Fixed — sync.sh missed _shared/lib/ and lib/test-runners/
+
+- v1.9.0–v1.9.1 sync.sh didn't include `*.sh` files under `_shared/lib/` → distributed vgflow tarballs were missing 18 runtime functions → `/vg:doctor` + test runners silently degraded on fresh installs.
+- v1.9.2 adds 3 sync_dir calls: `lib/*.sh`, `lib/*.md`, `lib/test-runners/*.sh`.
+
+### Changed
+
+- **`review.md`** — Step 0 profile detection gates ALL subsequent checks. Infra phase: skip browser discover, parse SPECS success_criteria, run each → map implicit goals S-01..S-NN, generate GOAL-COVERAGE-MATRIX.md, PASS without TEST-GOALS.
+- **`blueprint.md`** — Profile detection + `skip_artifacts` check → don't generate TEST-GOALS/API-CONTRACTS for infra/docs phases.
+- **`scope.md`** — Profile short-circuit for non-feature (infra/hotfix/bugfix/docs skip 5-round discussion, only feature phases need it).
+- **`test.md`** — Profile-aware test_mode routing (`infra-smoke` re-runs SPECS bash on sandbox).
+
+### Phase 07.12.1 integration test (dry-run verified)
+
+1. `detect_phase_profile` → `infra` (≥3 infra bash cmds in success_criteria + no TEST-GOALS)
+2. `required_artifacts` = [SPECS.md, PLAN.md, SUMMARY.md] — SUMMARY.md missing → block_resolve L2 architect proposal (NOT 3-option stall)
+3. `parse_success_criteria` → 6 implicit goals S-01..S-06
+4. `review_mode` = `infra-smoke` → browser/TEST-GOALS skipped, bash commands executed, GOAL-COVERAGE-MATRIX.md written
+
+### Backward compatibility
+
+- Phases without detectable profile → default to `feature` (v1.9.1 behavior)
+- Phases with `feature` profile → unchanged pipeline
+- No migration required — profile detection is read-only + lazy
+
+### Migration v1.9.1 → v1.9.2
+
+**No required actions.** All changes are additive + profile-aware branches.
+
+- Legacy phases auto-detect via SPECS structure → most become `feature`, select few become `infra`/`hotfix`/`bugfix` based on SPECS content.
+- Example: phase 07.12.1 → `infra` (has SPECS success_criteria + no TEST-GOALS + parent_phase field).
+- Example: phase 07.12 → `feature` (full pipeline artifacts).
+
+### Deferred to v1.9.3
+
+- **R3.2 dimension-expander** — scope adversarial proactive expansion of dimensions (orthogonal to v1.9.1 R3 answer challenger). Ship as enhancement, not critical for 07.12.1 fix.
+- **Codex-skills update** — sync structure via sync.sh (new lib sync added), codex-skills prose still v1.9.1 baseline. Update to v1.9.2 behavior (profile routing) in v1.9.3 batch.
+
 ## [1.9.1] - 2026-04-17
 
 ### Surface-driven testing — VG handle được mọi loại phase (UI / API / data / time-driven / integration / mobile / custom)

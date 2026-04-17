@@ -222,7 +222,21 @@ if [ -n "$REG_REPORT" ]; then
     echo "⛔ Regressions detected in ${REG_REPORT}: ${REG_COUNT} goals regressed, fix-loop NOT run."
     echo "   Fix: /vg:regression --fix  (auto-fix loop then re-run accept)"
     if [[ ! "$ARGUMENTS" =~ --override-regressions= ]]; then
-      exit 1
+      # v1.9.2 P4 — block-resolver before exit
+      source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+      if type -t block_resolve >/dev/null 2>&1; then
+        export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="accept.regression-gate"
+        BR_GATE_CONTEXT="${REG_COUNT} regressed goals detected in ${REG_REPORT}. Fix-loop was NOT run. Shipping now would ship known broken behavior."
+        BR_EVIDENCE=$(printf '{"reg_count":"%s","reg_report":"%s","reg_fixed":"%s"}' "$REG_COUNT" "$REG_REPORT" "$REG_FIXED")
+        BR_CANDIDATES='[{"id":"run-regression-fix","cmd":"echo \"/vg:regression --fix required — orchestrator must dispatch slash command\" && exit 1","confidence":0.5,"rationale":"Standard remediation path"}]'
+        BR_RESULT=$(block_resolve "accept-regression" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+        BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+        [ "$BR_LEVEL" = "L1" ] && echo "✓ L1 — regression fix-loop applied" >&2 && REG_FIXED="yes"
+        [ "$BR_LEVEL" = "L2" ] && { echo "▸ L2 architect proposal — AskUserQuestion with remediation plan" >&2; exit 2; }
+        [ "$REG_FIXED" != "yes" ] && exit 1
+      else
+        exit 1
+      fi
     else
       echo "⚠ --override-regressions set — recording in UAT.md"
     fi
@@ -271,6 +285,24 @@ PY
     echo "  cross-phase-pending  → wait for owning phase to reach 'accepted', OR /vg:amend ${PHASE_NUMBER}"
     echo "  scope-amend          → /vg:amend ${PHASE_NUMBER}  (remove goal or move to new phase)"
     echo ""
+
+    # v1.9.2 P4 — attempt block_resolve before hard exit (only when no --allow-unreachable)
+    if [[ ! "$ARGUMENTS" =~ --allow-unreachable ]]; then
+      source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+      if type -t block_resolve >/dev/null 2>&1; then
+        export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="accept.unreachable-gate"
+        BR_GATE_CONTEXT="${BLOCKING_COUNT} UNREACHABLE goals block accept. Verdicts include bug-this-phase / cross-phase-pending / scope-amend. Shipping without resolution = phantom-done phase."
+        BR_EVIDENCE=$(printf '{"blocking_count":"%s","triage_file":"%s"}' "$BLOCKING_COUNT" "$TRIAGE_JSON")
+        BR_CANDIDATES='[{"id":"auto-scope-amend","cmd":"echo \"would open /vg:amend for scope_amend items — requires orchestrator\" && exit 1","confidence":0.35,"rationale":"scope-amend verdicts often resolvable by moving goal to new phase"}]'
+        BR_RESULT=$(block_resolve "accept-unreachable" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+        BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+        case "$BR_LEVEL" in
+          L1) echo "✓ L1 resolved — triage updated inline" >&2 ;;
+          L2) echo "▸ L2 architect proposal presented — orchestrator invokes AskUserQuestion" >&2; exit 2 ;;
+          *)  exit 1 ;;
+        esac
+      fi
+    fi
 
     if [[ "$ARGUMENTS" =~ --allow-unreachable ]]; then
       REASON=$(echo "$ARGUMENTS" | grep -oE -- "--reason='[^']+'" | sed "s/--reason='//; s/'$//")

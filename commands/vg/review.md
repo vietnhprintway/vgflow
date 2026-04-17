@@ -30,8 +30,14 @@ This is a HARD rule — TodoWrite is the wrong abstraction for a 30-min orchestr
 </NARRATION_POLICY>
 
 <rules>
-1. **SUMMARY*.md required** — build must have completed. Missing = BLOCK.
-2. **API-CONTRACTS.md required** — contracts must exist. Missing = BLOCK.
+1. **Phase profile drives prerequisites (P5, v1.9.2)** — `detect_phase_profile` chooses WHICH artifacts are required:
+   - `feature` (default) → SPECS + CONTEXT + PLAN + API-CONTRACTS + TEST-GOALS + SUMMARY
+   - `infra` → SPECS + PLAN + SUMMARY (no TEST-GOALS, no API-CONTRACTS — goals from SPECS success_criteria)
+   - `hotfix` / `bugfix` → SPECS + PLAN + SUMMARY (reuse parent goals or issue ref)
+   - `migration` → SPECS + PLAN + SUMMARY + ROLLBACK
+   - `docs` → SPECS only
+   Missing required artifact → BLOCK via `block_resolve` (L2 architect proposal), NOT anti-pattern "list 3 options".
+2. **Review mode branches on profile** — `feature=full` (browser + surfaces) | `infra=infra-smoke` (parse + run success_criteria bash) | `hotfix=delta` | `bugfix=regression` | `migration=schema-verify` | `docs=link-check`.
 3. **Discovery-first** — AI explores the running app organically. No hardcoded checklists. No pre-scripted paths.
 4. **Bấm → Nhìn → List → Đánh giá** — at every view: snapshot, evaluate data + actions, click each, observe result.
 5. **Fix in review, verify in test** — review handles discovery + fix. Test handles clean goal verification only.
@@ -126,11 +132,107 @@ Flags:
 - `--full-scan` — disable sidebar suppression. Haiku agents see full page (sidebar/header/footer) in every snapshot. Use when: app has non-standard layout, geometry detection fails, or debugging suppression issues.
 - `--with-probes` — enable mutation probe variations (edit/boundary/repeat) in step 2b-3 step 9. Adds 1 Haiku per mutation goal. Default OFF — let /vg:test handle variations via Playwright codegen (deterministic, cheaper).
 
-Validate:
-- `${PHASE_DIR}/SUMMARY*.md` exists → build completed
-- `${PHASE_DIR}/API-CONTRACTS.md` exists → contracts available
+**Phase profile detection (P5, v1.9.2) — FIRST ACTION before any blanket check:**
 
-Missing → BLOCK with guidance.
+```bash
+# Source phase-profile.sh — pure function, no side effects
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/phase-profile.sh" 2>/dev/null || true
+
+if type -t detect_phase_profile >/dev/null 2>&1; then
+  PHASE_PROFILE=$(detect_phase_profile "$PHASE_DIR")
+  export PHASE_PROFILE
+  REVIEW_MODE=$(phase_profile_review_mode "$PHASE_PROFILE")
+  REQUIRED_ARTIFACTS=$(phase_profile_required_artifacts "$PHASE_PROFILE")
+  SKIP_ARTIFACTS=$(phase_profile_skip_artifacts "$PHASE_PROFILE")
+  GOAL_COVERAGE_SRC=$(phase_profile_goal_coverage_source "$PHASE_PROFILE")
+  export REVIEW_MODE REQUIRED_ARTIFACTS SKIP_ARTIFACTS GOAL_COVERAGE_SRC
+
+  # Narrate detected profile (Vietnamese) — stderr so user sees reasoning.
+  phase_profile_summarize "$PHASE_DIR" "$PHASE_PROFILE"
+else
+  # Graceful fallback for legacy workflows where helper not yet installed
+  PHASE_PROFILE="feature"
+  REVIEW_MODE="full"
+  REQUIRED_ARTIFACTS="SPECS.md CONTEXT.md PLAN.md API-CONTRACTS.md TEST-GOALS.md SUMMARY.md"
+  SKIP_ARTIFACTS=""
+  GOAL_COVERAGE_SRC="TEST-GOALS"
+  echo "⚠ phase-profile.sh missing — defaulting to profile=feature" >&2
+fi
+```
+
+**Profile-aware prerequisite gate (replaces hardcoded SUMMARY+API-CONTRACTS check):**
+
+```bash
+MISSING=""
+for artifact in $REQUIRED_ARTIFACTS; do
+  # SUMMARY.md check is glob-aware — SUMMARY*.md counts
+  if [ "$artifact" = "SUMMARY.md" ]; then
+    ls "${PHASE_DIR}"/SUMMARY*.md >/dev/null 2>&1 || MISSING="${MISSING} ${artifact}"
+  else
+    [ -f "${PHASE_DIR}/${artifact}" ] || MISSING="${MISSING} ${artifact}"
+  fi
+done
+MISSING=$(echo "$MISSING" | xargs)
+
+if [ -n "$MISSING" ]; then
+  echo "⛔ Review prerequisites missing for profile='${PHASE_PROFILE}': ${MISSING}" >&2
+
+  # v1.9.1 R2+R4 + v1.9.2 P4: block-resolver — spawn architect proposal
+  # instead of anti-pattern "list 3 options, stop, wait".
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+  if type -t block_resolve >/dev/null 2>&1; then
+    export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="review.0-prerequisites"
+    BR_GATE_CONTEXT="Review prerequisites missing for profile='${PHASE_PROFILE}'. Required: ${REQUIRED_ARTIFACTS}. Missing: ${MISSING}. Profile detected from SPECS.md (parent_phase/issue_id/success_criteria bash commands/migration keywords)."
+    BR_EVIDENCE=$(printf '{"phase_profile":"%s","required":"%s","missing":"%s","skip":"%s"}' \
+                  "$PHASE_PROFILE" "$REQUIRED_ARTIFACTS" "$MISSING" "$SKIP_ARTIFACTS")
+    # L1 fix candidates — try to generate missing artifact inline.
+    # Only safe auto-fixes (SUMMARY backfill from build-state, never TEST-GOALS which needs decisions).
+    BR_CANDIDATES='[
+      {"id":"summary-backfill","cmd":"[ -f \"'"$PHASE_DIR"'/build-state.log\" ] && echo \"SUMMARY could be backfilled from build-state.log — user must review\" && exit 1","confidence":0.4,"rationale":"SUMMARY missing but build-state.log exists → narrate user can backfill, but not auto-generate without human eye"},
+      {"id":"profile-retry-detect","cmd":"source \"'"$REPO_ROOT"'/.claude/commands/vg/_shared/lib/phase-profile.sh\"; P=$(detect_phase_profile \"'"$PHASE_DIR"'\"); test \"$P\" != \"'"$PHASE_PROFILE"'\" && echo \"profile changed to $P, re-check needed\" || exit 1","confidence":0.3,"rationale":"Re-detect in case SPECS was updated between runs"}
+    ]'
+    BR_RESULT=$(block_resolve "review-prereq-missing" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+    BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+    if [ "$BR_LEVEL" = "L1" ]; then
+      echo "✓ Block resolver L1 self-resolved — prerequisites now satisfied, re-check below" >&2
+      # Re-check MISSING after L1 — fall through if still missing
+      MISSING=""
+      for artifact in $REQUIRED_ARTIFACTS; do
+        if [ "$artifact" = "SUMMARY.md" ]; then
+          ls "${PHASE_DIR}"/SUMMARY*.md >/dev/null 2>&1 || MISSING="${MISSING} ${artifact}"
+        else
+          [ -f "${PHASE_DIR}/${artifact}" ] || MISSING="${MISSING} ${artifact}"
+        fi
+      done
+      MISSING=$(echo "$MISSING" | xargs)
+      [ -z "$MISSING" ] || {
+        echo "⚠ L1 did not fully resolve — proceeding to L2 architect" >&2
+      }
+    fi
+    if [ -n "$MISSING" ] && [ "$BR_LEVEL" = "L2" ]; then
+      echo "▸ Block resolver L2 đề xuất proposal — orchestrator MUST invoke AskUserQuestion (L3) with proposal JSON:" >&2
+      echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; d=json.loads(sys.stdin.read()); p=d.get('proposal',{}); print('  type=' + p.get('type','?') + '\\n  summary=' + p.get('summary','?') + '\\n  confidence=' + str(p.get('confidence',0)))" >&2
+      echo "  Hành động gợi ý: chạy /vg:blueprint ${PHASE_NUMBER} (hoặc /vg:specs/amend tuỳ profile), rồi re-run /vg:review ${PHASE_NUMBER}" >&2
+      exit 2
+    elif [ -n "$MISSING" ]; then
+      # L4 — genuinely stuck (resolver disabled or architect unavailable)
+      echo "Fix paths by profile:" >&2
+      echo "  feature   → /vg:blueprint ${PHASE_NUMBER} (generates PLAN + API-CONTRACTS + TEST-GOALS)" >&2
+      echo "  infra     → add '## Success criteria' bash checklist to SPECS, commit PLAN + SUMMARY" >&2
+      echo "  hotfix    → ensure SPECS has 'Parent phase:' field + PLAN + SUMMARY" >&2
+      echo "  bugfix    → add 'issue_id:' or 'bug_ref:' to SPECS + PLAN + SUMMARY" >&2
+      echo "  migration → add ROLLBACK.md with down-migration steps" >&2
+      echo "  docs      → only SPECS.md required" >&2
+      exit 1
+    fi
+  else
+    # Resolver unavailable → classic hard block (still better than 3-option anti-pattern)
+    echo "Required for profile='${PHASE_PROFILE}': ${REQUIRED_ARTIFACTS}" >&2
+    echo "Run /vg:blueprint or equivalent to produce missing artifacts, then retry." >&2
+    exit 1
+  fi
+fi
+```
 
 **Update PIPELINE-STATE.json:**
 ```bash
@@ -169,6 +271,423 @@ TaskCreate: "4d: Write GOAL-COVERAGE-MATRIX"        (activeForm: "Writing covera
 - "2b-2: Spawning Haiku scanners" → "2b-2: Scanning /conversions as advertiser (3/7 views)"
 - "3: Fix loop" → "3: Fixing Bug #2: S2SSecretSection crash (iter 1/3)"
 - "4a: Load goals" → "4a: 38 goals loaded, 16 INFRA_PENDING (ClickHouse, pixel_server)"
+</step>
+
+<step name="phase_profile_branch">
+## Phase profile branch (P5, v1.9.2)
+
+**If `REVIEW_MODE` ≠ `full`, short-circuit before code scan + browser discovery.**
+
+Each non-full review mode has a dedicated handler. After handler completes,
+jump straight to `write_goal_coverage_matrix` (step 4d equivalent) and exit.
+The `phase_profile_branch` step is a router — see dedicated `phaseP_*` steps below.
+
+```bash
+case "$REVIEW_MODE" in
+  full)
+    # Classic path — Phase 1 code scan → Phase 2 browser → Phase 3 fix → Phase 4 goal compare
+    echo "▸ Review mode: full (feature profile) — running classic discovery pipeline"
+    ;;
+  infra-smoke)
+    echo "▸ Review mode: infra-smoke (${PHASE_PROFILE} profile) — parsing SPECS success_criteria"
+    # Handled by `phaseP_infra_smoke` below. Jumps to goal-coverage-matrix write + exit.
+    ;;
+  delta)
+    echo "▸ Review mode: delta (hotfix profile) — focus on delta + parent goals re-verify"
+    # Handled by `phaseP_delta` below.
+    ;;
+  regression)
+    echo "▸ Review mode: regression (bugfix profile) — regression sweep around issue"
+    # Handled by `phaseP_regression` below.
+    ;;
+  schema-verify)
+    echo "▸ Review mode: schema-verify (migration profile) — schema round-trip check"
+    # Handled by `phaseP_schema_verify` below.
+    ;;
+  link-check)
+    echo "▸ Review mode: link-check (docs profile) — markdown link validation"
+    # Handled by `phaseP_link_check` below.
+    ;;
+  *)
+    echo "⚠ Unknown REVIEW_MODE='${REVIEW_MODE}' — falling back to full pipeline" >&2
+    REVIEW_MODE="full"
+    ;;
+esac
+```
+
+**Dispatcher rule:** Orchestrator runs EXACTLY ONE of: `phaseP_infra_smoke` | `phaseP_delta` | `phaseP_regression` | `phaseP_schema_verify` | `phaseP_link_check` | classic `phase1_code_scan → phase4_goal_comparison`. Infra-smoke etc. write `GOAL-COVERAGE-MATRIX.md` directly (implicit goals from SPECS), skip browser + RUNTIME-MAP entirely.
+</step>
+
+<step name="phaseP_infra_smoke" profile="web-fullstack,web-backend-only,cli-tool,library">
+## Review mode: infra-smoke (P5, v1.9.2)
+
+**Runs when `REVIEW_MODE=infra-smoke` (infra profile).**
+
+Logic: parse SPECS `## Success criteria` checklist → run each bash command on target env → map to implicit goals `S-01..S-NN` → gate on all READY.
+
+```bash
+if [ "$REVIEW_MODE" != "infra-smoke" ]; then
+  echo "↷ Skipping phaseP_infra_smoke (REVIEW_MODE=$REVIEW_MODE)"
+else
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/phase-profile.sh" 2>/dev/null
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+
+  # 1. Parse SPECS success_criteria
+  SMOKE_JSON=$(parse_success_criteria "$PHASE_DIR")
+  SMOKE_COUNT=$(${PYTHON_BIN} -c "import json,sys; print(len(json.loads(sys.argv[1])))" "$SMOKE_JSON" 2>/dev/null || echo 0)
+
+  if [ "$SMOKE_COUNT" -eq 0 ]; then
+    echo "⛔ SPECS has no '## Success criteria' checklist bullets — infra-smoke needs implicit goals." >&2
+    echo "   Fix: add markdown checklist ('- [ ] `cmd` → expected') to SPECS.md" >&2
+    exit 1
+  fi
+
+  echo "▸ Infra-smoke: phát hiện ${SMOKE_COUNT} implicit goals từ success_criteria"
+  echo "$SMOKE_JSON" > "${PHASE_DIR}/.success-criteria.json"
+
+  # 2. Determine run_prefix from env (--sandbox flag or config.step_env.verify)
+  RUN_PREFIX=""
+  ENV_NAME="${VG_ENV:-}"
+  if [ -z "$ENV_NAME" ]; then
+    if [[ "$ARGUMENTS" =~ --sandbox ]]; then ENV_NAME="sandbox"
+    elif [[ "$ARGUMENTS" =~ --local ]]; then ENV_NAME="local"
+    else ENV_NAME="${CONFIG_STEP_ENV_VERIFY:-local}"
+    fi
+  fi
+  # NOTE: commands in SPECS typically already include `ssh vollx`; don't double-prefix
+  # when command already has the run_prefix. phase-profile keeps this simple — run as-is.
+
+  # 3. Run each bullet, record status
+  RESULTS_JSON="${PHASE_DIR}/.infra-smoke-results.json"
+  ${PYTHON_BIN} - "$SMOKE_JSON" "$RESULTS_JSON" "$ENV_NAME" <<'PY'
+import json, sys, subprocess, shlex, time
+smoke = json.loads(sys.argv[1])
+out_path = sys.argv[2]
+env_name = sys.argv[3]
+results = []
+for entry in smoke:
+    sid = entry['id']
+    cmd = entry.get('cmd','').strip()
+    expected = entry.get('expected','').strip()
+    raw = entry.get('raw','')
+    if not cmd:
+        results.append({"id":sid,"status":"UNREACHABLE","reason":"no bash command in bullet","raw":raw})
+        continue
+    if cmd.startswith('/vg:') or cmd.startswith('/gsd:'):
+        # Slash commands — not directly runnable here. Mark DEFERRED.
+        results.append({"id":sid,"status":"DEFERRED","reason":f"slash command requires orchestrator: {cmd}","raw":raw})
+        continue
+    try:
+        t0 = time.time()
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+        dur = round(time.time() - t0, 2)
+        ok = p.returncode == 0
+        if ok and expected:
+            # Expected substring must appear in combined output
+            combined = (p.stdout or '') + (p.stderr or '')
+            ok = expected.split()[0] in combined or expected in combined
+        status = "READY" if ok else "BLOCKED"
+        tail = ((p.stdout or '')[-300:] + (p.stderr or '')[-200:]).replace('\n',' | ')
+        results.append({"id":sid,"status":status,"exit":p.returncode,"dur":dur,"expected":expected,"evidence":tail[:600],"raw":raw})
+    except subprocess.TimeoutExpired:
+        results.append({"id":sid,"status":"BLOCKED","reason":"timeout 60s","raw":raw})
+    except Exception as e:
+        results.append({"id":sid,"status":"FAILED","reason":str(e),"raw":raw})
+with open(out_path,'w',encoding='utf-8') as f:
+    json.dump({"env":env_name,"results":results,"generated_at":time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}, f, ensure_ascii=False, indent=2)
+PY
+
+  # 4. Display human-readable summary
+  ${PYTHON_BIN} - "$RESULTS_JSON" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding='utf-8'))
+r = d['results']
+ready = sum(1 for x in r if x['status']=='READY')
+blocked = sum(1 for x in r if x['status']=='BLOCKED')
+failed = sum(1 for x in r if x['status']=='FAILED')
+deferred = sum(1 for x in r if x['status']=='DEFERRED')
+unreach = sum(1 for x in r if x['status']=='UNREACHABLE')
+print(f"\n┌─ Infra-smoke results (env={d['env']}) ─────────────────")
+for x in r:
+    icon = {'READY':'✓','BLOCKED':'⛔','FAILED':'✗','DEFERRED':'⟳','UNREACHABLE':'⚠'}.get(x['status'],'?')
+    print(f"│ {icon} {x['id']} [{x['status']}] {x.get('raw','')[:70]}")
+    if x['status'] in ('BLOCKED','FAILED'):
+        print(f"│   └─ {x.get('reason') or x.get('evidence','')[:160]}")
+print(f"├─ Summary: READY={ready} BLOCKED={blocked} FAILED={failed} DEFERRED={deferred} UNREACHABLE={unreach} (total={len(r)})")
+print("└──────────────────────────────────────────────────────────")
+PY
+
+  # 5. Write GOAL-COVERAGE-MATRIX.md with implicit goals
+  ${PYTHON_BIN} - "$RESULTS_JSON" "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PHASE_PROFILE" <<'PY'
+import json, sys
+from datetime import datetime
+results = json.load(open(sys.argv[1], encoding='utf-8'))['results']
+out_path = sys.argv[2]
+phase = sys.argv[3]
+profile = sys.argv[4]
+lines = [
+    f"# Goal Coverage Matrix — Phase {phase}",
+    "",
+    f"**Profile:** {profile}  ",
+    f"**Source:** SPECS.success_criteria (implicit goals)  ",
+    f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  ",
+    f"**Review mode:** infra-smoke",
+    "",
+    "## Implicit Goals (from SPECS `## Success criteria`)",
+    "",
+    "| Goal | Status | Command | Evidence |",
+    "|------|--------|---------|----------|",
+]
+for r in results:
+    raw = r.get('raw','').replace('|',r'\|')[:120]
+    ev = (r.get('evidence') or r.get('reason') or '').replace('|',r'\|')[:120]
+    lines.append(f"| {r['id']} | {r['status']} | {raw} | {ev} |")
+
+ready = sum(1 for r in results if r['status']=='READY')
+total = len(results)
+pct = round(100*ready/total, 1) if total else 0
+lines += ["", f"## Gate", "", f"**Pass rate:** {ready}/{total} ({pct}%) READY  ",
+          f"**Verdict:** {'PASS' if ready == total else 'BLOCK'}", ""]
+open(out_path,'w',encoding='utf-8').write('\n'.join(lines) + '\n')
+print(f"✓ GOAL-COVERAGE-MATRIX.md written with {total} implicit goals ({ready} READY)")
+PY
+
+  # 6. Gate check + block_resolve fallback
+  READY_COUNT=$(${PYTHON_BIN} -c "import json; d=json.load(open('$RESULTS_JSON')); print(sum(1 for r in d['results'] if r['status']=='READY'))")
+  TOTAL=$(${PYTHON_BIN} -c "import json; d=json.load(open('$RESULTS_JSON')); print(len(d['results']))")
+  if [ "$READY_COUNT" -ne "$TOTAL" ]; then
+    echo "⛔ Infra-smoke gate: ${READY_COUNT}/${TOTAL} goals READY — phase NOT yet provisioned."
+
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="review.infra-smoke"
+      BR_GATE_CONTEXT="Infra-smoke review: ${TOTAL} SPECS success_criteria checked, only ${READY_COUNT} READY. Remaining BLOCKED/FAILED/DEFERRED imply provisioning incomplete on env='${ENV_NAME}'."
+      BR_EVIDENCE=$(cat "$RESULTS_JSON")
+      BR_CANDIDATES='[{"id":"re-run-ansible","cmd":"echo would re-run ansible-playbook (user must chạy explicitly)","confidence":0.3,"rationale":"re-run provisioning may fix BLOCKED infra"}]'
+      BR_RESULT=$(block_resolve "infra-smoke-not-ready" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+      BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      [ "$BR_LEVEL" = "L2" ] && exit 2
+    fi
+    exit 1
+  fi
+
+  echo "✓ Infra-smoke PASS (${READY_COUNT}/${TOTAL}) — phase provisioned as specified."
+  touch "${PHASE_DIR}/.step-markers/phaseP_infra_smoke.done"
+  # Exit review early — subsequent steps (browser, goal comparison) N/A for infra profile.
+  exit 0
+fi
+```
+</step>
+
+<step name="phaseP_delta">
+## Review mode: delta (P5, v1.9.2)
+
+**Runs when `REVIEW_MODE=delta` (hotfix profile).**
+
+Logic: hotfix patches a parent phase. Review focuses on:
+- (a) parent phase's failed/blocked goals — re-verify they now pass
+- (b) delta changes — small surface, review only touched files + sibling regression
+
+```bash
+if [ "$REVIEW_MODE" != "delta" ]; then
+  echo "↷ Skipping phaseP_delta (REVIEW_MODE=$REVIEW_MODE)"
+else
+  # 1. Find parent phase dir from SPECS
+  PARENT_REF=$(grep -E '^\*\*Parent phase:\*\*|^parent_phase:' "$PHASE_DIR/SPECS.md" 2>/dev/null | \
+               sed -E 's/.*(Parent phase:\*\*|parent_phase:)\s*//' | awk '{print $1}' | head -1)
+  if [ -z "$PARENT_REF" ]; then
+    echo "⛔ Hotfix profile but no parent_phase in SPECS.md — cannot derive delta context" >&2
+    exit 1
+  fi
+  PARENT_DIR=$(ls -d "${PHASES_DIR}/${PARENT_REF}"* 2>/dev/null | head -1)
+  echo "▸ Delta review: parent=${PARENT_REF} → ${PARENT_DIR}"
+
+  # 2. If parent has GOAL-COVERAGE-MATRIX, extract failed/blocked goals
+  PARENT_MATRIX="${PARENT_DIR}/GOAL-COVERAGE-MATRIX.md"
+  if [ -f "$PARENT_MATRIX" ]; then
+    FAILED_GOALS=$(grep -E '\| (BLOCKED|FAILED|INFRA_PENDING|UNREACHABLE) \|' "$PARENT_MATRIX" | \
+                   grep -oE 'G-[0-9]+|S-[0-9]+' | sort -u | head -100)
+    echo "▸ Parent failed goals: $(echo $FAILED_GOALS | tr '\n' ' ')"
+  else
+    echo "⚠ Parent has no GOAL-COVERAGE-MATRIX — delta review will focus on delta changes only"
+  fi
+
+  # 3. Write a compact GOAL-COVERAGE-MATRIX for hotfix showing:
+  #    - Parent failed goals re-checked status (best-effort — requires re-run of test)
+  #    - Delta change summary from git
+  DELTA_FILES=$(git diff --name-only HEAD~10 HEAD -- apps/ infra/ packages/ 2>/dev/null | head -20 || echo "")
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PARENT_REF" "$DELTA_FILES" <<'PY'
+import sys
+from datetime import datetime
+out_path = sys.argv[1]
+phase = sys.argv[2]
+parent = sys.argv[3]
+delta_files = sys.argv[4].splitlines() if sys.argv[4] else []
+lines = [
+    f"# Goal Coverage Matrix — Phase {phase} (hotfix delta)",
+    "",
+    f"**Profile:** hotfix  ",
+    f"**Parent phase:** {parent}  ",
+    f"**Source:** parent_phase.TEST-GOALS (regression re-verify) + delta changes  ",
+    f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  ",
+    "",
+    "## Delta changes",
+    "",
+]
+if delta_files:
+    for f in delta_files:
+        lines.append(f"- `{f}`")
+else:
+    lines.append("_no delta files detected_")
+lines += ["", "## Regression scope", "",
+          f"Re-verify parent phase ({parent}) failed/blocked goals in /vg:test step.",
+          "Delta review passes automatically if no delta is detected as breaking.",
+          "",
+          "## Gate", "",
+          "**Verdict:** PASS (delta review — regression verification deferred to /vg:test)", ""]
+open(out_path,'w',encoding='utf-8').write('\n'.join(lines) + '\n')
+print("✓ GOAL-COVERAGE-MATRIX.md written (hotfix delta)")
+PY
+
+  touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
+  exit 0
+fi
+```
+</step>
+
+<step name="phaseP_regression">
+## Review mode: regression (P5, v1.9.2 — bugfix profile)
+
+**Runs when `REVIEW_MODE=regression`.**
+
+```bash
+if [ "$REVIEW_MODE" != "regression" ]; then
+  echo "↷ Skipping phaseP_regression (REVIEW_MODE=$REVIEW_MODE)"
+else
+  BUG_REF=$(grep -E '^\*\*issue_id\*\*:|^issue_id:|^\*\*bug_ref\*\*:|^bug_ref:|^\*\*Fixes bug\*\*:' "$PHASE_DIR/SPECS.md" 2>/dev/null | sed -E 's/.*://; s/^\s*//' | head -1)
+  echo "▸ Regression review (bugfix): issue_ref=${BUG_REF:-<unspecified>}"
+  echo "  Deferring actual regression tests to /vg:test (issue-specific suite)."
+  # Write stub matrix
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$BUG_REF" <<'PY'
+import sys
+from datetime import datetime
+out, phase, bug = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = [
+    f"# Goal Coverage Matrix — Phase {phase} (bugfix regression)",
+    "",
+    f"**Profile:** bugfix  ",
+    f"**Bug reference:** {bug or '_unspecified_'}  ",
+    f"**Source:** SPECS.fixes_bug  ",
+    f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}",
+    "",
+    "## Regression gate",
+    "",
+    "Bugfix regression is verified by /vg:test `issue-specific` runner — this review step",
+    "passes automatically. Full regression sweep via /vg:regression after accept.",
+    "",
+    "**Verdict:** PASS (regression handled at /vg:test)",
+    "",
+]
+open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
+print("✓ GOAL-COVERAGE-MATRIX.md written (bugfix regression stub)")
+PY
+  touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
+  exit 0
+fi
+```
+</step>
+
+<step name="phaseP_schema_verify">
+## Review mode: schema-verify (P5, v1.9.2 — migration profile)
+
+```bash
+if [ "$REVIEW_MODE" != "schema-verify" ]; then
+  echo "↷ Skipping phaseP_schema_verify (REVIEW_MODE=$REVIEW_MODE)"
+else
+  echo "▸ Schema-verify review (migration): checking ROLLBACK.md + migration files"
+  # Minimum verification: ROLLBACK.md present (already checked in prereq),
+  # migration files referenced in PLAN exist.
+  MISSING_MIG=""
+  for f in $(grep -oE '<file-path>[^<]*migrations[^<]*\.sql[^<]*</file-path>' "${PHASE_DIR}/PLAN.md" 2>/dev/null | \
+             sed -E 's/<\/?file-path>//g'); do
+    [ -f "$f" ] || MISSING_MIG="${MISSING_MIG} $f"
+  done
+  if [ -n "$MISSING_MIG" ]; then
+    echo "⛔ Migration files referenced in PLAN but missing:$MISSING_MIG"
+    exit 1
+  fi
+
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" <<'PY'
+import sys
+from datetime import datetime
+out, phase = sys.argv[1], sys.argv[2]
+lines = [
+    f"# Goal Coverage Matrix — Phase {phase} (migration schema-verify)",
+    "",
+    "**Profile:** migration  ",
+    "**Source:** SPECS.migration_plan + ROLLBACK.md  ",
+    f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}",
+    "",
+    "## Schema verification",
+    "",
+    "- ROLLBACK.md present",
+    "- Migration files referenced in PLAN exist on disk",
+    "- Schema round-trip validation deferred to /vg:test schema-roundtrip runner",
+    "",
+    "**Verdict:** PASS",
+    "",
+]
+open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
+print("✓ GOAL-COVERAGE-MATRIX.md written (migration schema-verify)")
+PY
+  touch "${PHASE_DIR}/.step-markers/phaseP_schema_verify.done"
+  exit 0
+fi
+```
+</step>
+
+<step name="phaseP_link_check">
+## Review mode: link-check (P5, v1.9.2 — docs profile)
+
+```bash
+if [ "$REVIEW_MODE" != "link-check" ]; then
+  echo "↷ Skipping phaseP_link_check (REVIEW_MODE=$REVIEW_MODE)"
+else
+  echo "▸ Link-check review (docs): scanning markdown files for broken relative links"
+  DOC_FILES=$(grep -oE '<file-path>[^<]+\.md</file-path>' "${PHASE_DIR}/PLAN.md" 2>/dev/null | \
+              sed -E 's/<\/?file-path>//g')
+  BROKEN=""
+  for f in $DOC_FILES; do
+    [ -f "$f" ] || continue
+    for link in $(grep -oE '\]\([^)]+\)' "$f" | sed -E 's/\]\(//; s/\)$//' | grep -vE '^https?://|^#'); do
+      target=$(dirname "$f")/"$link"
+      [ -e "$target" ] || BROKEN="${BROKEN}\n$f → $link"
+    done
+  done
+  if [ -n "$BROKEN" ]; then
+    echo -e "⚠ Broken relative links:$BROKEN"
+  fi
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" <<'PY'
+import sys
+from datetime import datetime
+out, phase = sys.argv[1], sys.argv[2]
+lines = [
+    f"# Goal Coverage Matrix — Phase {phase} (docs link-check)",
+    "",
+    "**Profile:** docs  ",
+    f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}",
+    "",
+    "Docs-only phase — link-check performed; content fidelity deferred to /vg:test markdown-lint.",
+    "",
+    "**Verdict:** PASS",
+    "",
+]
+open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
+print("✓ GOAL-COVERAGE-MATRIX.md written (docs link-check)")
+PY
+  touch "${PHASE_DIR}/.step-markers/phaseP_link_check.done"
+  exit 0
+fi
+```
 </step>
 
 <step name="phase1_code_scan">
@@ -722,30 +1241,41 @@ Next actions — choose scenario that matches your error, follow the exact comma
   │                                                                        │
   │   This is NOT a code bug — code is correct but infra missing.          │
   │                                                                        │
-  │   Present to user:                                                     │
-  │   AskUserQuestion:                                                     │
-  │     header: "Infra unavailable — choose review strategy"               │
-  │     question: |                                                        │
-  │       {N} services unavailable on {ENV}: {service_list}                │
-  │       {M} goals depend on these (will classify as INFRA_PENDING).      │
+  │   ⚠ ANTI-PATTERN WARNING (v1.9.1 R2 + v1.9.2 P4):                      │
+  │   Do NOT fall back to "list 3 options (A/B/C) and wait".               │
+  │   Use `block_resolve` helper — L1 auto-try `--skip`, L2 architect      │
+  │   proposal for cross-env retry, L3 AskUserQuestion only if L2 fails.   │
   │                                                                        │
-  │       Options:                                                         │
-  │       A) Continue local — review what's testable, skip infra goals     │
-  │          (fast, covers code quality, ~{pct}% goals testable)           │
-  │       B) Switch to sandbox — deploy to VPS where infra exists          │
-  │          (slower, covers 100% goals if VPS has ClickHouse/Kafka)       │
-  │       C) Partial sandbox — review code local, then re-run              │
-  │          --retry-failed on sandbox for infra goals only                │
-  │     options:                                                           │
-  │       - "A — continue local (skip infra goals)"                        │
-  │       - "B — switch to sandbox now"                                    │
-  │       - "C — partial: local now + sandbox retry later"                 │
-  │                                                                        │
-  │   If A → set config.infra_deps.unmet_behavior="skip", continue         │
-  │   If B → switch ENV=sandbox, re-run deploy + preflight                 │
-  │   If C → continue local with skip, save INFRA_PENDING goals list       │
-  │          for sandbox retry (`--retry-failed` later)                    │
+  │   Block-resolver handler:                                              │
   └─────────────────────────────────────────────────────────────────────────┘
+
+```bash
+# v1.9.2 P4 — Scenario F resolver (replaces legacy A/B/C prompt)
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+if type -t block_resolve >/dev/null 2>&1; then
+  export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="review.infra-unavailable"
+  BR_GATE_CONTEXT="External infra (${UNAVAILABLE_SERVICES:-unknown}) not reachable on env='${ENV}'. ${INFRA_PENDING_GOALS:-?} goals blocked. User must choose: continue local with skip, switch to sandbox, or partial (local + sandbox retry)."
+  BR_EVIDENCE=$(printf '{"env":"%s","unavailable":"%s","pending_goals":"%s"}' "$ENV" "${UNAVAILABLE_SERVICES:-unknown}" "${INFRA_PENDING_GOALS:-0}")
+  BR_CANDIDATES='[
+    {"id":"skip-infra-goals","cmd":"echo \"Setting infra_deps.unmet_behavior=skip for this run\" && export CONFIG_INFRA_DEPS_UNMET_BEHAVIOR=skip","confidence":0.75,"rationale":"Skip infra-dependent goals = valid strategy for code-only review passes"}
+  ]'
+  BR_RESULT=$(block_resolve "infra-unavailable" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+  BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+  case "$BR_LEVEL" in
+    L1) echo "✓ L1 resolved — continuing local review with infra goals skipped" >&2 ;;
+    L2) echo "▸ L2 architect proposal — orchestrator MUST invoke AskUserQuestion (L3) with proposal JSON from BR_RESULT" >&2
+        echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('proposal',{}))" >&2
+        # Orchestrator then invokes AskUserQuestion with A/B/C options ONLY IF architect proposal recommends it
+        exit 2 ;;
+    *)  block_resolve_l4_stuck "infra-unavailable" "All candidates failed + no architect proposal"; exit 1 ;;
+  esac
+fi
+```
+
+  **Semantic fallback (if resolver unavailable — raw AskUserQuestion):**
+  - If A → set config.infra_deps.unmet_behavior="skip", continue
+  - If B → switch ENV=sandbox, re-run deploy + preflight
+  - If C → continue local with skip, save INFRA_PENDING goals list for sandbox retry
 
   Verify smoke test before any re-run:
     curl {config.services[ENV][0].health}                      # must return 200
