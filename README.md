@@ -13,10 +13,18 @@ Config-driven AI development pipeline for Claude Code, Codex CLI, and Gemini CLI
 ### Project-level setup (once per project / milestone)
 
 ```
-/vg:init      →  /vg:project    →  /vg:roadmap   →  /vg:map          →  /vg:prioritize
-(config)        (PROJECT.md,      (ROADMAP.md,     (optional —          (which phase
-                REQUIREMENTS)      phase list)     graphify codebase)    to work next)
+/vg:project       →  /vg:roadmap   →  /vg:map          →  /vg:prioritize
+(7-round            (ROADMAP.md,     (optional —          (which phase
+discussion →        phase list,      graphify              to work next)
+PROJECT.md +        soft drift       codebase)
+FOUNDATION.md +     warning)
+vg.config.md
+ATOMIC)
 ```
+
+**v1.6.0 entry point change**: `/vg:project` is the single entry point. It captures your free-form description, derives FOUNDATION (8 dimensions: platform/runtime/data/auth/hosting/distribution/scale/compliance), then auto-generates `vg.config.md`. Config is downstream of foundation, not upstream.
+
+`/vg:init` is preserved as a backward-compat soft alias → `/vg:project --init-only`.
 
 ### Per-phase execution (7 steps)
 
@@ -64,9 +72,15 @@ Update flow: query GitHub API → download tarball + SHA256 verify → 3-way mer
 ### Project setup
 | Command | Purpose |
 |---------|---------|
-| `/vg:init` | Interactive config generation → `.claude/vg.config.md` |
-| `/vg:project` | Define PROJECT.md + REQUIREMENTS.md |
-| `/vg:roadmap` | Derive phases from REQUIREMENTS.md → ROADMAP.md |
+| `/vg:project` | **ENTRY POINT** — 7-round discussion → PROJECT.md + FOUNDATION.md + vg.config.md (atomic) |
+| `/vg:project --view` | Pretty-print current artifacts (read-only) |
+| `/vg:project --update` | MERGE-preserving update of existing artifacts |
+| `/vg:project --milestone` | Append new milestone (foundation untouched) |
+| `/vg:project --rewrite` | Destructive reset with backup → `.archive/{ts}/` |
+| `/vg:project --migrate` | Extract FOUNDATION.md from legacy v1 PROJECT.md + codebase scan |
+| `/vg:project --init-only` | Re-derive vg.config.md from existing FOUNDATION.md |
+| `/vg:init` | [DEPRECATED] Soft alias → `/vg:project --init-only` |
+| `/vg:roadmap` | Derive phases from PROJECT + FOUNDATION → ROADMAP.md (soft drift warning) |
 | `/vg:map` | Rebuild graphify knowledge graph → `codebase-map.md` |
 | `/vg:prioritize` | Rank phases by impact + readiness |
 

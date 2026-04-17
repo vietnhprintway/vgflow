@@ -13,11 +13,18 @@ Pipeline phát triển AI config-driven cho Claude Code, Codex CLI và Gemini CL
 ### Tầng dự án (chạy 1 lần khi khởi tạo project / milestone)
 
 ```
-/vg:init      →  /vg:project    →  /vg:roadmap   →  /vg:map          →  /vg:prioritize
-(config)         (PROJECT.md,     (ROADMAP.md,     (tuỳ chọn —          (phase nào
-                 REQUIREMENTS)     danh sách       graphify codebase)    làm tiếp theo)
-                                   phases)
+/vg:project       →  /vg:roadmap   →  /vg:map          →  /vg:prioritize
+(thảo luận           (ROADMAP.md,     (tuỳ chọn —          (phase nào
+7 vòng →             danh sách        graphify              làm tiếp theo)
+PROJECT.md +         phases, soft     codebase)
+FOUNDATION.md +      drift warning)
+vg.config.md
+ATOMIC)
 ```
+
+**v1.6.0 thay đổi entry point**: `/vg:project` là entry point duy nhất. Nó capture mô tả tự nhiên của user, derive FOUNDATION (8 chiều: platform/runtime/data/auth/hosting/distribution/scale/compliance), rồi auto-generate `vg.config.md`. Config là downstream của foundation, không phải upstream.
+
+`/vg:init` còn giữ làm soft alias backward-compat → `/vg:project --init-only`.
 
 ### Tầng phase (7 bước)
 
@@ -65,9 +72,15 @@ Luồng update: query GitHub API → tải tarball + verify SHA256 → 3-way mer
 ### Khởi tạo project
 | Command | Mục đích |
 |---------|---------|
-| `/vg:init` | Interactive config generation → `.claude/vg.config.md` |
-| `/vg:project` | Define PROJECT.md + REQUIREMENTS.md |
-| `/vg:roadmap` | Derive phases từ REQUIREMENTS.md → ROADMAP.md |
+| `/vg:project` | **ENTRY POINT** — Thảo luận 7 vòng → PROJECT.md + FOUNDATION.md + vg.config.md (atomic) |
+| `/vg:project --view` | In hiện trạng artifacts (read-only) |
+| `/vg:project --update` | Update artifacts hiện có, MERGE preserve phần không touch |
+| `/vg:project --milestone` | Append milestone mới (foundation untouched) |
+| `/vg:project --rewrite` | Reset destructive với backup → `.archive/{ts}/` |
+| `/vg:project --migrate` | Extract FOUNDATION.md từ legacy v1 PROJECT.md + scan codebase |
+| `/vg:project --init-only` | Re-derive vg.config.md từ FOUNDATION.md hiện có |
+| `/vg:init` | [DEPRECATED] Soft alias → `/vg:project --init-only` |
+| `/vg:roadmap` | Derive phases từ PROJECT + FOUNDATION → ROADMAP.md (soft drift warning) |
 | `/vg:map` | Rebuild graphify knowledge graph → `codebase-map.md` |
 | `/vg:prioritize` | Rank phases theo impact + readiness |
 

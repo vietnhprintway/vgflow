@@ -2,6 +2,73 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.6.0] - 2026-04-17
+
+### Changed (BREAKING UX — entry point flow rebuild)
+
+User feedback identified chicken-and-egg in old pipeline: `/vg:init` ran first asking for tech config (build commands, ports, framework markers) before `/vg:project` defined what the project is. Greenfield projects had to guess; brownfield felt redundant.
+
+**v1.6.0 swaps the order: `/vg:project` is now the entry point.** It captures user's natural-language description, derives FOUNDATION (8 platform/runtime/data/auth/hosting/distribution/scale/compliance dimensions), then auto-generates `vg.config.md` from foundation. Config is downstream of foundation, not upstream.
+
+### Added — `/vg:project` 7-round adaptive discussion + 6 modes
+
+- **First-time flow** (7 rounds, adaptive — skip rounds without ambiguity, never skip Round 4 high-cost gate):
+  1. Capture (free-form description or template-guided)
+  2. Parse + present overview table (8 dimensions with status flags ✓/?/⚠/🔒)
+  3. Targeted dialog on `?` ambiguous items
+  4. **High-cost confirmation gate** (mandatory — platform/backend/deploy/DB)
+  5. Constraints fill-in (scale/latency/compliance/budget/team)
+  6. Auto-derive `vg.config.md` from foundation (90% silent, only `<ASK>` fields prompted)
+  7. Atomic write 3 files: `PROJECT.md` + `FOUNDATION.md` + `vg.config.md`
+
+- **Re-run modes** (when artifacts exist):
+  - `--view` — Pretty-print, read-only (default safe)
+  - `--update` — MERGE-preserving update (covers refine + amend, adaptive scope)
+  - `--milestone` — Append milestone (foundation untouched, drift warning if shift)
+  - `--rewrite` — Destructive reset with backup → `.archive/{ts}/`
+  - `--migrate` — Extract FOUNDATION.md from legacy v1 PROJECT.md + codebase scan
+  - `--init-only` — Re-derive vg.config.md from existing FOUNDATION.md
+
+- **Resumable drafts** — `.planning/.project-draft.json` checkpointed every round, interrupt-safe.
+
+### Added — `/vg:_shared/foundation-drift.md` (soft warning helper)
+
+Wired into `/vg:roadmap` (step 4b) and `/vg:add-phase` (step 1b). Scans phase title/description for keywords (mobile/iOS/Android/serverless/desktop/embedded/...) that suggest platform shift away from FOUNDATION.md. Soft warning only — does NOT block. User proceeds with acknowledgment, drift entry logged for milestone audit. Silence with `--no-drift-check`.
+
+### Changed — `/vg:init` is now SOFT ALIAS
+
+`/vg:init` no longer creates `vg.config.md` from scratch. It detects state and redirects:
+
+| State | Redirect |
+|-------|----------|
+| No artifacts | Suggest `/vg:project` (first-time) |
+| Legacy PROJECT.md only | Suggest `/vg:project --migrate` |
+| FOUNDATION.md present | Confirm + auto-chain `/vg:project --init-only` |
+
+Backward-compat preserved — old workflows still work, just with redirect notice.
+
+### Files
+
+- **NEW** `commands/vg/_shared/foundation-drift.md` (drift detection helper)
+- **REWRITTEN** `commands/vg/project.md` (~520 lines — 7-round + 6 modes + atomic writes)
+- **REWRITTEN** `commands/vg/init.md` (~80 lines — soft alias only)
+- **MODIFIED** `commands/vg/roadmap.md` (+ step 4b foundation drift check)
+- **MODIFIED** `commands/vg/add-phase.md` (+ step 1b foundation drift check)
+
+### Migration
+
+Existing projects with `PROJECT.md` but no `FOUNDATION.md`:
+```
+/vg:project --migrate
+```
+Auto-extracts foundation from existing PROJECT.md + codebase scan, slim down PROJECT.md, backup v1 to `.planning/.archive/{ts}/`.
+
+### Known limitations
+
+- 7-round flow is heavy by design (high-precision projects). No `--quick` mode in this release.
+- Drift detection regex-based (keyword match), not semantic. May miss subtle shifts (e.g., "Progressive Web App" with PWA-specific tooling).
+- Codex skill (`vg-project`) NOT updated in this release — Codex parity will land in v1.6.1+.
+
 ## [1.5.1] - 2026-04-17
 
 ### Added — Codex parity for UNREACHABLE triage (v1.4.0 backport to Codex skills)

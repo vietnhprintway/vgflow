@@ -171,6 +171,31 @@ Phase 4 depends on: None     → can start anytime (parallel with others)
 ```
 </step>
 
+<step name="4b_foundation_drift_check">
+## Step 4b: Foundation drift check (soft warning, added v1.6.0)
+
+Before presenting roadmap to user, scan all proposed phase titles + descriptions against FOUNDATION.md platform. If any phase introduces a keyword that hints at platform shift away from current foundation, surface a soft warning. Does NOT block — user proceeds, drift logged for milestone audit.
+
+```bash
+# Source helper from _shared/foundation-drift.md (conceptual — inline in practice)
+PHASE_DIR=".planning"  # roadmap-level, not phase-specific
+FOUNDATION_FILE=".planning/FOUNDATION.md"
+
+if [ -f "$FOUNDATION_FILE" ]; then
+  # Concatenate all proposed phase titles + descriptions for scan
+  SCAN_TEXT=$(${PYTHON_BIN:-python3} -c "
+import json, sys
+phases = $(echo "$PROPOSED_PHASES_JSON")  # whatever variable held step 3 output
+print(' '.join(p.get('name','') + ' ' + p.get('rationale','') for p in phases))
+" 2>/dev/null || echo "")
+  foundation_drift_check "$SCAN_TEXT" "roadmap:proposed-phases"
+fi
+# Always proceed regardless of warning (soft gate)
+```
+
+Skip silently if FOUNDATION.md doesn't exist (legacy projects pre-v1.6.0). Use `--no-drift-check` to silence.
+</step>
+
 <step name="5_present_to_user">
 ## Step 5: Present Proposed Phases to User
 

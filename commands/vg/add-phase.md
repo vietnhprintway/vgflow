@@ -122,6 +122,22 @@ AskUserQuestion:
 Store: `$DEPENDS_ON[]`
 </step>
 
+<step name="1b_foundation_drift_check">
+## Step 1b: Foundation drift check (soft warning, added v1.6.0)
+
+Scan new phase title + requirements text for keywords hint platform shift away from FOUNDATION.md. Soft warning only — does NOT block.
+
+```bash
+FOUNDATION_FILE=".planning/FOUNDATION.md"
+if [ -f "$FOUNDATION_FILE" ]; then
+  SCAN_TEXT="${PHASE_NAME} ${SELECTED_REQS[*]}"
+  # Source helper from _shared/foundation-drift.md (conceptual)
+  foundation_drift_check "$SCAN_TEXT" "add-phase:${PHASE_NAME}"
+fi
+# Continue regardless. Use --no-drift-check to silence.
+```
+</step>
+
 <step name="2_calculate_phase_number">
 ## Step 2: Calculate phase number
 
