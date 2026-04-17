@@ -808,8 +808,35 @@ Phase 1 Code Scan:
 ```bash
 if [ "$GRAPHIFY_ACTIVE" != "true" ]; then
   echo "ℹ Graphify not available — skipping Phase 1.5"
+  echo "RIPPLE_SKIPPED=true" > "${PHASE_DIR}/uat-ripples.txt"
+  echo "RIPPLE_SKIP_REASON=graphify-inactive" >> "${PHASE_DIR}/uat-ripples.txt"
   touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"
   # skip to Phase 2
+fi
+```
+
+**⛔ BUG #3 fix (2026-04-18): Stale graphify check + auto-rebuild before ripple analysis.**
+
+Without this, ripple analysis runs against stale graph → reports "0 callers affected"
+because graph doesn't know about new callers added since last build. Falsely safe verdict.
+
+```bash
+if [ "$GRAPHIFY_ACTIVE" = "true" ]; then
+  GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
+  COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+  STALE_THRESHOLD="${GRAPHIFY_STALE_WARN:-50}"
+
+  echo "Review Phase 1.5: graphify ${COMMITS_SINCE} commits since last build (threshold: ${STALE_THRESHOLD})"
+
+  # Always rebuild before ripple — review is the SAFETY NET, must be accurate
+  if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
+    echo "Rebuilding graphify for accurate ripple analysis..."
+    ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1 | tail -3
+    if type -t telemetry_emit >/dev/null 2>&1; then
+      telemetry_emit "graphify_auto_rebuild" "{\"trigger\":\"review-phase1_5\",\"commits_since\":${COMMITS_SINCE},\"phase\":\"${PHASE_NUMBER}\"}"
+    fi
+    echo "Graphify rebuilt — proceeding with ripple analysis."
+  fi
 fi
 ```
 

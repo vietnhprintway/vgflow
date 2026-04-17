@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.12.5] - 2026-04-18
+
+### Fixed (graphify integrity audit)
+- **BUG #1: blueprint 2a5 missing --graphify-graph flag** — `build-caller-graph.py` was called without graphify, falling back to grep-only (misses path-alias imports like `@/hooks/X`, misses cross-monorepo callers). Now passes `--graphify-graph $GRAPHIFY_GRAPH_PATH` when active + warns if enrichment unexpectedly fails.
+- **BUG #2: blueprint never auto-rebuilt graphify** — only `/vg:build` did. Planner planned against stale graph (we observed 46h / 140 commits stale at audit) → references symbols that no longer exist. Now mirrors build's auto-rebuild block at start of step 2a (before planner spawn).
+- **BUG #3: review Phase 1.5 ripple ran on stale graph** — no rebuild check before ripple analysis → false "0 callers affected" verdicts. Now always rebuilds before ripple (review = safety net, must be accurate).
+- **BUG #4: stale warning was fire-and-forget** — `echo "⚠ Graph stale"` only, no telemetry, no block. Now emits `graphify_stale_detected` telemetry event + adds `graphify.block_on_stale: false` config knob (opt-in fail-closed mode).
+
+### Added
+- **graphify_auto_rebuild telemetry event** — emitted by blueprint step 2a + review Phase 1.5 when auto-rebuild fires. Consumable by `/vg:health` and `/vg:telemetry`.
+- **graphify.block_on_stale config knob** — when `true`, config-loader exits 1 if graph stale (commits_since > staleness_warn_commits). Default `false` for backward compat.
+
+### Audit doc
+`.vg/GRAPHIFY-AUDIT.md` — full per-consumer audit (build / blueprint / review / accept / scope / migrate) with severity-ranked fix priority. Surfaces 6 issues remaining as MED/LOW priority for v1.12.6+:
+- GAP: scope round 2 (technical) doesn't query graph for module impact
+- GAP: /vg:health doesn't surface graphify staleness section
+- LOW: planner-rules.md should require `<edits-*>` annotations on every code-touching task (Phase 13 retro: 22 tasks, only 3 had edits annotations → 19 tasks had zero blast-radius coverage)
+
+### User-reported issue
+"dữ liệu graphify thì bị out date, rất nguy hiểm" — confirmed: graph was 46 hours / 140 commits stale during phase 13 blueprint, planner had no graphify context at all (just grep). All 4 critical+high fixes patch the silent-staleness anti-pattern.
+
 ## [1.12.4] - 2026-04-18
 
 ### Added

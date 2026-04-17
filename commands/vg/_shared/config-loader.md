@@ -48,13 +48,26 @@ GRAPHIFY_FALLBACK=$(awk '/^graphify:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /fal
 GRAPHIFY_STALE_WARN=$(awk '/^graphify:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /staleness_warn_commits:/{print $2; exit}' .claude/vg.config.md 2>/dev/null || echo "50")
 
 GRAPHIFY_ACTIVE="false"
+GRAPHIFY_BLOCK_ON_STALE=$(awk '/^graphify:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /block_on_stale:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "false")
 if [ "$GRAPHIFY_ENABLED" = "true" ] && [ -f "$GRAPHIFY_GRAPH_PATH" ]; then
   GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
   if [ -n "$GRAPH_BUILD_EPOCH" ]; then
     COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+    GRAPH_AGE_HOURS=$(( ($(date +%s) - GRAPH_BUILD_EPOCH) / 3600 ))
     if [ "${COMMITS_SINCE:-0}" -gt "${GRAPHIFY_STALE_WARN:-50}" ] 2>/dev/null; then
-      echo "⚠ Graph stale: $COMMITS_SINCE commits since last build"
-      echo "  Rebuild: cd $REPO_ROOT && ${PYTHON_BIN} -m graphify update ."
+      echo "⚠ GRAPHIFY STALE: ${COMMITS_SINCE} commits + ${GRAPH_AGE_HOURS}h old (threshold: ${GRAPHIFY_STALE_WARN})"
+      echo "  Auto-rebuild: ${PYTHON_BIN} -c \"from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))\""
+      echo "  Or run /vg:map (full rebuild + codebase-map)"
+      # ⛔ BUG #4 fix (2026-04-18): emit telemetry so /vg:health + /vg:telemetry can surface
+      if type -t telemetry_emit >/dev/null 2>&1; then
+        telemetry_emit "graphify_stale_detected" "{\"commits_since\":${COMMITS_SINCE},\"age_hours\":${GRAPH_AGE_HOURS},\"threshold\":${GRAPHIFY_STALE_WARN}}"
+      fi
+      # Optional fail-closed mode (config knob: graphify.block_on_stale: true)
+      if [ "$GRAPHIFY_BLOCK_ON_STALE" = "true" ]; then
+        echo "⛔ block_on_stale=true — refusing to proceed with stale graph."
+        echo "  Run /vg:map then retry, OR set graphify.block_on_stale: false in vg.config.md to make this advisory."
+        exit 1
+      fi
     fi
   fi
   GRAPHIFY_ACTIVE="true"

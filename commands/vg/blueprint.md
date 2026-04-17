@@ -208,13 +208,102 @@ echo "CONTEXT.md: ${DECISION_COUNT} decisions, ${HAS_ENDPOINTS} with endpoints, 
 
 Create execution plans using VG-native planner (self-contained, no GSD delegation).
 
-Spawn planner agent with VG-specific rules:
+**⛔ BUG #2 fix (2026-04-18): Auto-rebuild graphify BEFORE planner spawn.**
+
+Mirrors `vg:build` step 4 auto-rebuild logic. Without this, planner plans against
+stale graph (we observed 46h / 140 commits stale at audit) → planner references
+symbols that no longer exist → tasks fabricated → executor fails or produces wrong code.
+
+```bash
+if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+  GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
+  COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+  STALE_THRESHOLD="${GRAPHIFY_STALE_WARN:-50}"
+
+  echo "Blueprint: graphify ${COMMITS_SINCE} commits since last build (threshold: ${STALE_THRESHOLD})"
+
+  if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
+    echo "Rebuilding graphify for fresh planner context..."
+    ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1 | tail -3
+    # Telemetry — emit graphify_auto_rebuild event
+    if type -t telemetry_emit >/dev/null 2>&1; then
+      telemetry_emit "graphify_auto_rebuild" "{\"trigger\":\"blueprint\",\"commits_since\":${COMMITS_SINCE},\"phase\":\"${PHASE_NUMBER}\"}"
+    fi
+    echo "Graphify rebuilt — fresh structural context for planner."
+  else
+    echo "Graphify: up to date (0 commits since last build)"
+  fi
+fi
+```
+
+**Pre-spawn graphify context build (MANDATORY when `$GRAPHIFY_ACTIVE=true`):**
+
+Before spawning the planner, extract structural context from graphify so the planner can
+plan with blast-radius awareness instead of grep-only guesses. Without this, planners
+produce `<edits-*>` annotations missing 60-90% of true downstream impact.
+
+```bash
+GRAPHIFY_BRIEF="${PHASE_DIR}/.graphify-brief.md"
+
+if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+  # 1. God nodes (orchestrator MUST query via mcp__graphify__god_nodes — Claude tool call):
+  #    Save top-20 god nodes ordered by community_size + edge_count. These are
+  #    "touch with care" sentinels — planner MUST flag any task editing them.
+
+  # 2. Communities relevant to phase:
+  #    Grep CONTEXT.md endpoints + file paths → for each, query
+  #    mcp__graphify__get_node + get_neighbors → collect community_id set.
+  #    Save community summaries.
+
+  # 3. Existing-symbol map for endpoints in CONTEXT (avoid re-introducing names):
+  #    Grep CONTEXT.md "GET /api/..." patterns → query mcp__graphify__query_graph
+  #    {"node_type":"route","path":"/api/v1/auth/login"} → emit "EXISTS at file:line"
+  #    so planner annotates as REUSED, not NEW.
+
+  # 4. Brief format (markdown, ≤150 lines, planner reads as injected context):
+  cat > "$GRAPHIFY_BRIEF" <<EOF
+# Graphify brief — Phase ${PHASE_NUMBER} structural context
+
+Generated from graphify-out/graph.json (${GRAPH_NODE_COUNT} nodes, ${GRAPH_EDGE_COUNT} edges, mtime ${GRAPH_MTIME_HUMAN}).
+
+## God nodes (touch with care)
+$GOD_NODES_TABLE
+
+## Phase-relevant communities
+$COMMUNITY_TABLE
+
+## Existing endpoints/symbols (REUSE, don't re-create)
+$EXISTING_SYMBOLS_TABLE
+
+## Sibling files (likely co-edited)
+$SIBLINGS_TABLE
+EOF
+else
+  # Fallback: emit a stub brief explaining graphify unavailable
+  cat > "$GRAPHIFY_BRIEF" <<EOF
+# Graphify brief — UNAVAILABLE
+Graph not built or stale. Planner falls back to grep-only structural awareness.
+Run: cd \$REPO_ROOT && \${PYTHON_BIN} -m graphify update .
+EOF
+fi
+```
+
+**Orchestrator note:** mcp__graphify__god_nodes / get_node / get_neighbors / query_graph
+are Claude TOOL CALLS, not bash commands. Invoke directly via tool use after the
+bash block computes the variable inputs (CONTEXT endpoint list, CONTEXT file path list).
+DO NOT shell-out to graphify CLI — MCP tool round-trip is the supported path.
+
+Spawn planner agent with VG-specific rules + graphify brief:
 ```
 Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
   prompt: |
     <vg_planner_rules>
     @.claude/commands/vg/_shared/vg-planner-rules.md
     </vg_planner_rules>
+
+    <graphify_brief>
+    @${PHASE_DIR}/.graphify-brief.md
+    </graphify_brief>
 
     <specs>
     @${PHASE_DIR}/SPECS.md
@@ -238,9 +327,21 @@ Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
     contract_format: ${config.contract_format.type}
     phase: ${PHASE_NUMBER}
     phase_dir: ${PHASE_DIR}
+    graphify_active: ${GRAPHIFY_ACTIVE}
     </config>
 
     Create PLAN.md for phase ${PHASE_NUMBER}. Follow vg-planner-rules exactly.
+
+    GRAPHIFY USAGE (when graphify_active=true):
+    - graphify_brief lists god nodes + existing symbols + sibling files
+    - For EVERY task touching code, set <edits-*> attributes (REQUIRED, not optional)
+      so the post-plan caller-graph script (step 2a5) can compute blast radius
+    - When task touches a god node listed in brief, prefix description with
+      "BLAST-RADIUS: god node — ripple to N callers expected" and include
+      mitigation note (gradual rollout / feature flag / regression suite)
+    - When task lists an endpoint in <edits-endpoint>, check brief's existing
+      symbols table — if found, mark as REUSED-MODIFY not NEW-CREATE
+
     Output: ${PHASE_DIR}/PLAN.md with waves, task attributes, goal coverage.
 ```
 
@@ -396,19 +497,39 @@ Build `.callers.json` — maps each PLAN task's `<edits-*>` symbols to all downs
 
 ```bash
 if [ "${config.semantic_regression.enabled:-true}" = "true" ]; then
+  # ⛔ BUG #1 fix (2026-04-18): MUST pass --graphify-graph when active.
+  # Without flag, script falls back to grep-only (misses path-alias imports
+  # like `@/hooks/X`, misses cross-monorepo symbol callers).
+  GRAPHIFY_FLAG=""
+  if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+    GRAPHIFY_FLAG="--graphify-graph $GRAPHIFY_GRAPH_PATH"
+  fi
+
   ${PYTHON_BIN} .claude/scripts/build-caller-graph.py \
     --phase-dir "${PHASE_DIR}" \
     --config .claude/vg.config.md \
+    $GRAPHIFY_FLAG \
     --output "${PHASE_DIR}/.callers.json"
 
   # Inject per-task warnings into PLAN.md listing downstream callers
   # Planner should ensure tasks updating shared symbols know their blast radius
   CALLER_COUNT=$(jq '.affected_callers | length' "${PHASE_DIR}/.callers.json")
-  echo "Semantic regression: tracked ${CALLER_COUNT} downstream callers across ${PHASE_DIR}/.callers.json"
+  TOOLS_USED=$(jq -r '.tools_used | join(",")' "${PHASE_DIR}/.callers.json")
+  echo "Semantic regression: tracked ${CALLER_COUNT} downstream callers (tools: ${TOOLS_USED})"
+
+  # Sanity check: if graphify active but tools_used doesn't include 'graphify',
+  # something went wrong — graph file unreadable or schema mismatch.
+  if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ] && ! echo "$TOOLS_USED" | grep -q graphify; then
+    echo "⚠ GRAPHIFY ENRICHMENT FAILED — graph active but caller-graph used grep-only."
+    echo "  Inspect: ${PHASE_DIR}/.callers.json + check graphify-out/graph.json validity"
+    echo "  Run: ${PYTHON_BIN} -c 'import json; json.load(open(\"$GRAPHIFY_GRAPH_PATH\"))'"
+  fi
 fi
 ```
 
 Planner should convert each warning into task annotations: `<edits-schema>X</edits-schema>` so the graph can track changes reliably.
+
+**⚠ Recurring problem (Phase 13 retro):** when planner produces 22 tasks but only 3 have `<edits-*>` annotations, the caller script can only compute blast-radius for those 3. The other 19 silently get zero callers — appearing safe when they may have many. See `vg-planner-rules.md` for the rule that EVERY code-touching task MUST have at least one `<edits-*>` attribute.
 </step>
 
 <step name="2b_contracts">
