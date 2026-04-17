@@ -187,6 +187,50 @@ if [ -n "$DIRTY" ]; then
   echo "⚠ Working tree has uncommitted changes (may be intentional):"
   echo "$DIRTY" | sed 's/^/   /'
 fi
+
+# ⛔ HARD GATE (added v1.5.1 — codex parity): UNREACHABLE triage gate
+# Block accept if /vg:review (Claude or Codex) produced bug-this-phase / cross-phase-pending / scope-amend verdicts.
+TRIAGE_JSON="${PHASE_DIR}/.unreachable-triage.json"
+if [ -f "$TRIAGE_JSON" ]; then
+  BLOCKING_LIST=$(${PYTHON_BIN} - "$TRIAGE_JSON" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+blocking = []
+for gid, v in data.get("verdicts", {}).items():
+    if v.get("blocks_accept"):
+        blocking.append(f"{gid}|{v['verdict']}|{v['title'][:80]}")
+print("\n".join(blocking))
+PY
+)
+  if [ -n "$BLOCKING_LIST" ]; then
+    BLOCKING_COUNT=$(echo "$BLOCKING_LIST" | wc -l)
+    echo ""
+    echo "⛔ \$vg-accept BLOCKED — ${BLOCKING_COUNT} UNREACHABLE goals need resolution before phase ${PHASE_NUMBER} can ship:"
+    echo ""
+    echo "$BLOCKING_LIST" | while IFS='|' read -r gid verdict title; do
+      echo "  • ${gid} [${verdict}] — ${title}"
+    done
+    echo ""
+    echo "See ${PHASE_DIR}/UNREACHABLE-TRIAGE.md for evidence + required actions."
+    echo ""
+    echo "Fix paths by verdict:"
+    echo "  bug-this-phase       → \$vg-build ${PHASE_NUMBER} --gaps-only"
+    echo "  cross-phase-pending  → wait for owning phase to reach 'accepted', OR \$vg-amend"
+    echo "  scope-amend          → \$vg-amend ${PHASE_NUMBER}"
+    echo ""
+    if [[ "$ARGUMENTS" =~ --allow-unreachable ]]; then
+      REASON=$(echo "$ARGUMENTS" | grep -oE -- "--reason='[^']+'" | sed "s/--reason='//; s/'$//")
+      [ -z "$REASON" ] && { echo "⛔ --allow-unreachable requires --reason='<why shipping with known gaps>'"; exit 1; }
+      echo "⚠ --allow-unreachable set — reason: ${REASON}"
+      echo "unreachable-accept: phase=${PHASE_NUMBER} reason=\"${REASON}\" ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+      echo "$BLOCKING_LIST" > "${VG_TMP}/uat-unreachable-debt.txt"
+      echo "$REASON" > "${VG_TMP}/uat-unreachable-reason.txt"
+    else
+      exit 1
+    fi
+  fi
+fi
 ```
 
 ## Step 4: Build UAT Checklist (5 sections — from VG artifacts)

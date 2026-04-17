@@ -1162,6 +1162,32 @@ All thresholds met → PASS
 ## Gate: {PASS|BLOCK}
 ```
 
+### 4e: UNREACHABLE Triage (added v1.5.1 — codex parity with /vg:review)
+
+If GOAL-COVERAGE-MATRIX has any `UNREACHABLE` goal, classify each into one of 4 verdicts. UNREACHABLE alone is NOT a final verdict — it must resolve to `cross-phase`, `cross-phase-pending`, `bug-this-phase`, or `scope-amend`. Triage produces `UNREACHABLE-TRIAGE.md` + `.unreachable-triage.json`. Hard gate at vg-accept.
+
+Run the same Python helper as Claude `/vg:review` step `unreachable_triage`. Implementation in `${HOME}/.claude/commands/vg/_shared/unreachable-triage.md` (when running under Codex, fetch from local clone or inline the helper). Codex shell:
+
+```bash
+PHASE_DIR=".planning/phases/{phase-dir}"
+PHASE_NUMBER="{phase}"
+
+# Source the shared helper bash function (or inline the Python below)
+python3 - "$PHASE_DIR/GOAL-COVERAGE-MATRIX.md" "$PHASE_DIR" "$PHASE_NUMBER" "$(cd "$PHASE_DIR/../.." && pwd)" "$PHASE_DIR/UNREACHABLE-TRIAGE.md" "$PHASE_DIR/.unreachable-triage.json" <<'PY'
+# (Same Python body as in commands/vg/_shared/unreachable-triage.md → triage_unreachable_goals)
+# Extracts keywords (route paths, PascalCase symbols, quoted UI labels)
+# Scans .planning/phases/*/{PLAN,SUMMARY,RUNTIME-MAP,TEST-GOALS,SPECS,CONTEXT,API-CONTRACTS}.{md,json}
+# Verifies cross-phase via owning RUNTIME-MAP.json (proof of reachability, not just claim)
+# Verdicts: cross-phase / cross-phase-pending / bug-this-phase / scope-amend
+PY
+```
+
+**Triage does NOT block review exit.** It produces the report; user reviews + acts before vg-accept (which DOES enforce the gate).
+
+Add to git commit in step "write_artifacts":
+- `${PHASE_DIR}/UNREACHABLE-TRIAGE.md` (if exists)
+- `${PHASE_DIR}/.unreachable-triage.json` (if exists)
+
 ### CrossAI Review (skip in Codex)
 Codex does not invoke CrossAI CLIs. If CrossAI review is needed, run in Claude:
   /vg:review {phase} --crossai-only
