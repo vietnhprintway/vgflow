@@ -1,0 +1,344 @@
+# shellcheck shell=bash
+# Block Resolver — bash function library (v1.9.1 R2+R4)
+# Companion runtime for gate blocks in review / test / build / accept.
+#
+# Purpose:
+#   Replace the anti-pattern "echo BLOCK; print options A/B/C; exit 1"
+#   with a 4-level resolver:
+#     L1 (inline)    — try auto-fix candidates at the gate, pass rationalization-guard
+#     L2 (architect) — spawn Haiku subagent with FULL phase context, returns structured proposal
+#     L3 (present)   — show proposal to user via AskUserQuestion
+#     L4 (escalate)  — only when L1+L2 exhausted AND user rejects
+#
+# Exposed functions:
+#   - block_resolve GATE_ID GATE_CONTEXT EVIDENCE_JSON [PHASE_DIR] [FIX_CANDIDATES_JSON]
+#   - _collect_phase_context PHASE_DIR               (stdout: structured context blob)
+#   - _block_resolve_l1_inline ...                   (try fix candidates + ratguard)
+#   - _block_resolve_l2_architect ...                (emits prompt file path on fd 3)
+#
+# Telemetry events emitted:
+#   - block_self_resolved_inline    (L1 succeeds)
+#   - block_architect_proposed      (L2 returns proposal)
+#   - block_user_chose_proposal     (L3 user applied proposal)
+#   - block_truly_stuck             (L4 fallback — user rejected everything)
+
+# Check if resolver enabled (config-driven, default ON)
+block_resolver_enabled() {
+  [ "${CONFIG_BLOCK_RESOLVER_ENABLED:-true}" = "true" ]
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# L1 — Inline auto-fix
+# ═══════════════════════════════════════════════════════════════════════
+# FIX_CANDIDATES_JSON format:
+#   [{"id":"retry-scan","cmd":"<shell>","confidence":0.8,"rationale":"..."},
+#    {"id":"reclassify","cmd":"<shell>","confidence":0.6,"rationale":"..."}]
+#
+# For each candidate with confidence >= 0.7, call rationalization-guard with
+# gate_id + skip_reason = candidate.rationale. If PASS, execute cmd.
+# If cmd exits 0, L1 succeeded. Otherwise try next candidate.
+#
+# Returns on stdout (single JSON line):
+#   {"resolved":true, "candidate_id":"<id>", "evidence":"<tail output>"}
+#   {"resolved":false, "reason":"<why all candidates failed>"}
+_block_resolve_l1_inline() {
+  local gate_id="$1"
+  local gate_context="$2"
+  local candidates_json="${3:-[]}"
+  local threshold="${CONFIG_BLOCK_L1_CONFIDENCE_THRESHOLD:-0.7}"
+
+  if [ "$candidates_json" = "[]" ] || [ -z "$candidates_json" ]; then
+    echo '{"resolved":false,"reason":"no fix candidates provided"}'
+    return 1
+  fi
+
+  # Iterate candidates meeting threshold
+  local count
+  count=$(${PYTHON_BIN:-python3} -c "import json,sys; print(len(json.loads(sys.argv[1])))" "$candidates_json" 2>/dev/null || echo 0)
+
+  for i in $(seq 0 $((count - 1))); do
+    local cand_id cand_cmd cand_conf cand_rationale
+    cand_id=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1])[int(sys.argv[2])]['id'])" "$candidates_json" "$i" 2>/dev/null)
+    cand_cmd=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1])[int(sys.argv[2])]['cmd'])" "$candidates_json" "$i" 2>/dev/null)
+    cand_conf=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1])[int(sys.argv[2])]['confidence'])" "$candidates_json" "$i" 2>/dev/null)
+    cand_rationale=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1])[int(sys.argv[2])].get('rationale',''))" "$candidates_json" "$i" 2>/dev/null)
+
+    # Threshold check
+    if ! awk -v c="$cand_conf" -v t="$threshold" 'BEGIN{exit (c+0 >= t+0)?0:1}'; then
+      echo "  ↳ L1 skip candidate '${cand_id}' (confidence ${cand_conf} < ${threshold})" >&2
+      continue
+    fi
+
+    echo "  ↳ L1 try candidate '${cand_id}' (confidence ${cand_conf})" >&2
+
+    # Rationalization-guard check — prevent AI from rationalizing its own inline fix.
+    # If guard fn available, ESCALATE = skip this candidate (do not auto-execute).
+    if type -t rationalization_guard_check >/dev/null 2>&1; then
+      local rg_result verdict
+      rg_result=$(rationalization_guard_check "$gate_id" "$gate_context" "L1 inline fix: ${cand_rationale}" 2>/dev/null)
+      verdict=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1]).get('verdict',''))" "$rg_result" 2>/dev/null || echo "")
+      if [ "$verdict" = "ESCALATE" ]; then
+        echo "  ↳ L1 candidate '${cand_id}' blocked by rationalization-guard (ESCALATE)" >&2
+        continue
+      fi
+    fi
+
+    # Execute candidate command
+    local out rc
+    out=$(bash -c "$cand_cmd" 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+      # L1 succeeded
+      local evidence_tail
+      evidence_tail=$(echo "$out" | tail -c 400 | tr '\n' ' ' | tr -d '"')
+      printf '{"resolved":true,"candidate_id":"%s","evidence":"%s"}\n' "$cand_id" "$evidence_tail"
+      return 0
+    else
+      echo "  ↳ L1 candidate '${cand_id}' failed rc=${rc}" >&2
+    fi
+  done
+
+  echo '{"resolved":false,"reason":"all candidates failed or below confidence threshold"}'
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# _collect_phase_context — build structured input for L2 architect
+# ═══════════════════════════════════════════════════════════════════════
+# Reads SPECS / CONTEXT / PLAN / TEST-GOALS / SUMMARY / API-CONTRACTS /
+# RUNTIME-MAP / codebase test framework state. Concatenates with section
+# headers. Truncates each artifact to MAX_ARTIFACT_CHARS (default 6000)
+# to keep prompt tractable for Haiku.
+_collect_phase_context() {
+  local phase_dir="$1"
+  local max_chars="${CONFIG_BLOCK_ARCHITECT_MAX_ARTIFACT_CHARS:-6000}"
+  [ -d "$phase_dir" ] || { echo "PHASE_DIR_MISSING: $phase_dir"; return 1; }
+
+  _emit_artifact() {
+    local label="$1" path="$2"
+    if [ -f "$path" ]; then
+      echo "═══ ${label} (${path}) ═══"
+      head -c "$max_chars" "$path"
+      local size
+      size=$(wc -c < "$path" 2>/dev/null || echo 0)
+      [ "$size" -gt "$max_chars" ] && echo "... [truncated, total $size bytes]"
+      echo ""
+    fi
+  }
+
+  _emit_artifact "SPECS"         "${phase_dir}/SPECS.md"
+  _emit_artifact "CONTEXT"       "${phase_dir}/CONTEXT.md"
+  _emit_artifact "PLAN"          "${phase_dir}/PLAN.md"
+  _emit_artifact "TEST-GOALS"    "${phase_dir}/TEST-GOALS.md"
+  _emit_artifact "API-CONTRACTS" "${phase_dir}/API-CONTRACTS.md"
+  _emit_artifact "SUMMARY"       "${phase_dir}/SUMMARY.md"
+  _emit_artifact "RUNTIME-MAP"   "${phase_dir}/RUNTIME-MAP.json"
+  _emit_artifact "GOAL-COVERAGE" "${phase_dir}/GOAL-COVERAGE-MATRIX.md"
+  _emit_artifact "SANDBOX-TEST"  "${phase_dir}/SANDBOX-TEST.md"
+
+  # Codebase test framework state — quick probe
+  echo "═══ CODEBASE TEST FRAMEWORK STATE ═══"
+  if [ -f "${REPO_ROOT:-.}/package.json" ]; then
+    grep -E '"(test|test:|vitest|playwright|jest)"' "${REPO_ROOT:-.}/package.json" 2>/dev/null | head -10
+  fi
+  [ -f "${REPO_ROOT:-.}/playwright.config.ts" ] && echo "  playwright.config.ts: present"
+  [ -f "${REPO_ROOT:-.}/vitest.config.ts" ] && echo "  vitest.config.ts: present"
+  if [ -d "${REPO_ROOT:-.}/apps/web/e2e" ]; then
+    local e2e_count
+    e2e_count=$(find "${REPO_ROOT:-.}/apps/web/e2e" -name "*.spec.ts" 2>/dev/null | wc -l | tr -d ' ')
+    echo "  apps/web/e2e: ${e2e_count} .spec.ts files"
+  fi
+  echo ""
+
+  # vg.config.md snippet (profile + build_gates)
+  if [ -f "${REPO_ROOT:-.}/.claude/vg.config.md" ]; then
+    echo "═══ vg.config.md (snippet) ═══"
+    grep -E "^(profile|models|build_gates|environments):" -A 3 "${REPO_ROOT:-.}/.claude/vg.config.md" 2>/dev/null | head -60
+    echo ""
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# L2 — Architect proposal via Haiku subagent
+# ═══════════════════════════════════════════════════════════════════════
+# Writes a prompt file combining:
+#   - Architect role template (_shared/lib/architect-prompt-template.md)
+#   - Gate context + evidence
+#   - Full phase context blob from _collect_phase_context
+# Emits prompt file path on fd 3; orchestrator MUST dispatch Task tool
+# (subagent_type=general-purpose, model=<architect model>) and return
+# subagent stdout (strict JSON) to caller.
+#
+# Fallback (Task unavailable): return "architect_unavailable" proposal.
+_block_resolve_l2_architect() {
+  local gate_id="$1"
+  local gate_context="$2"
+  local evidence_json="$3"
+  local phase_dir="${4:-}"
+
+  local architect_model="${CONFIG_BLOCK_ARCHITECT_MODEL:-haiku}"
+  local template="${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/architect-prompt-template.md"
+  local prompt_path="${VG_TMP:-/tmp}/block-architect-$(date +%s)-$$.txt"
+  mkdir -p "$(dirname "$prompt_path")" 2>/dev/null || true
+
+  {
+    if [ -f "$template" ]; then
+      cat "$template"
+    else
+      echo "# ARCHITECT ROLE"
+      echo "You are the VG architect. Given a stuck phase gate, propose a structural change."
+      echo "Return strict JSON: {type, summary, file_structure, framework_choice, decision_questions, confidence}"
+    fi
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════════"
+    echo "STUCK GATE"
+    echo "═══════════════════════════════════════════════════════════════════════"
+    echo "gate_id: ${gate_id}"
+    echo ""
+    echo "gate_context:"
+    echo "${gate_context}"
+    echo ""
+    echo "evidence (from L1 attempts):"
+    echo "${evidence_json}"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════════"
+    echo "PHASE CONTEXT (FULL ARTIFACTS)"
+    echo "═══════════════════════════════════════════════════════════════════════"
+    if [ -n "$phase_dir" ] && [ -d "$phase_dir" ]; then
+      _collect_phase_context "$phase_dir"
+    else
+      echo "[no phase_dir supplied — architect must recommend from gate context only]"
+    fi
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════════════"
+    echo "OUTPUT — strict single-line JSON, no prose before/after"
+    echo "═══════════════════════════════════════════════════════════════════════"
+    echo '{"type":"sub-phase|refactor|new-artifact|config-change","summary":"<≤ 200 chars>","file_structure":"<paths + purpose, ≤ 500 chars>","framework_choice":"<tool/lib + reason, ≤ 200 chars>","decision_questions":[{"q":"...","recommendation":"...","rationale":"..."}],"confidence":0.0}'
+  } > "$prompt_path"
+
+  # Emit prompt path on fd 3 for orchestrator to pick up; also stderr for debug
+  echo "$prompt_path" >&3 2>/dev/null || true
+  echo "block-architect-prompt: $prompt_path (model=${architect_model})" >&2
+
+  # Fallback return when Task dispatch isn't hooked up in raw shell:
+  # emit a placeholder proposal so caller can decide L3/L4.
+  printf '{"type":"config-change","summary":"architect_unavailable — Task dispatch required","file_structure":"N/A","framework_choice":"N/A","decision_questions":[{"q":"Architect subagent could not be dispatched in this context. Proceed with manual direction?","recommendation":"Re-run command from Claude harness (Task tool available) or provide manual fix.","rationale":"Raw shell has no Task capability; orchestrator must substitute live Haiku call."}],"confidence":0.1}\n'
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# block_resolve — main entry
+# ═══════════════════════════════════════════════════════════════════════
+# Usage:
+#   block_resolve GATE_ID GATE_CONTEXT EVIDENCE_JSON [PHASE_DIR] [FIX_CANDIDATES_JSON]
+#
+# Output (single JSON line on stdout):
+#   {"level":"L1|L2|L4","action":"resolved|proposal|stuck","proposal":{...}|null,
+#    "telemetry_event":"block_self_resolved_inline|block_architect_proposed|block_truly_stuck"}
+#
+# Return code:
+#   0 — L1 resolved (gate passes automatically, caller continues)
+#   2 — L2 produced proposal; caller MUST invoke AskUserQuestion (L3) before proceeding
+#   1 — L4 truly stuck; caller MUST exit with human-direction message
+block_resolve() {
+  local gate_id="$1"
+  local gate_context="$2"
+  local evidence_json="${3:-{\}}"
+  local phase_dir="${4:-}"
+  local candidates_json="${5:-[]}"
+  local phase_number="${VG_CURRENT_PHASE:-unknown}"
+  local step="${VG_CURRENT_STEP:-unknown}"
+
+  if ! block_resolver_enabled; then
+    echo '{"level":"L4","action":"stuck","proposal":null,"telemetry_event":"block_truly_stuck","reason":"resolver disabled"}'
+    return 1
+  fi
+
+  echo "┌─ Block resolver cho gate '${gate_id}' ─────────────────────────────" >&2
+  echo "│ Evidence: $(echo "$evidence_json" | head -c 160)" >&2
+  echo "└───────────────────────────────────────────────────────────────────" >&2
+
+  # ─── L1 ─────────────────────────────────────────────────────────────
+  echo "▸ L1 inline fix (auto-vá tại chỗ)..." >&2
+  local l1_result
+  l1_result=$(_block_resolve_l1_inline "$gate_id" "$gate_context" "$candidates_json")
+  local l1_resolved
+  l1_resolved=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1]).get('resolved',False))" "$l1_result" 2>/dev/null || echo "False")
+
+  if [ "$l1_resolved" = "True" ]; then
+    echo "✓ L1 self-resolved — gate pass tự động" >&2
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "block_self_resolved_inline" "$phase_number" "$step" "$gate_id" "RESOLVED" "$l1_result"
+    fi
+    printf '{"level":"L1","action":"resolved","proposal":null,"telemetry_event":"block_self_resolved_inline","l1_result":%s}\n' "$l1_result"
+    return 0
+  fi
+  echo "  L1 không fix được: $(echo "$l1_result" | head -c 120)" >&2
+
+  # ─── L2 ─────────────────────────────────────────────────────────────
+  echo "▸ L2 architect proposal (gợi ý cấu trúc — Haiku subagent)..." >&2
+  local proposal_json
+  proposal_json=$(_block_resolve_l2_architect "$gate_id" "$gate_context" "$evidence_json" "$phase_dir")
+
+  # Validate JSON parseable
+  local proposal_type
+  proposal_type=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.loads(sys.argv[1]).get('type',''))" "$proposal_json" 2>/dev/null || echo "")
+
+  if [ -z "$proposal_type" ]; then
+    # Malformed — fall through to L4
+    echo "  L2 trả về proposal không parse được JSON — coi như stuck" >&2
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "block_truly_stuck" "$phase_number" "$step" "$gate_id" "STUCK" \
+        "{\"reason\":\"architect proposal malformed\",\"raw\":$(printf '%s' "$proposal_json" | head -c 200 | ${PYTHON_BIN:-python3} -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}"
+    fi
+    printf '{"level":"L4","action":"stuck","proposal":null,"telemetry_event":"block_truly_stuck","reason":"architect malformed"}\n'
+    return 1
+  fi
+
+  echo "✓ L2 proposal: type=${proposal_type}" >&2
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "block_architect_proposed" "$phase_number" "$step" "$gate_id" "PROPOSAL" \
+      "{\"proposal_type\":\"$proposal_type\"}"
+  fi
+
+  # Emit L2 result; caller MUST present via AskUserQuestion (L3) and decide L4 only if user rejects.
+  printf '{"level":"L2","action":"proposal","proposal":%s,"telemetry_event":"block_architect_proposed"}\n' "$proposal_json"
+  return 2
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# block_resolve_l4_stuck — caller invokes when user rejected L3 proposal
+# ═══════════════════════════════════════════════════════════════════════
+# Emits final telemetry, prints human-direction message, returns 1.
+block_resolve_l4_stuck() {
+  local gate_id="$1"
+  local user_reason="${2:-no reason supplied}"
+  local phase_number="${VG_CURRENT_PHASE:-unknown}"
+  local step="${VG_CURRENT_STEP:-unknown}"
+
+  echo "⛔ Gate '${gate_id}' thực sự stuck — cần human direction" >&2
+  echo "   L1 inline fix: không resolve được" >&2
+  echo "   L2 architect proposal: đã trình, user reject" >&2
+  echo "   Reason: ${user_reason}" >&2
+
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "block_truly_stuck" "$phase_number" "$step" "$gate_id" "STUCK" \
+      "{\"user_reason\":\"${user_reason//\"/\\\"}\"}"
+  fi
+  return 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# block_resolve_l3_apply — telemetry helper when user accepts proposal
+# ═══════════════════════════════════════════════════════════════════════
+block_resolve_l3_apply() {
+  local gate_id="$1"
+  local proposal_type="$2"
+  local phase_number="${VG_CURRENT_PHASE:-unknown}"
+  local step="${VG_CURRENT_STEP:-unknown}"
+
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "block_user_chose_proposal" "$phase_number" "$step" "$gate_id" "APPLIED" \
+      "{\"proposal_type\":\"$proposal_type\"}"
+  fi
+  echo "✓ User applied L3 proposal (type=${proposal_type}) — continuing" >&2
+}

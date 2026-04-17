@@ -284,6 +284,39 @@ design_assets:
   max_parallel_haiku: 5
   normalizer_timeout_sec: 60
 
+# === Test Strategy (v1.9.1 R1 — surface-driven test taxonomy) ===
+# Every TEST-GOALS goal gets a `surface:` field classifying which runner executes it.
+# /vg:review Phase 4 routes non-ui surfaces away from browser discovery.
+# /vg:test step 5c dispatches surface → runner from this table.
+# Projects MAY extend `surfaces` with custom entries (e.g. rtb-engine, ml-model);
+# VG core only knows about the 5 defaults below.
+test_strategy:
+  default_surface: "ui"
+  surfaces:
+    ui:
+      runner: "ui-playwright"
+      detect_keywords: ["click", "form", "modal", "page", "tab", "button", "sidebar", "dropdown", "submit"]
+    ui-mobile:
+      runner: "ui-mobile-maestro"
+      detect_keywords: ["tap", "swipe", "screen", "navigation", "gesture"]
+    api:
+      runner: "api-curl"
+      detect_keywords: ["endpoint", "POST", "GET", "PUT", "DELETE", "PATCH", "returns", "status code", "/api/", "/health", "/postback", "response contains", "401", "403", "404", "409", "422"]
+    data:
+      runner: "data-dbquery"
+      runner_config: { client: "auto" }   # auto | psql | sqlite3 | clickhouse-client | mongosh
+      detect_keywords: ["row", "count", "aggregate", "table", "collection", "document", "TTL", "partition", "materialized view", "SET", "SISMEMBER", "SELECT"]
+    time-driven:
+      runner: "time-faketime"
+      detect_keywords: ["after", "expires", "cron", "schedule", "window", "interval", "hourly", "daily", "grace period", "attribution window", "days", "pending"]
+    integration:
+      runner: "integration-mock"
+      detect_keywords: ["downstream", "postback", "webhook", "callback", "external service", "produced to", "Kafka", "topic", "message"]
+  # Confidence thresholds for lazy classification (see _shared/lib/goal-classifier.sh)
+  auto_threshold: 0.80            # >= → auto-assign
+  haiku_threshold: 0.50           # 0.5..0.8 → Haiku subagent tie-break
+  # < 0.5 → AskUserQuestion inline
+
 # === Contract Format (for API-CONTRACTS.md generation + compile check) ===
 # Controls what code block format blueprint step 2b outputs
 contract_format:

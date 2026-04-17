@@ -2031,6 +2031,43 @@ If missing → generate from CONTEXT.md + API-CONTRACTS.md (fallback).
 
 Parse goals: ID, description, success criteria, mutation evidence, dependencies, priority.
 
+**Surface classification (v1.9.1 R1 — lazy migration, runs BEFORE browser discover decisions):**
+
+```bash
+# shellcheck source=_shared/lib/goal-classifier.sh
+. .claude/commands/vg/_shared/lib/goal-classifier.sh
+set +e
+classify_goals_if_needed "${PHASE_DIR}/TEST-GOALS.md" "${PHASE_DIR}"
+gc_rc=$?
+set -e
+# rc=2 → Haiku tie-break (spawn Task per row in .goal-classifier-pending.tsv, then classify_goals_apply)
+# rc=3 → AskUserQuestion (surface list from config), then classify_goals_apply
+```
+
+Parse `**Surface:** <name>` per goal.
+
+**Surface-aware routing (tightened v1.9.1 R1):**
+
+For each goal:
+- `surface == "ui"` / `"ui-mobile"` → proceed with existing browser RUNTIME-MAP lookup below.
+- `surface ∈ { api, data, time-driven, integration, custom }` → skip browser discover for this goal; instead run lightweight **surface probe**:
+  * `api`        → grep `apps/**/src/**` for route handler matching contract path → READY if present.
+  * `data`       → grep migrations + `config.infra_deps` for table/collection → READY if present; INFRA_PENDING if service unavailable.
+  * `time-driven`→ grep cron/scheduler registration in `apps/workers/**`/`apps/api/**` → READY if handler wired.
+  * `integration`→ check `${PHASE_DIR}/test-runners/fixtures/${gid}.integration.sh` exists AND downstream caller found → READY.
+
+Result feeds GOAL-COVERAGE-MATRIX with `(status, surface, probe_evidence)`.
+
+**Pure-backend fast-path:**
+```bash
+UI_GOAL_COUNT=$(grep -c '^\*\*Surface:\*\* ui' "${PHASE_DIR}/TEST-GOALS.md" || echo 0)
+if [ "$UI_GOAL_COUNT" -eq 0 ]; then
+  echo "🧭 Pure-backend phase (không có goal UI) — bỏ qua browser discovery (khám phá trình duyệt), dùng surface probes." >&2
+  # Emit empty RUNTIME-MAP if not written yet, skip to 4b
+  [ -f "${PHASE_DIR}/RUNTIME-MAP.json" ] || echo '{"views":{},"goal_sequences":{}}' > "${PHASE_DIR}/RUNTIME-MAP.json"
+fi
+```
+
 **Infra dependency filter (config-driven):**
 
 If goal has `**Infra deps:**` field (e.g., `[clickhouse, kafka, pixel_server]`):
@@ -2160,7 +2197,33 @@ if [ "$INTERMEDIATE" -gt 0 ]; then
   echo "  → Logged to GOAL-COVERAGE-MATRIX.md 'Debt' section"
 
   if [[ ! "$ARGUMENTS" =~ --allow-intermediate ]]; then
-    exit 1
+    # v1.9.1 R2+R4: block-resolver — try L1 auto-fix (re-scan failed goals) before demanding user override.
+    # If L1 fails, L2 architect proposal is presented to user via AskUserQuestion (L3).
+    # L4 only when L2 proposal rejected AND no user direction.
+    # See _shared/lib/block-resolver.sh
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="review.4c-pre"
+      BR_GATE_CONTEXT="NOT_SCANNED/FAILED goals block review exit. ${INTERMEDIATE} intermediate goals need conclusion (READY/BLOCKED/UNREACHABLE/INFRA_PENDING)."
+      BR_EVIDENCE=$(printf '{"not_scanned":%d,"failed":%d,"total_intermediate":%d}' "$NOT_SCANNED_COUNT" "$FAILED_COUNT" "$INTERMEDIATE")
+      BR_CANDIDATES='[{"id":"retry-failed-scan","cmd":"echo retry-failed auto-fix would re-trigger scanner for FAILED goals only; skipping in safe mode","confidence":0.5,"rationale":"retry-failed probe may reclassify goals without human override"}]'
+      BR_RESULT=$(block_resolve "not-scanned-defer" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+      BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      if [ "$BR_LEVEL" = "L1" ]; then
+        echo "✓ Block resolver L1 self-resolved — intermediate goals auto-fixed"
+      elif [ "$BR_LEVEL" = "L2" ]; then
+        echo "▸ Block resolver L2 đề xuất proposal — orchestrator MUST invoke AskUserQuestion (L3) with proposal JSON:"
+        echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; d=json.loads(sys.stdin.read()); p=d.get('proposal',{}); print('  type=' + p.get('type','?') + '\\n  summary=' + p.get('summary','?') + '\\n  confidence=' + str(p.get('confidence',0)))"
+        echo "  Để proceed sau khi user chấp nhận proposal: re-run /vg:review ${PHASE_NUMBER} --allow-intermediate --reason='<applied proposal>'"
+        exit 2
+      else
+        # L4 truly stuck — print human-direction message
+        block_resolve_l4_stuck "not-scanned-defer" "L1 failed + L2 produced no actionable proposal"
+        exit 1
+      fi
+    else
+      exit 1
+    fi
   else
     # v1.9.0 T1: rationalization guard — NOT_SCANNED defer is a classic rationalization surface.
     RATGUARD_RESULT=$(rationalization_guard_check "not-scanned-defer" \

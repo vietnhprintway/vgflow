@@ -681,6 +681,26 @@ fi
 
 This is the heart. Each round is a model-driven conversational step. Save draft after each round.
 
+**Adversarial challenger (v1.9.1 R3):** Source `.claude/commands/vg/_shared/lib/answer-challenger.sh` at top of command. After EVERY user answer in Rounds 1, 3, 4, 5 (Round 2 = model presents table, no free answer; Round 6/7 = automated), invoke:
+
+```bash
+challenge_answer "$user_answer" "round-$ROUND" "project-foundation" "$accumulated_foundation_draft"
+```
+
+Orchestrator protocol (identical to scope.md):
+1. Read subagent prompt file (path emitted on fd 3 + stderr)
+2. Dispatch Task tool → model=`${config.scope.adversarial_model:-haiku}`, zero parent context
+3. Parse stdout → one JSON line: `{has_issue, issue_kind, evidence, follow_up_question, proposed_alternative}`
+4. Call `challenger_dispatch "$json" "round-$ROUND" "project-foundation" "project"` (phase=literal "project" for FOUNDATION rounds)
+5. If `has_issue=true` → AskUserQuestion with 3 options:
+   - **Address** → re-ask the round with revised prompt incorporating challenger's follow_up
+   - **Acknowledge** → append to `FOUNDATION.md` draft under `## Acknowledged tradeoffs`
+   - **Defer** → append under `## Open questions`
+6. Call `challenger_record_user_choice "project" "round-$ROUND" "project-foundation" "$choice"`
+7. Loop guard: helper auto-caps at `config.scope.adversarial_max_rounds` (default 3) per session
+
+Skip when `config.scope.adversarial_check: false` or answer is trivial (helper auto-detects).
+
 ### Round 1: Capture description
 
 If `$INLINE_DESC` non-empty → use as description, skip prompt.

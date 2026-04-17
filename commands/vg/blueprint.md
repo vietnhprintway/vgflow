@@ -611,6 +611,29 @@ Goal ↔ Task linkage:
   Orphan goals (no task): {N}       ← spec gap, surfaced to 2d validation
   Orphan tasks (no goal): {N}       ← may be infra or spec bloat
 ```
+
+**Surface classification (v1.9.1 R1 — lazy migration):**
+
+Immediately after TEST-GOALS.md is written (including bidirectional linkage), classify each goal into a **test surface** (ui / ui-mobile / api / data / time-driven / integration / custom). This is what `/vg:review` and `/vg:test` use to pick runners — backend-only phases must not deadlock on browser discovery.
+
+```bash
+# shellcheck source=_shared/lib/goal-classifier.sh
+. .claude/commands/vg/_shared/lib/goal-classifier.sh
+set +e
+classify_goals_if_needed "${PHASE_DIR}/TEST-GOALS.md" "${PHASE_DIR}"
+gc_rc=$?
+set -e
+```
+
+Behaviour by return code:
+- `0` → all goals classified at ≥0.8 confidence (narration prints auto-count).
+- `2` → 0.5..0.8 band needs Haiku tie-break. Read `${PHASE_DIR}/.goal-classifier-pending.tsv`, spawn ONE Haiku subagent per goal (pattern identical to `rationalization-guard` — subagent receives goal block + candidate surface + keywords found, returns `{surface, confidence}`). Call `classify_goals_apply` with the resolved TSV.
+- `3` → some goals <0.5 confidence. BLOCK until user picks via `AskUserQuestion` (options = configured surface list + "custom"). Call `classify_goals_apply` with user answers.
+
+After classification, include per-goal surface in blueprint narration:
+```
+🎯 Goal surfaces: 17 ui · 5 api · 3 data · 2 time-driven · 1 integration
+```
 </step>
 
 <step name="2b6_ui_spec">

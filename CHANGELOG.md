@@ -2,6 +2,100 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.1] - 2026-04-17
+
+### Surface-driven testing — VG handle được mọi loại phase (UI / API / data / time-driven / integration / mobile / custom)
+
+User feedback từ phase 7.12 conversion tracking (backend, không UI): workflow hiện tại UI-centric — review browser-discover, test Playwright. Backend phase deadlock: review block goals NOT_SCANNED forever, no UI to discover. Đề xuất 3 options đều "bàn lùi" việc test. **Đây là defect, không phải feature**.
+
+v1.9.1 ship 4 nguyên tắc thành workflow rules — generic, no project hardcode:
+
+### Added — R1: Surface-driven test taxonomy
+
+- **NEW** `_shared/lib/goal-classifier.sh` (355 LOC) — multi-source classifier (TEST-GOALS text + CONTEXT D-XX + API-CONTRACTS + SUMMARY + RUNTIME-MAP + code grep). Confidence ≥0.80 auto-classify, 0.50-0.80 spawn Haiku tie-break, <0.50 AskUserQuestion. Lazy migration via `schema_version: "1.9.1"` frontmatter stamp. Idempotent.
+- **NEW** `_shared/lib/test-runners/dispatch.sh` (59 LOC) + 6 surface runners (~80 LOC each):
+  - `ui-playwright.sh` — wraps existing browser test infra
+  - `ui-mobile-maestro.sh` — wraps mobile-deploy.md infra
+  - `api-curl.sh` — bash + curl + jq pattern
+  - `data-dbquery.sh` — bash + DB client lookup (psql/sqlite3/clickhouse-client/mongosh) per `vg.config.md`
+  - `time-faketime.sh` — bash + faketime + invoke + assert
+  - `integration-mock.sh` — spin mock receiver (HTTP server random port), assert request received
+- **NEW** `vg.config.md.test_strategy` schema — 5 default surfaces với `runner` + `detect_keywords`. Project tự extend (rtb-engine, ml-model, blockchain, etc.). VG core không biết RTB là gì.
+- **PATCH** `blueprint.md` — call classify_goals_if_needed sau TEST-GOALS write
+- **PATCH** `review.md` — step 4a: classify + per-surface routing. **Pure-backend phase (zero ui goals) → skip browser discover entirely** (fixes 7.12 deadlock)
+- **PATCH** `test.md` — step 5c: classify + dispatch_test_runner per goal surface. Results merge vào TEST-RESULTS.md
+- **Phase 7.12 dry-run**: 17/39 goals auto-classify, 22 vào Haiku tie-break — confirms backend classification works
+
+### Added — R2+R4: Block resolver 4-level (agency)
+
+User feedback: "review/test khi block toàn list 3 options A/B/C dừng chờ. AI biết hướng nhưng vẫn dừng. Phải tự nghĩ → quyết → làm; chỉ stop khi thực sự không biết rẽ."
+
+- **NEW** `_shared/lib/block-resolver.sh` (344 LOC) — 4 levels:
+  - **L1 inline auto-fix** — try fix candidates, score, rationalization-guard check. Confidence ≥0.7 + guard PASS → ACT. Telemetry `block_self_resolved_inline`
+  - **L2 architect Haiku** — spawn Haiku subagent với FULL phase context (SPECS+CONTEXT+PLAN+TEST-GOALS+SUMMARY+API-CONTRACTS+RUNTIME-MAP+code+infra). Returns structured proposal `{type: sub-phase|refactor|new-artifact|config-change, summary, file_structure, framework_choice, decision_questions, confidence}`. Telemetry `block_architect_proposed`
+  - **L3 user choice** — AskUserQuestion present proposal với recommendation. Telemetry `block_user_chose_proposal`
+  - **L4 stuck escalate** — only after L1+L2+L3 exhausted. Telemetry `block_truly_stuck`
+- **NEW** `_shared/lib/architect-prompt-template.md` (~110 lines) — reusable Haiku prompt
+- **PATCH** flagship gate sites in review/test/build/accept (4 sites). 8 secondary sites noted for future sweep (same template).
+- **Banned anti-pattern**: "list 3 options stop wait" without trying any. Every block MUST attempt L1 → L2 → L3 → L4.
+- **Example trace (phase 7.12 review block)**:
+  ```
+  L1 retry-failed-scan → confidence 0.5 < 0.7 → skip
+  L2 Haiku architect → proposal: {type: sub-phase, summary: "Create 07.12.2 Test Harness", file_structure: "apps/api/test/e2e/{fixtures,helpers,specs}", framework_choice: "vitest + supertest", confidence: 0.82}
+  L3 AskUserQuestion → user accepts → emit telemetry → continue
+  ```
+
+### Added — R3: Scope adversarial answer challenger
+
+User feedback: "Trong /vg:scope, mỗi câu trả lời của user, AI nên tự phản biện xem có vấn đề gì không. Nếu có thì hỏi tiếp."
+
+- **NEW** `_shared/lib/answer-challenger.sh` (205 LOC) — sau mỗi user answer trong scope/project round:
+  - Spawn Haiku subagent (zero parent context) với 4 lenses:
+    1. Mâu thuẫn với D-XX/F-XX prior?
+    2. Hidden assumption?
+    3. Edge case missed (failure / scale / concurrency / timezone / unicode / multi-tenancy)?
+    4. FOUNDATION conflict (platform / compliance / scale)?
+  - Returns `{has_issue, issue_kind, evidence, follow_up_question, proposed_alternative}`
+  - If issue → AskUserQuestion 3 options: Address (rephrase) / Acknowledge (accept tradeoff) / Defer (track in CONTEXT.md "Open questions")
+- **PATCH** `scope.md` 5-round loop + `project.md` 7-round adaptive discussion
+- **Loop guard**: max 3 challenges per phase; trivial answers (Y/N, ≤3 chars) skip; config `scope.adversarial_check: true` (default)
+- **Telemetry event** `scope_answer_challenged` với `{round_id, issue_kind, user_chose}`
+
+### Changed
+
+- **`vg.config.md`** — new sections:
+  - `test_strategy:` — surface taxonomy với detect_keywords + runners (R1)
+  - `scope:` — `adversarial_check`, `adversarial_model`, `adversarial_max_rounds`, `adversarial_skip_trivial` (R3)
+- **`telemetry.md`** — registered events: `goals_classified`, `block_self_resolved_inline`, `block_architect_proposed`, `block_user_chose_proposal`, `block_truly_stuck`, `scope_answer_challenged`
+
+### v1.9.1 vs Round 2 score targets (expected)
+
+Round 2 baseline: overall 6.75, robustness 7.0, consistency 6.0, onboarding 3.25 (flat).
+
+Expected v1.9.1 movement:
+- **Strategic fit ↑↑** — workflow handle được mọi loại phase (không còn UI-centric defect)
+- **Robustness ↑** — block resolver 4-level removes "list 3 options stop" anti-pattern
+- **Consistency ↑** — surface taxonomy makes review/test routing deterministic
+- **Onboarding ↑** — backend phase no longer requires user workaround (tag tricks)
+
+### Migration v1.9.0 → v1.9.1
+
+**No required actions** — all changes additive + lazy migration.
+
+- Phase cũ (e.g., 7.12) lần đầu chạy `/vg:review` → goal-classifier auto-classify từ artifacts → stamp `schema_version: "1.9.1"` → continue. Không cần command migration riêng.
+- Phase mới: `/vg:blueprint` tự classify khi sinh TEST-GOALS lần đầu.
+- Block resolver 4-level transparent — gates vẫn trigger như cũ, chỉ thêm L1/L2/L3 trước khi L4 escalate.
+- Scope answer challenger: enabled by default; disable nếu prototype nhanh: `scope.adversarial_check: false` trong vg.config.md.
+
+### Cross-AI evaluation context
+
+v1.9.1 addresses user-flagged workflow defect not captured in Round 2 SYNTHESIS (UI-centricity assumption).
+- Strategic application can have arbitrary phase types — workflow must NOT assume UI default.
+- Block agency: AI must think → decide → act, not list options and stop.
+- Adversarial scope: AI must challenge own assumptions during design, not record passively.
+
+Tier B remaining (wave checkpoints, /vg:amend propagation, telemetry sqlite, foundation BLOCK, gate-manifest signing) deferred to v1.9.2+.
+
 ## [1.9.0] - 2026-04-17
 
 ### Tier A discipline batch — closing v1.8.0 residual gaps

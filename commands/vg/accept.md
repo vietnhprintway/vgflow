@@ -156,9 +156,29 @@ case "$VERDICT" in
     echo "✓ Test verdict: $VERDICT"
     ;;
   FAILED)
-    # ⛔ HARD GATE (tightened 2026-04-17): FAILED = exit 1 unconditionally.
-    # No advisory path, no override. Must fix + re-test + re-accept.
+    # ⛔ HARD GATE: FAILED blocks accept.
+    # v1.9.1 R2+R4: block-resolver trước khi raw exit 1 — L1 thử gaps-only rebuild,
+    # L2 architect đề xuất structural change (refactor / sub-phase / config tuning).
     echo "⛔ Test verdict: FAILED. Cannot accept."
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="accept.test-verdict"
+      BR_CTX="SANDBOX-TEST verdict=FAILED. Accept blocked. L1 may attempt gaps-only rebuild + retest; L2 may propose refactor / sub-phase / config change."
+      BR_EV=$(printf '{"sandbox_test":"%s","verdict":"FAILED"}' "${SANDBOX}")
+      BR_CANDS='[{"id":"gaps-only-rebuild","cmd":"echo L1-SAFE: orchestrator would run /vg:build '"${PHASE_NUMBER}"' --gaps-only then /vg:test '"${PHASE_NUMBER}"'; skipping in shell resolver safe mode","confidence":0.5,"rationale":"gap-rebuild is documented first response"}]'
+      BR_RES=$(block_resolve "test-verdict-failed" "$BR_CTX" "$BR_EV" "$PHASE_DIR" "$BR_CANDS")
+      BR_LVL=$(echo "$BR_RES" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      if [ "$BR_LVL" = "L1" ]; then
+        echo "✓ Block resolver L1 applied gaps-only rebuild — re-run /vg:accept ${PHASE_NUMBER}"
+        exit 0
+      elif [ "$BR_LVL" = "L2" ]; then
+        echo "▸ Block resolver L2 architect proposal — present to user via AskUserQuestion (L3):"
+        echo "$BR_RES" | ${PYTHON_BIN} -c "import json,sys; d=json.loads(sys.stdin.read()); p=d.get('proposal',{}); print('  type=' + p.get('type','?') + '\\n  summary=' + p.get('summary','?') + '\\n  confidence=' + str(p.get('confidence',0)))"
+        exit 2
+      else
+        block_resolve_l4_stuck "test-verdict-failed" "L1 gaps-rebuild declined, L2 architect unavailable"
+      fi
+    fi
     echo "   Fix failures first: /vg:build ${PHASE_NUMBER} --gaps-only → /vg:test ${PHASE_NUMBER}"
     exit 1
     ;;

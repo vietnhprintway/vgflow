@@ -827,10 +827,34 @@ if [ "$ACTUAL_COMMITS" -lt "$EXPECTED_COMMITS" ]; then
     echo "⚠ --allow-missing-commits set — recording missing tasks and proceeding."
     echo "wave-${N}: MISSING_COMMITS tasks=[${MISSING_TASKS}] allowed-by=--allow-missing-commits ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
   else
-    echo "  Fix: re-run missing tasks manually, then /vg:build ${PHASE_NUMBER} --resume"
-    echo "  Or (NOT RECOMMENDED): /vg:build ${PHASE_NUMBER} --allow-missing-commits"
-    echo "  Reason: agents may have failed silently (missing target file, dep missing, etc.)."
-    exit 1
+    # v1.9.1 R2+R4: block-resolver — L1 tries re-dispatch for missing tasks automatically before demanding --allow-missing-commits.
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="build.wave-${N}"
+      BR_CTX="Wave ${N} expected ${EXPECTED_COMMITS} commits, got ${ACTUAL_COMMITS}. Silent agent failure possible — re-dispatch missing tasks before treating as fatal."
+      BR_EV=$(printf '{"expected":%d,"actual":%d,"missing_tasks":"%s","wave":%d}' "$EXPECTED_COMMITS" "$ACTUAL_COMMITS" "${MISSING_TASKS}" "$N")
+      BR_CANDS='[{"id":"redispatch-missing","cmd":"echo L1-SAFE: orchestrator would re-dispatch missing tasks via Task tool; skipping in shell resolver safe mode","confidence":0.55,"rationale":"missing commits usually = transient agent failure, safe to retry once"}]'
+      BR_RES=$(block_resolve "wave-commits" "$BR_CTX" "$BR_EV" "$PHASE_DIR" "$BR_CANDS")
+      BR_LVL=$(echo "$BR_RES" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      if [ "$BR_LVL" = "L1" ]; then
+        echo "✓ Block resolver L1 re-dispatched missing tasks — re-count commits"
+        ACTUAL_COMMITS=$(git log --oneline "${WAVE_TAG}..HEAD" | wc -l | tr -d ' ')
+        [ "$ACTUAL_COMMITS" -lt "$EXPECTED_COMMITS" ] && { echo "⛔ Still short after L1 retry ($ACTUAL_COMMITS / $EXPECTED_COMMITS)"; exit 1; }
+      elif [ "$BR_LVL" = "L2" ]; then
+        echo "▸ Block resolver L2 proposal (có thể là refactor wave size / task granularity):"
+        echo "$BR_RES" | ${PYTHON_BIN} -c "import json,sys; d=json.loads(sys.stdin.read()); p=d.get('proposal',{}); print('  type=' + p.get('type','?') + '\\n  summary=' + p.get('summary','?'))"
+        echo "   Orchestrator MUST present via AskUserQuestion (L3) before continuing."
+        exit 2
+      else
+        block_resolve_l4_stuck "wave-commits" "L1 re-dispatch failed, L2 architect returned no proposal"
+        exit 1
+      fi
+    else
+      echo "  Fix: re-run missing tasks manually, then /vg:build ${PHASE_NUMBER} --resume"
+      echo "  Or (NOT RECOMMENDED): /vg:build ${PHASE_NUMBER} --allow-missing-commits"
+      echo "  Reason: agents may have failed silently (missing target file, dep missing, etc.)."
+      exit 1
+    fi
   fi
 fi
 ```

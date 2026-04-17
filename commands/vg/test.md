@@ -476,14 +476,50 @@ Display:
 </step>
 
 <step name="5c_goal_verification">
-## 5c-goal: GOAL VERIFICATION (MCP Playwright — follow known paths)
+## 5c-goal: GOAL VERIFICATION (surface-aware — Playwright for ui, runners for others)
 
 **INPUT:**
-- TEST-GOALS.md (goals with success criteria + mutation evidence + dependencies)
+- TEST-GOALS.md (goals with success criteria + mutation evidence + dependencies + **Surface:**)
 - RUNTIME-MAP.json (discovered paths from review — canonical JSON)
 - GOAL-COVERAGE-MATRIX.md (which goals are ready/blocked/unreachable)
 
-**Browser mode: HEADED (visible).**
+**Browser mode: HEADED (visible)** — only for `surface=ui` goals.
+
+**Surface classification (v1.9.1 R1 — lazy migration, runs FIRST):**
+
+```bash
+# shellcheck source=_shared/lib/goal-classifier.sh
+. .claude/commands/vg/_shared/lib/goal-classifier.sh
+set +e
+classify_goals_if_needed "${PHASE_DIR}/TEST-GOALS.md" "${PHASE_DIR}"
+set -e
+# Same Haiku tie-break + AskUserQuestion contract as blueprint 2b5 / review 4a.
+```
+
+**Per-goal dispatch (non-UI surfaces):**
+
+```bash
+# shellcheck source=_shared/lib/test-runners/dispatch.sh
+. .claude/commands/vg/_shared/lib/test-runners/dispatch.sh
+for gid in $(grep -oE '^## Goal G-[0-9]+' "${PHASE_DIR}/TEST-GOALS.md" | grep -oE 'G-[0-9]+'); do
+  surface=$(awk "/^## Goal ${gid}\b/{f=1} f && /^\*\*Surface:\*\*/{sub(/.*Surface:\*\* /,\"\"); sub(/ .*/,\"\"); print; exit}" "${PHASE_DIR}/TEST-GOALS.md")
+  surface="${surface:-ui}"
+  case "$surface" in
+    ui|ui-mobile) continue ;;   # Fall through to existing replay loop below
+    *)
+      RESULT=$(dispatch_test_runner "$surface" "$gid" "${PHASE_DIR}" "${PHASE_DIR}/test-runners/fixtures")
+      STATUS=$(echo "$RESULT" | sed -n 's/.*STATUS=\([A-Z]*\).*/\1/p')
+      EVID=$(echo "$RESULT" | sed -n 's/.*EVIDENCE=\([^\t]*\).*/\1/p')
+      # Persist result JSON so final summary tree + TEST-RESULTS.md can merge with ui results
+      mkdir -p "${VG_TMP:-${PHASE_DIR}/.vg-tmp}"
+      echo "{\"goal_id\":\"${gid}\",\"status\":\"${STATUS}\",\"surface\":\"${surface}\",\"evidence\":\"${EVID}\"}" \
+        > "${VG_TMP:-${PHASE_DIR}/.vg-tmp}/goal-${gid}-result.json"
+      ;;
+  esac
+done
+```
+
+UI / mobile goals flow through the existing replay loop below. Non-UI goal results are merged into the final summary tree with identical schema (goal_id, status, evidence).
 
 **Execute goals in dependency order (topological sort):**
 
@@ -1223,13 +1259,40 @@ if [ "$GTB_MODE" != "off" ]; then
     echo "⛔ Phase-end goal-test binding FAILED."
     echo "   One or more goals claimed by plan tasks have no corresponding test."
     echo "   Codegen should have generated tests for every goal — check ${GENERATED_TESTS_DIR}/"
-    echo "   Options:"
-    echo "     (a) Re-run: /vg:test ${PHASE_NUMBER} --skip-deploy  (re-codegen only)"
-    echo "     (b) Manually add test file(s) citing missing goals, re-run /vg:test"
-    echo "     (c) Set build_gates.goal_test_binding_phase_end=warn in vg.config.md (not recommended)"
-    # Mark SANDBOX-TEST verdict as FAILED and exit
-    VERDICT="FAILED"
-    FAIL_REASON="goal_test_binding_phase_end"
+
+    # v1.9.1 R2+R4: block-resolver — try L1 re-codegen before falling through.
+    # If L1 fails, L2 architect proposal (likely "create test harness sub-phase") surfaces to user.
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
+    if type -t block_resolve >/dev/null 2>&1; then
+      export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="test.5b-goal-test-binding"
+      BR_GATE_CTX="Goal-test binding gate: plan tasks claim goals but no corresponding test file found. Codegen either skipped, deleted, or never ran for these goals."
+      BR_EVIDENCE=$(printf '{"gate":"goal_test_binding_phase_end","generated_tests_dir":"%s","mode":"%s"}' "$GENERATED_TESTS_DIR" "$GTB_MODE")
+      # L1 candidate: re-run codegen in isolation (skip deploy)
+      BR_CANDIDATES='[{"id":"recodegen","cmd":"echo L1-SAFE: would invoke codegen-only rerun (${PYTHON_BIN} .claude/scripts/codegen.py --phase ${PHASE_NUMBER} --tests-only); skipping in resolver safe mode","confidence":0.6,"rationale":"codegen drift is the most common cause; cheap to retry"}]'
+      BR_RESULT=$(block_resolve "goal-test-binding" "$BR_GATE_CTX" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
+      BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
+      if [ "$BR_LEVEL" = "L1" ]; then
+        echo "✓ Block resolver L1 self-resolved — re-run verification"
+        ${PYTHON_BIN} .claude/scripts/verify-goal-test-binding.py ${GTB_ARGS} || { VERDICT="FAILED"; FAIL_REASON="goal_test_binding_phase_end"; }
+      elif [ "$BR_LEVEL" = "L2" ]; then
+        echo "▸ Block resolver L2 đề xuất architectural proposal (có thể là sub-phase test harness):"
+        echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; d=json.loads(sys.stdin.read()); p=d.get('proposal',{}); print('  type=' + p.get('type','?') + '\\n  summary=' + p.get('summary','?'))"
+        echo "   Orchestrator MUST present proposal to user via AskUserQuestion (L3) before continuing."
+        VERDICT="FAILED"
+        FAIL_REASON="goal_test_binding_phase_end_L2_proposal_pending"
+      else
+        block_resolve_l4_stuck "goal-test-binding" "L1 re-codegen failed, L2 architect unavailable"
+        VERDICT="FAILED"
+        FAIL_REASON="goal_test_binding_phase_end"
+      fi
+    else
+      echo "   Options (fallback — resolver unavailable):"
+      echo "     (a) Re-run: /vg:test ${PHASE_NUMBER} --skip-deploy  (re-codegen only)"
+      echo "     (b) Manually add test file(s) citing missing goals, re-run /vg:test"
+      echo "     (c) Set build_gates.goal_test_binding_phase_end=warn in vg.config.md (not recommended)"
+      VERDICT="FAILED"
+      FAIL_REASON="goal_test_binding_phase_end"
+    fi
     # Fall through to 5e so regression still runs (diagnostic value)
   fi
 fi

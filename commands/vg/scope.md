@@ -36,6 +36,20 @@ Pipeline: specs -> **scope** -> blueprint -> build -> review -> test -> accept
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first. Use config variables ($PLANNING_DIR, $PHASES_DIR, $PROFILE).
 
+**Adversarial challenger (v1.9.1 R3):** Source `.claude/commands/vg/_shared/lib/answer-challenger.sh` at top of command. After EVERY user answer in Rounds 1-5 AND in the Deep Probe Loop, invoke `challenge_answer "$user_answer" "round-$ROUND" "phase-scope" "$accumulated_draft"`. The helper writes a subagent prompt to a tmp file (path emitted on fd 3 + stderr). Orchestrator MUST:
+1. Read the prompt file
+2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.adversarial_model:-haiku}`, zero parent context) with prompt contents
+3. Parse subagent stdout (one JSON line)
+4. Call `challenger_dispatch "$subagent_json" "round-$ROUND" "phase-scope" "$PHASE_NUMBER"`
+5. If `has_issue=true` → AskUserQuestion with 3 options:
+   - **Address** → re-enter Q for that round (don't advance); merge user's revised answer
+   - **Acknowledge** → record tradeoff under `## Acknowledged tradeoffs` in CONTEXT.md staged
+   - **Defer** → record under `## Open questions` in CONTEXT.md staged
+6. Call `challenger_record_user_choice "$PHASE_NUMBER" "round-$ROUND" "phase-scope" "$choice"` to resolve telemetry
+7. If `challenger_count_for_phase` reaches `config.scope.adversarial_max_rounds` (default 3) → helper auto-skips remaining challenges (loop guard)
+
+Skip challenger when `config.scope.adversarial_check: false` (rapid prototyping) or answer is trivial (Y/N, single-word confirm — helper auto-detects via `challenger_is_trivial`).
+
 <step name="0_parse_and_validate">
 ## Step 0: Parse arguments + validate prerequisites
 
@@ -125,6 +139,8 @@ From response, lock decisions:
 - `P${PHASE_NUMBER}.D-01` through `P${PHASE_NUMBER}.D-XX` (category: business)
 - Each decision captures: title, decision text, rationale
 - **Namespace enforcement:** Always prefix with `P${PHASE_NUMBER}.` (where ${PHASE_NUMBER} is extracted from $ARGUMENTS). If phase is "7.10.1", the decision ID is `P7.10.1.D-01`. Never write bare `D-01` (legacy — blocked by commit-msg hook from v1.10.1).
+
+**Adversarial challenge** (v1.9.1 R3, applies to EVERY round including Rounds 2-5 and deep probes): after recording the user answer but BEFORE advancing to the next round, run `challenge_answer` + `challenger_dispatch` per the protocol in `<process>` header. If the challenger flags an issue and user chooses **Address**, re-enter this round with the user's revised answer. If **Acknowledge** → append under `## Acknowledged tradeoffs` in `CONTEXT.md.staged`. If **Defer** → append under `## Open questions`.
 
 ### Round 2 — Technical Approach
 

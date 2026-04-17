@@ -75,6 +75,7 @@ telemetry:
 | `artifact_read_validated` | T3: manifest validated on read | `artifact`, `expected_sha256`, `actual_sha256`, `match` (bool) |
 | `drift_detected` | T6: foundation drift entry | `tier` (info/warn), `keyword`, `dimension`, `current_value` |
 | `rationalization_guard_check` | T1 v1.9.0: separate-model guard adjudicates gate-skip | `gate_id`, `verdict` (PASS/FLAG/ESCALATE), `confidence`, `subagent_model`, `subagent_reason`, `flag` |
+| `scope_answer_challenged` | R3 v1.9.1: adversarial answer challenger in /vg:scope + /vg:project rounds | `round_id`, `issue_kind` (contradiction/hidden_assumption/edge_case/foundation_conflict), `evidence`, `user_chose` (address/acknowledge/defer/pending), `_skipped` (disabled/trivial/max_rounds_reached) |
 
 ## API
 
