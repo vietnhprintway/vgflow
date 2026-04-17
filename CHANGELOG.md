@@ -2,6 +2,28 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.6.1] - 2026-04-17
+
+### Changed (UX — auto-scan + state-tailored menu)
+
+User feedback: "không nhớ nên gõ args nào đâu" — `/vg:project --view` / `--migrate` / `--update` etc. requires user to remember flag names. v1.6.0's mode menu only fired when artifacts exist + no flag passed.
+
+v1.6.1 makes auto-scan and proactive suggestion the **default behavior** for every `/vg:project` invocation, regardless of args:
+
+- **Always print state summary table FIRST** — files exist (with mtime age), draft status, codebase detection, classified state category (greenfield / brownfield-fresh / legacy-v1 / fully-initialized / draft-in-progress).
+- **State-tailored menus** — different option sets shown per state, with ⭐ RECOMMENDED action highlighted:
+  - `legacy-v1` → recommend `[m] Migrate`, alt: view/rewrite/cancel
+  - `brownfield-fresh` → recommend `[f] First-time với codebase scan`, alt: pure-text/cancel
+  - `fully-initialized` → full menu: view/update/milestone/rewrite/cancel
+  - `greenfield` → straight to Round 1 capture (no menu — most common new case)
+  - `draft-in-progress` → resume/discard/view-draft (priority)
+- **Flag mismatch validation** — explicit flags validated against state. `--migrate` on greenfield → friendly hint to use first-time instead, exit 0 (no error).
+- User chỉ cần gõ `/vg:project` — workflow tự dẫn dắt, không cần đoán flag.
+
+### Files
+
+- `commands/vg/project.md` — step `0b_print_state_summary` (NEW) + `1_route_mode` rewritten with state-tailored menus
+
 ## [1.6.0] - 2026-04-17
 
 ### Changed (BREAKING UX — entry point flow rebuild)

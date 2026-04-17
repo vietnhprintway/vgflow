@@ -82,35 +82,191 @@ for d in apps src packages lib; do
   [ -d "$d" ] && HAS_CODE=true && break
 done
 
-echo "Mode=${MODE:-auto-detect}  project=${PROJECT_EXISTS}  foundation=${FOUNDATION_EXISTS}  config=${CONFIG_EXISTS}  draft=${DRAFT_EXISTS}  brownfield=${HAS_CODE}"
+: # State printing happens in step 0b after collecting more context
+```
+</step>
+
+<step name="0b_print_state_summary">
+## Step 0b: ALWAYS print state summary first (UX — user không cần nhớ flag)
+
+Mỗi lần `/vg:project` chạy, **bắt buộc** hiển thị state header trước khi làm gì khác. User type `/vg:project` (no args) → ngay lập tức biết hiện trạng + được đề xuất action recommended. Không cần đoán flag.
+
+```bash
+# Collect rich state info
+PROJECT_AGE=""
+[ -f "$PROJECT_FILE" ] && PROJECT_AGE=$(${PYTHON_BIN} -c "
+import os, datetime
+try:
+  ts = os.path.getmtime('$PROJECT_FILE')
+  age_days = (datetime.datetime.now().timestamp() - ts) / 86400
+  print(f'{int(age_days)}d ago' if age_days >= 1 else 'today')
+except Exception: print('?')
+" 2>/dev/null)
+
+FOUNDATION_AGE=""
+[ -f "$FOUNDATION_FILE" ] && FOUNDATION_AGE=$(${PYTHON_BIN} -c "
+import os, datetime
+try:
+  ts = os.path.getmtime('$FOUNDATION_FILE')
+  age_days = (datetime.datetime.now().timestamp() - ts) / 86400
+  print(f'{int(age_days)}d ago' if age_days >= 1 else 'today')
+except Exception: print('?')
+" 2>/dev/null)
+
+CONFIG_AGE=""
+[ -f "$CONFIG_FILE" ] && CONFIG_AGE=$(${PYTHON_BIN} -c "
+import os, datetime
+try:
+  ts = os.path.getmtime('$CONFIG_FILE')
+  age_days = (datetime.datetime.now().timestamp() - ts) / 86400
+  print(f'{int(age_days)}d ago' if age_days >= 1 else 'today')
+except Exception: print('?')
+" 2>/dev/null)
+
+# Detect codebase profile
+CODEBASE_HINT=""
+[ -d "apps" ] && CODEBASE_HINT="${CODEBASE_HINT}apps/ "
+[ -d "packages" ] && CODEBASE_HINT="${CODEBASE_HINT}packages/ "
+[ -d "src" ] && CODEBASE_HINT="${CODEBASE_HINT}src/ "
+[ -f "package.json" ] && CODEBASE_HINT="${CODEBASE_HINT}package.json "
+[ -f "Cargo.toml" ] && CODEBASE_HINT="${CODEBASE_HINT}Cargo.toml "
+[ -f "go.mod" ] && CODEBASE_HINT="${CODEBASE_HINT}go.mod "
+[ -f "pubspec.yaml" ] && CODEBASE_HINT="${CODEBASE_HINT}pubspec.yaml(Flutter) "
+CODEBASE_HINT=$(echo "$CODEBASE_HINT" | sed 's/ *$//')
+
+echo ""
+echo "🔍 ━━━ /vg:project — Hiện trạng project ━━━"
+echo ""
+printf "  📁 %-32s %s\n" ".planning/PROJECT.md"      "$([ "$PROJECT_EXISTS" = "true" ]    && echo "✓ exists ($PROJECT_AGE)"    || echo "✗ missing")"
+printf "  📁 %-32s %s\n" ".planning/FOUNDATION.md"   "$([ "$FOUNDATION_EXISTS" = "true" ] && echo "✓ exists ($FOUNDATION_AGE)" || echo "✗ missing")"
+printf "  📁 %-32s %s\n" ".claude/vg.config.md"      "$([ "$CONFIG_EXISTS" = "true" ]     && echo "✓ exists ($CONFIG_AGE)"     || echo "✗ missing")"
+printf "  📁 %-32s %s\n" ".planning/.project-draft.json" "$([ "$DRAFT_EXISTS" = "true" ]  && echo "⚠ draft in progress"        || echo "✗ none")"
+printf "  🗂  %-32s %s\n" "Codebase"                  "$([ "$HAS_CODE" = "true" ]          && echo "✓ detected ($CODEBASE_HINT)" || echo "✗ none (greenfield)")"
+echo ""
+
+# Determine state category for routing + suggestion
+STATE=""
+if [ "$DRAFT_EXISTS" = "true" ]; then
+  STATE="draft-in-progress"
+elif [ "$PROJECT_EXISTS" = "true" ] && [ "$FOUNDATION_EXISTS" = "true" ]; then
+  STATE="fully-initialized"
+elif [ "$PROJECT_EXISTS" = "true" ] && [ "$FOUNDATION_EXISTS" = "false" ]; then
+  STATE="legacy-v1"
+elif [ "$PROJECT_EXISTS" = "false" ] && [ "$HAS_CODE" = "true" ]; then
+  STATE="brownfield-fresh"
+else
+  STATE="greenfield"
+fi
+echo "  📊 State: ${STATE}"
+echo ""
 ```
 </step>
 
 <step name="1_route_mode">
-## Step 1: Route to mode
+## Step 1: Route to mode (state-aware suggestion if MODE not explicit)
 
-If `MODE` not explicitly set, auto-detect:
-- Draft exists → ask resume/discard (route → resume_draft)
-- Project + Foundation exist → route to **mode_menu** (ask user intent: View/Update/Milestone/Rewrite/Migrate)
-- Project exists but Foundation missing → route to **migrate** (auto-suggested)
-- Nothing exists → route to **first_time** (full 7 rounds)
+If user passed an explicit flag (`--update`, `--migrate`, etc.), validate flag matches state — warn if mismatch but proceed. If NO flag, present **state-tailored menu** (different options shown based on STATE category — không cần user nhớ flag nào).
 
 ```bash
+# Validate explicit flags against state — warn if mismatch
+if [ -n "$MODE" ]; then
+  case "${MODE}-${STATE}" in
+    migrate-greenfield|migrate-fully-initialized)
+      echo "⚠ --migrate yêu cầu PROJECT.md cũ tồn tại + FOUNDATION.md missing."
+      echo "   Hiện trạng: ${STATE}. Migration không cần thiết."
+      echo "   Bạn có thể đang muốn: $([ "$STATE" = "greenfield" ] && echo "/vg:project (first-time)" || echo "/vg:project --update")"
+      exit 0
+      ;;
+    init_only-greenfield|init_only-legacy-v1)
+      echo "⚠ --init-only yêu cầu FOUNDATION.md tồn tại."
+      echo "   Hiện trạng: ${STATE}."
+      echo "   Bạn có thể đang muốn: $([ "$STATE" = "legacy-v1" ] && echo "/vg:project --migrate" || echo "/vg:project (first-time)")"
+      exit 0
+      ;;
+    update-greenfield|milestone-greenfield)
+      echo "⚠ --${MODE} yêu cầu artifacts đã tồn tại. Hiện trạng: greenfield."
+      echo "   Bạn có thể đang muốn: /vg:project (first-time)"
+      exit 0
+      ;;
+  esac
+fi
+
+# Auto-detect mode based on state if no explicit flag
 if [ -z "$MODE" ]; then
-  if [ "$DRAFT_EXISTS" = "true" ]; then
-    MODE="resume_check"
-  elif [ "$PROJECT_EXISTS" = "true" ] && [ "$FOUNDATION_EXISTS" = "true" ]; then
-    MODE="mode_menu"
-  elif [ "$PROJECT_EXISTS" = "true" ] && [ "$FOUNDATION_EXISTS" = "false" ]; then
-    echo "⚠ PROJECT.md exists but FOUNDATION.md missing — migration recommended."
-    MODE="migrate_suggested"
-  else
-    MODE="first_time"
-  fi
+  case "$STATE" in
+    draft-in-progress)    MODE="resume_check" ;;     # Always offer resume/discard first
+    fully-initialized)    MODE="state_menu_full" ;;  # Show full re-run menu (view/update/milestone/rewrite)
+    legacy-v1)            MODE="state_menu_legacy" ;;# Recommend migrate, offer alternatives
+    brownfield-fresh)     MODE="state_menu_brown" ;; # Recommend first-time with codebase scan, or migrate hint
+    greenfield)           MODE="first_time" ;;       # Direct to capture (Round 1)
+  esac
 fi
 ```
 
-Branch on `MODE` — see step blocks below for each.
+### State menus (presented to user — proactive suggestion, no need to remember flags)
+
+**state=fully-initialized → `state_menu_full`:**
+```
+✅ Project đã đầy đủ artifacts (PROJECT + FOUNDATION + config). Bạn muốn:
+
+   [v] View      In hiện trạng, không đổi gì                  (default safe)
+   [u] Update    Discussion bổ sung, MERGE giữ phần không touch
+   [m] Milestone Append milestone mới (foundation untouched)
+   [w] Rewrite   Reset toàn bộ (backup → .archive/{ts}/, full re-run)
+   [c] Cancel    Exit, không làm gì
+
+   Nhập 1 ký tự: [v/u/m/w/c]
+```
+Map answer to MODE: v→view, u→update, m→milestone, w→rewrite. Default if cancelled = view.
+
+**state=legacy-v1 → `state_menu_legacy`:**
+```
+⚠ Project legacy v1 format — có PROJECT.md cũ nhưng chưa có FOUNDATION.md.
+
+   Đề xuất: ⭐ [m] Migrate (RECOMMENDED)
+            Tự extract FOUNDATION.md từ PROJECT.md + scan codebase + vg.config.md cũ
+            Backup PROJECT.md v1 → .planning/.archive/{ts}/PROJECT.v1.md
+            → /vg:project --migrate
+
+   Lựa chọn khác:
+   [v] View    In PROJECT.md hiện có, không đổi
+   [w] Rewrite Bỏ hết v1, làm lại từ đầu (backup v1)
+   [c] Cancel  Exit
+
+   Nhập 1 ký tự: [m/v/w/c]   (default: m)
+```
+Map: m→migrate, v→view, w→rewrite, c→exit.
+
+**state=brownfield-fresh → `state_menu_brown`:**
+```
+🗂  Phát hiện codebase hiện có ($CODEBASE_HINT) nhưng chưa có planning artifacts.
+
+   Đề xuất: ⭐ [f] First-time với codebase scan (RECOMMENDED)
+            Bot sẽ scan codebase trước, suggest defaults cho 7-round discussion.
+            User chỉ cần xác nhận / điều chỉnh.
+            → /vg:project (sẽ auto detect codebase trong Round 2)
+
+   Lựa chọn khác:
+   [d] Describe — chỉ mô tả thuần text, bỏ qua scan codebase (greenfield-style)
+   [c] Cancel   Exit
+
+   Nhập 1 ký tự: [f/d/c]   (default: f)
+```
+Map: f→first_time (codebase-aware), d→first_time (no scan), c→exit.
+
+**state=draft-in-progress → `resume_check`:** (same as before — offer resume/discard/view of draft)
+
+**state=greenfield → `first_time` direct:** No menu, jump straight to Round 1 capture (most common new-project case).
+
+### Pretty header before menu
+
+Always print MODE chosen + brief explanation before invoking handler:
+```
+━━━ Mode: [view|update|milestone|rewrite|migrate|first_time|init_only] ━━━
+{1-line description of what's about to happen}
+```
+
+User chỉ cần gõ `/vg:project` — toàn bộ logic tự dẫn dắt.
 </step>
 
 <step name="2a_resume_check">
