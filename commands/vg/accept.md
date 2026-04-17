@@ -198,6 +198,91 @@ fi
 ```
 </step>
 
+<step name="3b_unreachable_triage_gate">
+**Gate 3b: UNREACHABLE triage gate (added 2026-04-17)**
+
+⛔ HARD GATE: if `/vg:review` produced `.unreachable-triage.json` and any verdict is `bug-this-phase`, `cross-phase-pending:*`, or `scope-amend`, BLOCK accept unless `--allow-unreachable` + `--reason='...'` is supplied.
+
+Rationale: UNREACHABLE goals previously got "tracked separately" and shipped silently. They are bugs (or fictional roadmap entries) until proven otherwise. The triage produced by `/vg:review` distinguishes legitimate cross-phase ownership from bugs — only `cross-phase:{X.Y}` (owner already accepted + runtime-verified) is acceptance-safe.
+
+```bash
+TRIAGE_JSON="${PHASE_DIR}/.unreachable-triage.json"
+
+if [ -f "$TRIAGE_JSON" ]; then
+  # Parse blocking verdicts
+  BLOCKING_LIST=$(${PYTHON_BIN} - "$TRIAGE_JSON" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+blocking = []
+for gid, v in data.get("verdicts", {}).items():
+    if v.get("blocks_accept"):
+        blocking.append(f"{gid}|{v['verdict']}|{v['title'][:80]}")
+print("\n".join(blocking))
+PY
+)
+
+  if [ -n "$BLOCKING_LIST" ]; then
+    BLOCKING_COUNT=$(echo "$BLOCKING_LIST" | wc -l)
+    echo ""
+    echo "⛔ /vg:accept BLOCKED — ${BLOCKING_COUNT} UNREACHABLE goals need resolution before phase ${PHASE_NUMBER} can ship:"
+    echo ""
+    echo "$BLOCKING_LIST" | while IFS='|' read -r gid verdict title; do
+      echo "  • ${gid} [${verdict}] — ${title}"
+    done
+    echo ""
+    echo "See ${PHASE_DIR}/UNREACHABLE-TRIAGE.md for evidence + required actions."
+    echo ""
+    echo "Fix paths by verdict:"
+    echo "  bug-this-phase       → /vg:build ${PHASE_NUMBER} --gaps-only"
+    echo "  cross-phase-pending  → wait for owning phase to reach 'accepted', OR /vg:amend ${PHASE_NUMBER}"
+    echo "  scope-amend          → /vg:amend ${PHASE_NUMBER}  (remove goal or move to new phase)"
+    echo ""
+
+    if [[ "$ARGUMENTS" =~ --allow-unreachable ]]; then
+      REASON=$(echo "$ARGUMENTS" | grep -oE -- "--reason='[^']+'" | sed "s/--reason='//; s/'$//")
+      if [ -z "$REASON" ]; then
+        echo "⛔ --allow-unreachable requires --reason='<why shipping with known gaps>'"
+        exit 1
+      fi
+      echo "⚠ --allow-unreachable set with reason: ${REASON}"
+      echo "   Recording to override-debt register + UAT.md 'Unreachable Debt' section"
+      # Log to override-debt (helper from _shared/override-debt.md)
+      override_debt_record "unreachable-accept" "$PHASE_NUMBER" "$REASON" 2>/dev/null || \
+        echo "unreachable-accept: phase=${PHASE_NUMBER} reason=\"${REASON}\" ts=$(date -u +%FT%TZ)" \
+          >> "${PHASE_DIR}/build-state.log"
+      # Stash for write_uat_md to surface
+      echo "$BLOCKING_LIST" > "${VG_TMP}/uat-unreachable-debt.txt"
+      echo "$REASON" > "${VG_TMP}/uat-unreachable-reason.txt"
+    else
+      exit 1
+    fi
+  fi
+
+  # Surface RESOLVED (cross-phase) entries — informational, requires acknowledgment in UAT
+  RESOLVED_LIST=$(${PYTHON_BIN} - "$TRIAGE_JSON" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+resolved = []
+for gid, v in data.get("verdicts", {}).items():
+    if not v.get("blocks_accept") and v["verdict"].startswith("cross-phase:"):
+        owner = v["verdict"].split(":", 1)[1]
+        resolved.append(f"{gid}|{owner}|{v['title'][:80]}")
+print("\n".join(resolved))
+PY
+)
+  if [ -n "$RESOLVED_LIST" ]; then
+    echo "✓ UNREACHABLE triage resolved (cross-phase, owner accepted):"
+    echo "$RESOLVED_LIST" | while IFS='|' read -r gid owner title; do
+      echo "  • ${gid} → owned by Phase ${owner} — ${title}"
+    done
+    echo "$RESOLVED_LIST" > "${VG_TMP}/uat-unreachable-resolved.txt"
+  fi
+fi
+```
+</step>
+
 <step name="4_build_uat_checklist">
 **Build data-driven UAT checklist from VG artifacts.**
 
@@ -577,6 +662,24 @@ Totals: {passed}P / {failed}F / {skipped}S
 | ... | ... | ... | ... | ... |
 
 Totals: {passed}P / {failed}F / {skipped}S  (+ {N} pre-known gaps not gated)
+
+## B.1 UNREACHABLE Triage (from UNREACHABLE-TRIAGE.md)
+
+Surfaced only when `/vg:review` produced triage. Each entry shows verdict + resolution path.
+
+### Resolved (cross-phase, owner accepted) — informational
+| G-XX | Owning phase | Title |
+|------|-------------|-------|
+| (populated from `${VG_TMP}/uat-unreachable-resolved.txt`) |
+
+### Unreachable Debt (only present when `--allow-unreachable` was used)
+**Override reason:** {from `${VG_TMP}/uat-unreachable-reason.txt`}
+
+| G-XX | Verdict | Title | Required follow-up |
+|------|---------|-------|---------------------|
+| (populated from `${VG_TMP}/uat-unreachable-debt.txt`) |
+
+These goals shipped with known gaps. Auto-tracked in override-debt register; will surface in `/vg:telemetry` and milestone audit until cleared.
 
 ## C. Ripple Acknowledgment (RIPPLE-ANALYSIS.md)
 - Total HIGH callers: {N}

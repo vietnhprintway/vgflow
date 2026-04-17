@@ -2225,6 +2225,32 @@ IF PASS:
 ```
 </step>
 
+<step name="unreachable_triage">
+## UNREACHABLE Triage (auto-classify before crossai/accept)
+
+If GOAL-COVERAGE-MATRIX has any goal at status `UNREACHABLE`, run triage to classify each one. UNREACHABLE alone is NOT a final verdict — it must resolve to `cross-phase`, `cross-phase-pending`, `bug-this-phase`, or `scope-amend`. See `_shared/unreachable-triage.md` for the helper logic.
+
+```bash
+session_mark_step "4f-unreachable-triage"
+echo ""
+echo "🔍 UNREACHABLE triage — classifying unresolved goals..."
+
+# Source helper (conceptual — inline logic from _shared/unreachable-triage.md in practice)
+triage_unreachable_goals "$PHASE_DIR" "$PHASE_NUMBER"
+# Outputs:
+#   ${PHASE_DIR}/UNREACHABLE-TRIAGE.md         (human-readable, evidence per goal)
+#   ${PHASE_DIR}/.unreachable-triage.json      (machine-readable, drives accept gate)
+```
+
+**Triage does NOT block review exit.** UNREACHABLE classification only blocks `/vg:accept` — review's job is to produce the triage report; user reviews + acts before accept. This separation lets user inspect verdicts and decide:
+- `bug-this-phase` → run `/vg:build {phase} --gaps-only` to fix
+- `cross-phase-pending:{X.Y}` → ship the owning phase first, OR `/vg:amend` to move goal
+- `scope-amend` → `/vg:amend {phase}` to remove goal, OR `/vg:add-phase` to create owning phase
+- `cross-phase:{X.Y}` → no action (resolved with citation)
+
+If 0 UNREACHABLE goals → triage skipped, no file written.
+</step>
+
 <step name="crossai_review">
 ## CrossAI Review (optional)
 
@@ -2263,6 +2289,9 @@ Commit:
 git add ${PHASE_DIR}/RUNTIME-MAP.json ${PHASE_DIR}/RUNTIME-MAP.md \
        ${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md ${PHASE_DIR}/element-counts.json \
        ${SCREENSHOTS_DIR}/
+# UNREACHABLE-TRIAGE artifacts (only exist if triage ran — i.e., any UNREACHABLE goal)
+[ -f "${PHASE_DIR}/UNREACHABLE-TRIAGE.md" ]   && git add "${PHASE_DIR}/UNREACHABLE-TRIAGE.md"
+[ -f "${PHASE_DIR}/.unreachable-triage.json" ] && git add "${PHASE_DIR}/.unreachable-triage.json"
 git commit -m "review({phase}): RUNTIME-MAP — {views} views, {actions} actions, gate {PASS|BLOCK}"
 ```
 </step>
