@@ -1,98 +1,190 @@
 ---
 name: "vg-next"
-description: "Auto-detect current VG pipeline step and show what to run next"
+description: "Auto-detect current V5 pipeline step and advance to the next"
 metadata:
-  short-description: "Detect pipeline position and suggest next command"
+  short-description: "Auto-detect current V5 pipeline step and advance to the next"
 ---
 
 <codex_skill_adapter>
-## A. Skill Invocation
-- This skill is invoked by mentioning `$vg-next`.
-- Treat all user text after `$vg-next` as arguments: `{{PHASE}}`
-- If no phase given, read STATE.md to detect current phase automatically.
+## Codex ⇆ Claude Code tool mapping
 
-## B. AskUserQuestion → request_user_input Mapping
-GSD workflows use `AskUserQuestion` (Claude Code syntax). Translate to Codex `request_user_input`:
-- AskUserQuestion(question="X") → request_user_input(prompt="X")
+This skill was originally designed for Claude Code. When running in Codex CLI:
 
-## C. No browser needed
-This skill only reads files — no Playwright required.
+| Claude tool | Codex equivalent |
+|------|------------------|
+| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) |
+| Task (agent spawn) | Use `codex exec --model <model>` subprocess with isolated prompt |
+| TaskCreate/TaskUpdate | N/A — use inline markdown headers and status narration |
+| WebFetch | `curl -sfL` or `gh api` for GitHub URLs |
+| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively |
+
+## Invocation
+
+This skill is invoked by mentioning `$vg-next`. Treat all user text after `$vg-next` as arguments.
+
+If argument-hint in source frontmatter is not empty and user provides no args, ask once via request_user_input before proceeding.
 </codex_skill_adapter>
 
-<rules>
-1. Read config from `.claude/vg.config.md` (or `vg.config.md` at project root).
-2. Read `${PLANNING_DIR}/STATE.md` to detect current phase if not given.
-3. Evaluate routes IN ORDER — first match wins.
-4. Display the exact command to run next (using `$vg-*` prefix for Codex CLI).
-5. For cross-CLI options, show both Claude (`/vg:*`) and Codex (`$vg-*`) variants.
-</rules>
+
+<objective>
+Detect current position in the 7-step phase pipeline and immediately invoke the next command.
+
+Pipeline order: specs → scope → blueprint → build → review → test → accept
+</objective>
 
 <process>
 
-**Step 1: Load config**
-Read `.claude/vg.config.md` → extract `paths.planning`, `paths.phases`, `profile`.
-- PLANNING_DIR = `{paths.planning}` (default: `.planning`)
-- PHASES_DIR = `{paths.phases}` (default: `.planning/phases`)
-- PROFILE = `{profile}` (default: `web-fullstack`)
+<step name="load_config">
+**Config:** Read .claude/commands/vg/_shared/config-loader.md first.
+</step>
 
-Profile determines which steps apply. Use `${PYTHON_BIN} .claude/scripts/filter-steps.py --command <cmd.md> --profile $PROFILE --output-ids` to check expected steps for any command.
+<step name="detect_state">
+Read `${PLANNING_DIR}/STATE.md` and `${PLANNING_DIR}/ROADMAP.md`.
 
-**Step 2: Detect phase**
-If phase argument given → use it.
-Else → read `${PLANNING_DIR}/STATE.md` → extract `current_phase` and `phase_dir`.
+Extract `current_phase` and `phase_dir`.
 
-PHASE_DIR = `${PHASES_DIR}/{phase_dir}`
+If `${PLANNING_DIR}/` does not exist or STATE.md is missing:
+  - Output: "No VG project detected. Run /vg:project to initialize."
+  - STOP.
+</step>
 
-**Step 3: Evaluate routes**
+<step name="detect_pipeline_position">
+**Phase reconnaissance — recon-driven routing (replaces binary file-exists checks).**
 
-**Route 0:** `STATE.md` has `paused_at` field
-→ Display: "Work paused. Resume with: `/gsd:resume-work`"
+Follow `.claude/commands/vg/_shared/phase-recon.md`.
 
-**Route 1:** No `SPECS.md` in PHASE_DIR
-→ Display: "No SPECS.md found. Start with: `$vg-specs {phase}` or `/vg:specs {phase}`"
-
-**Route 2:** `SPECS.md` exists, no `CONTEXT.md`
-→ Display: "Next: `/vg:scope {phase}` (scope requires Claude — reads SPECS + guides decisions)"
-
-**Route 3:** `CONTEXT.md` exists, no `PLAN*.md` or no `API-CONTRACTS.md`
-→ Display: "Next: `/vg:blueprint {phase}` (blueprint requires Claude)"
-
-**Route 4:** `PLAN*.md` + `API-CONTRACTS.md` exist, no `SUMMARY*.md`
-→ Display: "Next: `/vg:build {phase}` (build requires Claude)"
-
-**Marker-based precision check (fixes drift when SUMMARY exists but steps incomplete):**
-After determining candidate route, cross-check `.step-markers/` for the active command. If expected markers (per profile) are missing, show resume instruction instead:
 ```bash
-CMD_FOR_ROUTE={review|test|accept}  # derived from current route
-EXPECTED=$(${PYTHON_BIN} .claude/scripts/filter-steps.py --command .claude/commands/vg/${CMD_FOR_ROUTE}.md --profile $PROFILE --output-ids)
-for step in $(echo "$EXPECTED" | tr ',' ' '); do
-  if [ ! -f "${PHASE_DIR}/.step-markers/${step}.done" ]; then
-    MISSING="$MISSING $step"
+${PYTHON_BIN} .claude/scripts/phase-recon.py \
+  --phase-dir "${PHASE_DIR}" --profile "${PROFILE}" --quiet
+
+PHASE_TYPE=$(${PYTHON_BIN} -c "
+import json; s=json.load(open('${PHASE_DIR}/.recon-state.json', encoding='utf-8'))
+print(s['phase_type'])
+")
+NEXT_STEP=$(${PYTHON_BIN} -c "
+import json; s=json.load(open('${PHASE_DIR}/.recon-state.json', encoding='utf-8'))
+print(s['recommended_action']['step'])
+")
+HAS_PRE_ACTION=$(${PYTHON_BIN} -c "
+import json; s=json.load(open('${PHASE_DIR}/.recon-state.json', encoding='utf-8'))
+print('yes' if s['recommended_action'].get('pre_action') else 'no')
+")
+```
+
+**Route 0 (priority):** `STATE.md` shows `paused_at` field
+→ Read PIPELINE-STATE.json. Resume logic (tightened 2026-04-17 — field-specific):
+
+```bash
+PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
+if [ -f "$PIPELINE_STATE" ]; then
+  # Priority 1: find first step with status == "in_progress" (explicit pause)
+  RESUME_STEP=$(${PYTHON_BIN} -c "
+import json
+s = json.load(open('${PIPELINE_STATE}', encoding='utf-8'))
+steps = s.get('steps', {})
+order = ['specs','scope','blueprint','build','review','test','accept']
+for st in order:
+    if steps.get(st, {}).get('status') == 'in_progress':
+        print(st); break
+")
+  # Priority 2: if no in_progress, find last step with status == "done", resume from next
+  if [ -z "$RESUME_STEP" ]; then
+    RESUME_STEP=$(${PYTHON_BIN} -c "
+import json
+s = json.load(open('${PIPELINE_STATE}', encoding='utf-8'))
+steps = s.get('steps', {})
+order = ['specs','scope','blueprint','build','review','test','accept']
+last_done = -1
+for i, st in enumerate(order):
+    if steps.get(st, {}).get('status') == 'done':
+        last_done = i
+next_step = order[last_done + 1] if last_done + 1 < len(order) else 'complete'
+print(next_step)
+")
   fi
-done
-if [ -n "$MISSING" ]; then
-  echo "⚠ ${CMD_FOR_ROUTE} previously ran but $(echo $MISSING | wc -w) steps missing markers:$MISSING"
-  echo "   Resume with: /vg:${CMD_FOR_ROUTE} {phase} --resume"
+else
+  RESUME_STEP="scope"  # no state, start from beginning
+fi
+
+echo "Resume from: /vg:${RESUME_STEP} {phase}"
+```
+
+→ Next: `/vg:${RESUME_STEP} {phase}`
+
+**⛔ Deferred-incomplete gate (tightened 2026-04-17):**
+
+Before advancing to a NEW phase, check current phase for `.deferred-incomplete` marker:
+
+```bash
+CURRENT_PHASE_DIR="${PHASE_DIR}"  # from recon
+if [ -f "${CURRENT_PHASE_DIR}/.deferred-incomplete" ]; then
+  if [[ ! "$ARGUMENTS" =~ --allow-deferred ]]; then
+    echo "⛔ Phase ${PHASE_NUMBER} is DEFERRED-INCOMPLETE — cannot advance."
+    echo "   Open items in ${CURRENT_PHASE_DIR}/${PHASE_NUMBER}-UAT.md"
+    echo "   Resolve with: /vg:accept ${PHASE_NUMBER} --resume"
+    echo "   Force advance (creates tech debt): /vg:next --allow-deferred"
+    exit 1
+  else
+    echo "⚠ --allow-deferred set — advancing with ${PHASE_NUMBER} still deferred. Tech debt recorded."
+    echo "next-advance-with-deferred: ${PHASE_NUMBER} ts=$(date -u +%FT%TZ)" >> .planning/deferred-debt.log
+  fi
 fi
 ```
 
-**Route 5:** `SUMMARY*.md` exists, no `RUNTIME-MAP.json`
-→ Display:
+**Route 0b (legacy/hybrid):** `HAS_PRE_ACTION == "yes"` (recon found legacy artifacts)
+→ Display: "Phase {N} has legacy GSD artifacts — run `/vg:migrate {N}` to convert to VG format."
+→ Show what's missing: API-CONTRACTS.md, TEST-GOALS.md, enriched CONTEXT.md
+→ Do NOT auto-invoke migration. `/vg:next` is fast — migrations require interactive approval via `/vg:migrate`.
+
+**Recon routes** (derived from `NEXT_STEP`):
+- `NEXT_STEP == "scope"` → Next: `/vg:scope {phase}`
+- `NEXT_STEP == "blueprint"` → Next: `/vg:blueprint {phase}`
+- `NEXT_STEP == "build"` → Next: `/vg:build {phase}`
+- `NEXT_STEP == "review"` → Next: `/vg:review {phase}` (see Cross-CLI option below)
+- `NEXT_STEP == "test"` → Next: `/vg:test {phase}`
+- `NEXT_STEP == "accept"` → Next: `/vg:accept {phase}`
+- `NEXT_STEP == "complete"` → Phase done (check Route 8/9)
+
+**Review cross-CLI option** (only when NEXT_STEP == "review"):
+Display cross-CLI option:
+→ Display cross-CLI option:
 ```
-Next: Review — choose mode:
-
-A) Standard (Claude):   `/vg:review {phase}`
-B) Discovery (Codex):   `$vg-review {phase} --discovery-only`
-   Then evaluate (Claude): `/vg:review {phase} --evaluate-only`
-
-Add `--full-scan` to disable snapshot pruning (full accessibility tree, slower).
-Default: pruning ON — saves 50-70% tokens by filtering sidebar/header/footer.
+  **Review options:**
+  A) Standard:  `/vg:review {phase}` — Claude does full review (discovery + evaluate + fix)
+  B) Cross-CLI: Split work across AI CLIs for lower cost:
+     1. Codex:  `$vg-review {phase} --discovery-only`  — Codex does discovery (cheap, has MCP browser)
+     2. Claude: `/vg:review {phase} --evaluate-only`   — Claude reads scan results, evaluates + fixes
+     
+     Or Gemini: `/vg-review {phase} --discovery-only`  — same flow, Gemini does discovery
+  
+  Option B saves ~60-70% tokens on Claude (no browser interaction).
+  
+  Flag: add `--full-scan` to disable snapshot pruning (default: pruning ON, saves 50-70% tokens).
+  Use --full-scan only when app has non-standard layout or no <main> selector.
 ```
 
-**Route 5b:** `RUNTIME-MAP.json` exists + `GOAL-COVERAGE-MATRIX.md` exists + gate = BLOCK
-→ Read `discovery-state.json` → `completed_phase`
-→ Read `GOAL-COVERAGE-MATRIX.md` → failed goals
-→ Read `RUNTIME-MAP.json` → `goal_sequences[id].start_view`
+**Route 5b:** `RUNTIME-MAP.json` exists + `GOAL-COVERAGE-MATRIX.md` exists + gate = BLOCK (goals < 100%)
+→ Review ran but goals not met. Auto-detect cause from artifacts:
+
+```
+Read discovery-state.json → completed_phase field
+Read GOAL-COVERAGE-MATRIX.md → goal statuses (READY / BLOCKED / UNREACHABLE / FAILED)
+Read RUNTIME-MAP.json → goal_sequences[goal_id].start_view for each failed goal
+
+SIGNAL 1 — discovery-state.json.completed_phase ≠ "investigate":
+  → Review was INTERRUPTED (token exhaustion / session died mid-scan)
+  → Auto-invoke: /vg:review {phase} --resume
+  → No user choice needed.
+
+SIGNAL 2 — completed_phase == "investigate" (review fully completed):
+  Classify failed goals (4 distinct statuses — verify code presence before assuming):
+    UNREACHABLE = goal has no start_view AND code for page/route NOT found in repo
+                  (feature genuinely not built — grep config.code_patterns returns nothing)
+    NOT_SCANNED = goal has no start_view BUT code for page/route DOES exist
+                  (review didn't replay — multi-step wizard, orphan route, timeout, retry-scope miss)
+    BLOCKED/FAILED = goal has start_view but result=failed
+                     (view found, scan ran, criteria not met → code bug)
+```
 
 **Display to user (explain, then action):**
 
@@ -100,13 +192,18 @@ Default: pruning ON — saves 50-70% tokens by filtering sidebar/header/footer.
 ⚠ Phase {N} gate BLOCKED — {X}/{total} goals failed.
 
 ┌─ What the failure types mean ─────────────────────────────────┐
-│ UNREACHABLE ({N})  Scan couldn't find the feature's view/route│
-│                    → Feature likely not built yet             │
-│                    → Fix: build the missing code              │
+│ UNREACHABLE ({N})  Code for page/route NOT in repo (verified) │
+│                    → Feature not built yet                    │
+│                    → Fix: /vg:build {phase} --gaps-only       │
+│                                                               │
+│ NOT_SCANNED ({N})  Code EXISTS but review didn't replay       │
+│                    (multi-step wizard/mutation, orphan route, │
+│                     Haiku timeout, retry scope missed goal)   │
+│                    → Fix: /vg:test {phase} (codegen walks)    │
+│                         or --retry-failed (re-scan only)      │
 │                                                               │
 │ BLOCKED ({N})      View found, but goal criteria not met      │
-│                    (form didn't submit, API error, assertion  │
-│                    failed, toast not shown, etc.)             │
+│                    (form didn't submit, API error, etc.)      │
 │                    → Code has a bug — fix and re-scan         │
 │                                                               │
 │ INTERRUPTED        Review died mid-scan (token/timeout)       │
@@ -115,6 +212,7 @@ Default: pruning ON — saves 50-70% tokens by filtering sidebar/header/footer.
 
 Failed goals:
   [UNREACHABLE] {goal_id}: {goal_desc}
+  [NOT_SCANNED] {goal_id}: {goal_desc} (code: {path/to/page.tsx})
   [BLOCKED]     {goal_id}: {goal_desc} (view: {start_view})
   ...
 ```
@@ -122,66 +220,87 @@ Failed goals:
 **Then route by classification:**
 
 ```
-IF completed_phase ≠ "investigate":
-  → INTERRUPTED. Run: `$vg-review {phase} --resume` (or `/vg:review {phase} --resume` in Claude)
+IF all UNREACHABLE (code confirmed missing):
+  → Auto-invoke: /vg:build {phase} --gaps-only
+  Print: "All failures UNREACHABLE — feature missing. Auto-building gaps..."
+  After build completes → re-run /vg:review {phase}
 
-IF completed_phase == "investigate":
-  Classify goals:
-    UNREACHABLE = no start_view in goal_sequences
-    BLOCKED     = has start_view but result=failed
+IF all NOT_SCANNED (code exists, review skipped):
+  Print: "All failures NOT_SCANNED — code built but review didn't replay."
+  Display (do NOT auto-invoke — user picks based on root cause):
+    Common cause 1: Multi-step wizard/mutation needs dedicated browser session
+      → /vg:test {phase}
+        (codegen + Playwright auto-walks wizard, fills all steps, verifies goal)
+    Common cause 2: Timeout or retry-scope missed the goal
+      → /vg:review {phase} --retry-failed
+        (fresh re-scan of only failed views)
+    DO NOT run /vg:build --gaps-only — code already exists.
 
-  All UNREACHABLE → feature missing, build it:
-    `/vg:build {phase} --gaps-only` (requires Claude)
-    After build → re-run review
+IF all BLOCKED (code bugs — user fix required first):
+  Print: "All failures BLOCKED — code bugs in {N} views. Workflow:"
+  Display (do NOT auto-invoke):
+    Step 1: Fix the code (inspect logs/network errors in GOAL-COVERAGE-MATRIX.md)
+    Step 2: Re-scan ONLY failed views: /vg:review {phase} --retry-failed
+            (~5-10x faster than full review — skips passed views)
+    Cross-CLI option: $vg-review {phase} --retry-failed --discovery-only
+                    → /vg:review {phase} --evaluate-only
 
-  All BLOCKED → code bugs, user fixes first, then:
-    Option A (single-CLI):  `/vg:review {phase} --retry-failed`
-    Option B (cross-CLI, cheaper):
-      `$vg-review {phase} --retry-failed --discovery-only`
-      → `/vg:review {phase} --evaluate-only`
-    (--retry-failed re-scans ONLY failed views, 5-10x faster)
-
-  Mix →
-    Step 1: `/vg:build {phase} --gaps-only`   ← build UNREACHABLE first
-    Step 2: Fix code for BLOCKED (see list above)
-    Step 3: `/vg:review {phase} --retry-failed`  ← re-scan BLOCKED views
+IF mix (any combination):
+  Print: "Mixed failures — handle in order:"
+  Display (do NOT auto-invoke):
+    Step 1: /vg:build {phase} --gaps-only       ← if UNREACHABLE exists, build first
+    Step 2: Fix code for BLOCKED goals (list shown above)
+    Step 3: /vg:test {phase}                     ← if NOT_SCANNED exists (codegen for complex flows)
+    Step 4: /vg:review {phase} --retry-failed   ← re-verify everything
 ```
 
-**Route 6:** `RUNTIME-MAP.json` + `GOAL-COVERAGE-MATRIX.md` gate = PASS, no `*-SANDBOX-TEST.md`
-→ Display:
-```
-Next: Test/Verify — choose mode:
+**Route 6:** `RUNTIME-MAP.json` + `RUNTIME-MAP.md` exist + GOAL-COVERAGE-MATRIX gate = PASS + no `*-SANDBOX-TEST.md`
+→ Next: `/vg:test {phase}`
+Note: RUNTIME-MAP.json is the canonical artifact — .md alone is NOT sufficient for /vg:test.
 
-A) Standard (Claude):  `/vg:test {phase}`
-B) Codex verify:       `$vg-test {phase}`
+**Route 7:** `*-SANDBOX-TEST.md` exists but no `*-UAT.md` OR UAT status != "complete"
+→ Next: `/vg:accept {phase}`
 
-Add `--full-scan` to disable snapshot pruning.
-```
+**Route 8:** UAT complete AND next phase exists in ROADMAP.md AND next phase has NO `SPECS.md`
+→ Next: `/vg:specs {next_phase}`
 
-**Route 7:** `*-SANDBOX-TEST.md` exists, no `*-UAT.md` or UAT != complete
-→ Display: "Next: `/vg:accept {phase}` (human UAT — requires Claude)"
-
-**Route 8:** UAT complete, next phase in ROADMAP
-→ Display: "Next phase: `/vg:scope {next_phase}`"
+**Route 8b:** UAT complete AND next phase has `SPECS.md` but NO `CONTEXT.md`
+→ Next: `/vg:scope {next_phase}`
 
 **Route 9:** All phases complete
-→ Display: "All phases done. Run: `/gsd:complete-milestone`"
+→ Next: `/vg:project --milestone` (milestone wrap-up — VG-native)
+</step>
 
-**Step 4: Show artifact checklist**
+<step name="show_and_execute">
+Display current status with artifact checklist, then IMMEDIATELY invoke.
+
 ```
-## VG Next — Phase {N}
+## VG Next (V6)
 
-Artifacts:
-  {✓/✗} SPECS.md
-  {✓/✗} CONTEXT.md
-  {✓/✗} PLAN*.md + API-CONTRACTS.md
-  {✓/✗} SUMMARY*.md
-  {✓/✗} RUNTIME-MAP.json
-  {✓/✗} GOAL-COVERAGE-MATRIX.md (gate: PASS/BLOCK)
-  {✓/✗} *-SANDBOX-TEST.md
-  {✓/✗} *-UAT.md
+**Current:** Phase {N} — {name}
+**Phase type:** {PHASE_TYPE} (from recon)
+**Pipeline position (from .recon-state.json):**
+  scope:     {status} {v6_artifacts}
+  blueprint: {status} {v6_artifacts}
+  build:     {status} {v6_artifacts}
+  review:    {status} {v6_artifacts}
+  test:      {status} {v6_artifacts}
+  accept:    {status} {v6_artifacts}
 
-→ [Next command as determined above]
+▶ **Next step:** `/vg:{NEXT_STEP} {phase}`
+  {recommended_action.reason from recon}
 ```
+
+Pipeline position is read from `.recon-state.json` (per-step status: done|partial|missing|legacy_only).
+IMMEDIATELY invoke the next command. No confirmation prompt (except legacy migration which redirects to /vg:phase).
+</step>
 
 </process>
+
+<success_criteria>
+- Config loaded
+- State detected from files
+- Pipeline position determined
+- Status displayed with V5 artifact checklist
+- Next command invoked immediately
+</success_criteria>

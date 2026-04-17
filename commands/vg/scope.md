@@ -36,6 +36,8 @@ Pipeline: specs -> **scope** -> blueprint -> build -> review -> test -> accept
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first. Use config variables ($PLANNING_DIR, $PHASES_DIR, $PROFILE).
 
+**Bug detection (v1.11.2 R6 — MANDATORY):** Read `.claude/commands/vg/_shared/bug-detection-guide.md` BEFORE starting. Apply 6 detection patterns throughout: schema_violation (subagent JSON shape), helper_error (bash exit ≠ 0), user_pushback (keywords nhầm/sai/wrong/bug), ai_inconsistency (same input → different outputs), gate_loop (3+ same gate fails), self_discovery (AI's own bug findings). When pattern detected: NARRATE intent + CALL `report_bug` via bash + CONTINUE workflow (non-blocking).
+
 **Adversarial challenger (v1.9.1 R3, v1.9.3 R3.2 upgraded — 8 lenses + Opus, v1.9.5 R3.4 fd-3 content fix):** Source `.claude/commands/vg/_shared/lib/answer-challenger.sh` at top of command. After EVERY user answer in Rounds 1-5 AND in the Deep Probe Loop, invoke `challenge_answer "$user_answer" "round-$ROUND" "phase-scope" "$accumulated_draft"`.
 
 **v1.9.5 R3.4 FIX — subagent sandbox isolation:** Helper emits prompt CONTENT (not path) on fd 3. Tmp file kept for audit only. Orchestrator MUST use this exact bash pattern to capture:

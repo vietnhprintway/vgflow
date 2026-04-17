@@ -64,6 +64,8 @@ Sub-steps:
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first.
 
+**Bug detection (v1.11.2 R6 — MANDATORY):** Read `.claude/commands/vg/_shared/bug-detection-guide.md` BEFORE starting. Apply 6 detection patterns throughout: schema_violation, helper_error, user_pushback, ai_inconsistency, gate_loop, self_discovery. When detected: NARRATE intent + CALL `report_bug` via bash + CONTINUE workflow (non-blocking).
+
 **MCP Server Selection:** Auto-claim a free Playwright server using the lock manager (see config-loader "How to Acquire Playwright MCP Server").
 Run the claim command ONCE at start of 5c (browser steps), store `$MCP_PREFIX`. Release after 5c completes or on error.
 Every browser tool call = `{MCP_PREFIX}browser_navigate`, `{MCP_PREFIX}browser_snapshot`, `{MCP_PREFIX}browser_click`, etc.

@@ -71,6 +71,8 @@ Key difference from V4 execute: executors read API-CONTRACTS.md to ensure BE rou
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first.
 
+**Bug detection (v1.11.2 R6 — MANDATORY):** Read `.claude/commands/vg/_shared/bug-detection-guide.md` BEFORE starting. Apply 6 detection patterns throughout: schema_violation, helper_error, user_pushback, ai_inconsistency, gate_loop, self_discovery. When detected: NARRATE intent + CALL `report_bug` via bash + CONTINUE workflow (non-blocking).
+
 <step name="0_gate_integrity_precheck">
 **T8 gate (cổng) integrity precheck — blocks build if /vg:update left unresolved gate conflicts (xung đột).**
 

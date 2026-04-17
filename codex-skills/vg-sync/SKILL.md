@@ -40,12 +40,35 @@ Script delegates to `vgflow/sync.sh`. Runs bidirectional sync: edit ở source �
 <process>
 
 <step name="0_detect">
+
+**v1.11.0 R5 — `vgflow/` folder deprecated. Use external `vgflow-repo` clone:**
+
 ```bash
-if [ ! -f "vgflow/sync.sh" ]; then
-  echo "⛔ vgflow/sync.sh không tồn tại. VG chưa được install vào repo này?"
-  echo "   Run: bash path/to/vgflow/install.sh ."
+# Resolution priority (highest first):
+SYNC_SH=""
+for candidate in \
+  "${VGFLOW_REPO:-}/sync.sh" \
+  "../vgflow-repo/sync.sh" \
+  "../../vgflow-repo/sync.sh" \
+  "${HOME}/Workspace/Messi/Code/vgflow-repo/sync.sh" \
+  "vgflow/sync.sh"  ; do
+  if [ -f "$candidate" ]; then
+    SYNC_SH="$candidate"
+    break
+  fi
+done
+
+if [ -z "$SYNC_SH" ]; then
+  echo "⛔ vgflow-repo sync.sh not found."
+  echo "   Setup options:"
+  echo "   1. Set env: export VGFLOW_REPO=/path/to/vgflow-repo"
+  echo "   2. Clone sibling: git clone https://github.com/vietdev99/vgflow ../vgflow-repo"
+  echo "   Then re-run /vg:sync"
   exit 1
 fi
+
+echo "✓ Using sync script: $SYNC_SH"
+export DEV_ROOT="$(pwd)"
 ```
 </step>
 
@@ -53,7 +76,7 @@ fi
 Parse args: `--check` (dry-run), `--no-source` (skip source→mirror), `--no-global` (skip ~/.codex)
 
 ```bash
-bash vgflow/sync.sh $ARGUMENTS
+bash "$SYNC_SH" $ARGUMENTS
 ```
 
 Output shows:

@@ -68,6 +68,8 @@ Pipeline: specs → scope → blueprint → build → **review** → test → ac
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first.
 
+**Bug detection (v1.11.2 R6 — MANDATORY):** Read `.claude/commands/vg/_shared/bug-detection-guide.md` BEFORE starting. Apply 6 detection patterns throughout: schema_violation, helper_error, user_pushback, ai_inconsistency, gate_loop, self_discovery. When detected: NARRATE intent + CALL `report_bug` via bash + CONTINUE workflow (non-blocking).
+
 <CRITICAL_MCP_RULE>
 **BEFORE any browser interaction**, you MUST run the Playwright lock claim:
 ```bash
