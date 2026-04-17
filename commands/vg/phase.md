@@ -48,7 +48,7 @@ Valid step names: `specs`, `scope`, `blueprint`, `build`, `review`, `test`, `acc
 
 Resolve `PHASE_DIR` from `PHASE_ARG`:
 ```bash
-PHASE_DIR=$(find .planning/phases -maxdepth 1 -type d \( -name "${PHASE_ARG}*" -o -name "0${PHASE_ARG}*" \) 2>/dev/null | head -1)
+PHASE_DIR=$(find ${PLANNING_DIR}/phases -maxdepth 1 -type d \( -name "${PHASE_ARG}*" -o -name "0${PHASE_ARG}*" \) 2>/dev/null | head -1)
 if [ -z "$PHASE_DIR" ]; then
   echo "Phase dir not found for: $PHASE_ARG"
   exit 1

@@ -23,7 +23,7 @@ allowed-tools:
 <objective>
 Derive a phased roadmap from PROJECT.md requirements. Groups related requirements into phases, detects dependencies, estimates relative size, and writes ROADMAP.md.
 
-Output: `.planning/ROADMAP.md` + phase directories created
+Output: `${PLANNING_DIR}/ROADMAP.md` + phase directories created
 
 Pipeline: project → **roadmap** → map → prioritize → specs → scope → blueprint → build → review → test → accept
 </objective>
@@ -179,7 +179,7 @@ Before presenting roadmap to user, scan all proposed phase titles + descriptions
 ```bash
 # Source helper from _shared/foundation-drift.md (conceptual — inline in practice)
 PHASE_DIR=".planning"  # roadmap-level, not phase-specific
-FOUNDATION_FILE=".planning/FOUNDATION.md"
+FOUNDATION_FILE="${PLANNING_DIR}/FOUNDATION.md"
 
 if [ -f "$FOUNDATION_FILE" ]; then
   # Concatenate all proposed phase titles + descriptions for scan

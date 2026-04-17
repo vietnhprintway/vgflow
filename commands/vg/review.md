@@ -89,10 +89,10 @@ on every claim — if still no slot free, it's genuinely contended. Do NOT manua
 <step name="00_gate_integrity_precheck">
 **T8 gate (cổng) integrity precheck — blocks review if /vg:update left unresolved gate conflicts (xung đột).**
 
-If `.planning/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
+If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
 
 ```bash
-if [ -f ".planning/vgflow-patches/gate-conflicts.md" ]; then
+if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved — run /vg:reapply-patches --verify-gates first."
   exit 1
 fi
@@ -111,7 +111,7 @@ source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/de
 if type -t resolve_phase_dir >/dev/null 2>&1; then
   PHASE_DIR_CANDIDATE=$(resolve_phase_dir "$PHASE_NUMBER" 2>/dev/null || echo "")
 else
-  PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+  PHASE_DIR_CANDIDATE=$(ls -d ${PLANNING_DIR}/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
 fi
 
 # Emit session-start banner → distinct separator for Claude Code tail UI
@@ -827,7 +827,7 @@ else
   CHANGED_FILES=$(git diff --name-only $(git merge-base HEAD main) HEAD | sort -u)
 fi
 
-# Filter to source files only (exclude .planning/, .claude/, node_modules, etc)
+# Filter to source files only (exclude ${PLANNING_DIR}/, .claude/, node_modules, etc)
 CHANGED_SRC=$(echo "$CHANGED_FILES" | grep -vE '^\.(planning|claude|codex)/|/node_modules/|/dist/|/build/|/target/|^graphify-out/' || true)
 
 echo "Phase changed $(echo "$CHANGED_SRC" | wc -l) source files"
@@ -1171,7 +1171,7 @@ Issues detected:
 Next actions — choose scenario that matches your error, follow the exact commands:
 
   First: read deploy log to identify exact error
-  `cat .planning/phases/{phase}/deploy-review.json`
+  `cat ${PLANNING_DIR}/phases/{phase}/deploy-review.json`
 
   ┌─────────────────────────────────────────────────────────────────────────┐
   │ Scenario A — Deploy command WRONG in config                             │

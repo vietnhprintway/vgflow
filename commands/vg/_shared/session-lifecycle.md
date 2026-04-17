@@ -96,7 +96,7 @@ session_exit_banner() {
 }
 
 # Call at start — detect + sweep leftover state from previous interrupted run
-# Path convention: .planning/phases/{phase}/.{cmd}-state.json
+# Path convention: ${PLANNING_DIR}/phases/{phase}/.{cmd}-state.json
 stale_state_sweep() {
   local cmd="$1"
   local phase_dir="$2"
@@ -196,7 +196,7 @@ At top of `/vg:review`, `/vg:test`, `/vg:build` command files:
 source .claude/commands/vg/_shared/lib/session-lifecycle.sh   # .sh when extracted (v1.9.0 T3); functions inline in practice today
 
 PHASE_NUMBER="..."  # resolved from args
-PHASE_DIR=".planning/phases/${PHASE_NUMBER}..."
+PHASE_DIR="${PLANNING_DIR}/phases/${PHASE_NUMBER}..."
 
 session_start "{cmd_name}" "$PHASE_NUMBER"                # emits banner + sets EXIT trap
 stale_state_sweep "{cmd_name}" "$PHASE_DIR"               # auto-cleanup old state

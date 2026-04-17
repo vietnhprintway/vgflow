@@ -244,7 +244,7 @@ Phases tested: {N}
 Goals verified: {M} ({stable} stable, {fixed} fixed this run)
 Test files: {T} (all pass)
 Fix iterations: {ITERATION}
-Report: .planning/REGRESSION-REPORT.md
+Report: ${PLANNING_DIR}/REGRESSION-REPORT.md
 
 ▶ Ready to ship milestone.
 ```
@@ -257,8 +257,8 @@ Remaining:
   {goal_id}: {title} — {error_summary}
   ...
 
-Report: .planning/REGRESSION-REPORT.md
-Fix targets: .planning/regression-results.json → "Fix targets" section
+Report: ${PLANNING_DIR}/REGRESSION-REPORT.md
+Fix targets: ${PLANNING_DIR}/regression-results.json → "Fix targets" section
 
 Options:
   [1] /vg:regression --fix  (retry fix loop)

@@ -60,7 +60,7 @@ After the loop, if manifest is empty → `rm -rf .claude/vgflow-patches/`.
 <step name="0_mode_router">
 **Mode router — T8 gate (cổng) integrity resolution vs legacy patch-conflict resolution.**
 
-If `$ARGUMENTS` contains `--verify-gates`, drive interactive gate-integrity resolution over `.planning/vgflow-patches/gate-conflicts.md` (written by `/vg:update` v1.8.0+ when a 3-way merge (gộp) altered a hard gate block).
+If `$ARGUMENTS` contains `--verify-gates`, drive interactive gate-integrity resolution over `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` (written by `/vg:update` v1.8.0+ when a 3-way merge (gộp) altered a hard gate block).
 
 Otherwise, fall through to the legacy manifest-based patch resolution below.
 
@@ -90,8 +90,8 @@ fi
 
 if [ "$MODE" = "verify-gates" ]; then
   REPO_ROOT="$(pwd)"
-  CONFLICTS_MD="${REPO_ROOT}/.planning/vgflow-patches/gate-conflicts.md"
-  DIFF_DIR="${REPO_ROOT}/.planning/vgflow-patches/gate-conflicts"
+  CONFLICTS_MD="${REPO_ROOT}/${PLANNING_DIR}/vgflow-patches/gate-conflicts.md"
+  DIFF_DIR="${REPO_ROOT}/${PLANNING_DIR}/vgflow-patches/gate-conflicts"
 
   if [ ! -f "$CONFLICTS_MD" ]; then
     echo "No gate-conflicts (xung đột cổng) found at ${CONFLICTS_MD}. Nothing to verify."
@@ -115,7 +115,7 @@ fi
 
 Then, for EACH conflict heading listed above, the Claude tool driver (not bash) should:
 
-1. Read the per-gate unified diff from `.planning/vgflow-patches/gate-conflicts/{command}-{gate_id}.diff`.
+1. Read the per-gate unified diff from `${PLANNING_DIR}/vgflow-patches/gate-conflicts/{command}-{gate_id}.diff`.
 2. Present the diff to the user via the `AskUserQuestion` tool with the 4 options `[u] use upstream` / `[m] keep merged` / `[s] skip+flag` / `[c] cancel`.
 3. Apply the choice:
    - **`u`** — locate the gate block in `.claude/commands/vg/{command}.md` (using fingerprint from context), replace with the upstream block provided in the diff, emit telemetry `gate_integrity_conflict` with `outcome=RESOLVED_UPSTREAM`.

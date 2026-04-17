@@ -17,7 +17,7 @@
 telemetry_init() {
   [ "${CONFIG_TELEMETRY_ENABLED:-true}" = "true" ] || return 0
   export TELEMETRY_SESSION_ID="${TELEMETRY_SESSION_ID:-$(openssl rand -hex 8 2>/dev/null || printf '%08x%08x' $RANDOM $RANDOM)}"
-  export TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  export TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   mkdir -p "$(dirname "$TELEMETRY_PATH")" 2>/dev/null || true
 
   # Cheap retention: truncate events older than retention_days (only rewrite if cutoff reached)
@@ -38,7 +38,7 @@ emit_telemetry_v2() {
   local event_type="$1" phase="$2" step="$3" gate_id="${4:-}" outcome="${5:-}" payload_json="${6-}"
   [ -z "$payload_json" ] && payload_json='{}'
   local correlation_id="${7:-}" command="${8:-${VG_CURRENT_COMMAND:-unknown}}"
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
 
   # Sampling
   local rate="${CONFIG_TELEMETRY_SAMPLE_RATE:-1.0}"
@@ -128,7 +128,7 @@ sys.stdout.write(json.dumps(d, ensure_ascii=False))
 # Query API — filter events by gate_id / outcome / phase / event_type / since
 # Usage: telemetry_query --gate-id=X --outcome=OVERRIDE --since=2026-04-10
 telemetry_query() {
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   [ -f "$path" ] || return 0
   local gate_id="" outcome="" phase="" event_type="" since=""
   for arg in "$@"; do
@@ -167,7 +167,7 @@ PY
 telemetry_warn_overrides() {
   local threshold="${1:-2}"
   local milestone_since="${2:-$(date -u -d '30 days ago' +%FT%TZ 2>/dev/null || date -u +%FT%TZ)}"
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   [ -f "$path" ] || return 0
   ${PYTHON_BIN:-python3} - "$path" "$threshold" "$milestone_since" <<'PY'
 import json, sys
@@ -195,7 +195,7 @@ PY
 
 # Retention pruner
 telemetry_prune() {
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   local days="${CONFIG_TELEMETRY_RETENTION_DAYS:-90}"
   [ -f "$path" ] || return 0
   ${PYTHON_BIN:-python3} - "$path" "$days" <<'PY'

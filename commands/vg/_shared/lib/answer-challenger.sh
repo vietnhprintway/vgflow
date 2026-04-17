@@ -46,7 +46,7 @@ challenger_is_trivial() {
 # Count prior challenges emitted for this phase/session — loop guard
 challenger_count_for_phase() {
   local phase="$1"
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   [ -f "$path" ] || { echo 0; return; }
   ${PYTHON_BIN:-python3} - "$path" "$phase" <<'PY'
 import json, sys
@@ -96,8 +96,8 @@ challenge_answer() {
 
   # Always include FOUNDATION.md if it exists — adversary checks platform/compliance drift
   local foundation_excerpt=""
-  if [ -f ".planning/FOUNDATION.md" ]; then
-    foundation_excerpt=$(head -c 8000 ".planning/FOUNDATION.md" 2>/dev/null || true)
+  if [ -f "${PLANNING_DIR}/FOUNDATION.md" ]; then
+    foundation_excerpt=$(head -c 8000 "${PLANNING_DIR}/FOUNDATION.md" 2>/dev/null || true)
   fi
 
   # v1.9.5 R3.4: emit prompt CONTENT on fd 3 (not just path), because Task

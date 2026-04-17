@@ -27,7 +27,7 @@ Ví dụ:
 - Discussion/UAT artifact đọc được bởi non-technical stakeholders
 
 **KHÔNG áp dụng:**
-- Tên file/path (vd `PROJECT.md`, `.planning/`)
+- Tên file/path (vd `PROJECT.md`, `${PLANNING_DIR}/`)
 - Code identifiers (vd `D-XX`, `G-XX`, `npm`, `pnpm`, `git`, `bash`)
 - Tag values từ config (vd `web-saas`, `monolith`)
 - Lần lặp lại trong cùng message — chỉ cần giải thích lần đầu

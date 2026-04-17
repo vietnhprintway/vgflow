@@ -128,7 +128,7 @@ Store: `$DEPENDS_ON[]`
 Scan new phase title + requirements text for keywords hint platform shift away from FOUNDATION.md. Soft warning only — does NOT block.
 
 ```bash
-FOUNDATION_FILE=".planning/FOUNDATION.md"
+FOUNDATION_FILE="${PLANNING_DIR}/FOUNDATION.md"
 if [ -f "$FOUNDATION_FILE" ]; then
   SCAN_TEXT="${PHASE_NAME} ${SELECTED_REQS[*]}"
   # Source helper from _shared/foundation-drift.md (conceptual)

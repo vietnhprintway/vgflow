@@ -27,7 +27,7 @@ Use markdown headers in your text output between tool calls (e.g. `## ━━━ 
 3. **Three artifacts written atomically** — `PROJECT.md`, `FOUNDATION.md`, `vg.config.md`. All-or-nothing commit.
 4. **Foundation = load-bearing** — drives roadmap/init/scope/add-phase. Drift detection ở downstream commands.
 5. **MERGE NOT OVERWRITE** — re-runs preserve existing decisions. Only [w] Rewrite resets (with backup).
-6. **Resumable** — `.planning/.project-draft.json` checkpoints every round. Interrupt-safe.
+6. **Resumable** — `${PLANNING_DIR}/.project-draft.json` checkpoints every round. Interrupt-safe.
 7. **Brownfield aware** — `--migrate` extracts foundation from existing PROJECT.md + codebase scan.
 </rules>
 
@@ -139,10 +139,10 @@ CODEBASE_HINT=$(echo "$CODEBASE_HINT" | sed 's/ *$//')
 echo ""
 echo "🔍 ━━━ /vg:project — Hiện trạng project ━━━"
 echo ""
-printf "  📁 %-32s %s\n" ".planning/PROJECT.md"      "$([ "$PROJECT_EXISTS" = "true" ]    && echo "✓ exists ($PROJECT_AGE)"    || echo "✗ missing")"
-printf "  📁 %-32s %s\n" ".planning/FOUNDATION.md"   "$([ "$FOUNDATION_EXISTS" = "true" ] && echo "✓ exists ($FOUNDATION_AGE)" || echo "✗ missing")"
+printf "  📁 %-32s %s\n" "${PLANNING_DIR}/PROJECT.md"      "$([ "$PROJECT_EXISTS" = "true" ]    && echo "✓ exists ($PROJECT_AGE)"    || echo "✗ missing")"
+printf "  📁 %-32s %s\n" "${PLANNING_DIR}/FOUNDATION.md"   "$([ "$FOUNDATION_EXISTS" = "true" ] && echo "✓ exists ($FOUNDATION_AGE)" || echo "✗ missing")"
 printf "  📁 %-32s %s\n" ".claude/vg.config.md"      "$([ "$CONFIG_EXISTS" = "true" ]     && echo "✓ exists ($CONFIG_AGE)"     || echo "✗ missing")"
-printf "  📁 %-32s %s\n" ".planning/.project-draft.json" "$([ "$DRAFT_EXISTS" = "true" ]  && echo "⚠ draft in progress"        || echo "✗ none")"
+printf "  📁 %-32s %s\n" "${PLANNING_DIR}/.project-draft.json" "$([ "$DRAFT_EXISTS" = "true" ]  && echo "⚠ draft in progress"        || echo "✗ none")"
 printf "  🗂  %-32s %s\n" "Codebase"                  "$([ "$HAS_CODE" = "true" ]          && echo "✓ detected ($CODEBASE_HINT)" || echo "✗ none (greenfield)")"
 echo ""
 
@@ -340,7 +340,7 @@ for pattern in ["docs/**/*.md", "BRIEF.md", "SPEC.md", "RFC*.md", "*-brief.md", 
         if f not in scan["docs_found"] and "vendor" not in f and "node_modules" not in f:
             scan["docs_found"].append(f)
 
-# 9. .planning/ deep scan — toàn bộ artifacts từ pipeline trước
+# 9. ${PLANNING_DIR}/ deep scan — toàn bộ artifacts từ pipeline trước
 planning_dir = Path(".planning")
 if planning_dir.is_dir():
     # 9a. PROJECT.md (legacy or current)
@@ -352,32 +352,32 @@ if planning_dir.is_dir():
         if not scan["name"]:
             m = re.search(r'^#\s+(.+)$', text, re.M)
             if m: scan["name"] = m.group(1).strip()[:80]
-        scan["docs_found"].append(".planning/PROJECT.md (legacy)")
+        scan["docs_found"].append("${PLANNING_DIR}/PROJECT.md (legacy)")
 
     # 9b. REQUIREMENTS.md — list of REQ-XX items
     req_file = planning_dir / "REQUIREMENTS.md"
     if req_file.exists():
         text = req_file.read_text(encoding="utf-8", errors="ignore")
         req_count = len(re.findall(r'\b(REQ|R)-?\d+\b', text))
-        scan["docs_found"].append(f".planning/REQUIREMENTS.md ({req_count} requirements)")
+        scan["docs_found"].append(f"${PLANNING_DIR}/REQUIREMENTS.md ({req_count} requirements)")
 
     # 9c. ROADMAP.md — phase plan
     roadmap_file = planning_dir / "ROADMAP.md"
     if roadmap_file.exists():
         text = roadmap_file.read_text(encoding="utf-8", errors="ignore")
         phase_count = len(re.findall(r'^##?\s*Phase\s+[\d.]+', text, re.M))
-        scan["docs_found"].append(f".planning/ROADMAP.md ({phase_count} phases)")
+        scan["docs_found"].append(f"${PLANNING_DIR}/ROADMAP.md ({phase_count} phases)")
 
     # 9d. STATE.md — pipeline progress snapshot
     state_file = planning_dir / "STATE.md"
     if state_file.exists():
-        scan["docs_found"].append(".planning/STATE.md (pipeline state snapshot)")
+        scan["docs_found"].append("${PLANNING_DIR}/STATE.md (pipeline state snapshot)")
 
     # 9e. SCOPE.md / PROJECT-SCOPE.md
     for scope_name in ["SCOPE.md", "PROJECT-SCOPE.md"]:
         scope_file = planning_dir / scope_name
         if scope_file.exists():
-            scan["docs_found"].append(f".planning/{scope_name}")
+            scan["docs_found"].append(f"${PLANNING_DIR}/{scope_name}")
 
     # 9f. phases/ directory — count + extract phase titles
     phases_dir = planning_dir / "phases"
@@ -388,7 +388,7 @@ if planning_dir.is_dir():
             completed = sum(1 for p in phase_dirs if (p / "UAT.md").exists())
             in_progress = sum(1 for p in phase_dirs if (p / "SUMMARY.md").exists() and not (p / "UAT.md").exists())
             scan["docs_found"].append(
-                f".planning/phases/ ({len(phase_dirs)} dirs: {completed} accepted, {in_progress} in-progress)"
+                f"${PLANNING_DIR}/phases/ ({len(phase_dirs)} dirs: {completed} accepted, {in_progress} in-progress)"
             )
             # Extract titles of latest 3 phases for context
             for p in phase_dirs[-3:]:
@@ -402,40 +402,40 @@ if planning_dir.is_dir():
     if intel_dir.is_dir():
         intel_count = len(list(intel_dir.glob("*.md")))
         if intel_count > 0:
-            scan["docs_found"].append(f".planning/intel/ ({intel_count} intel files)")
+            scan["docs_found"].append(f"${PLANNING_DIR}/intel/ ({intel_count} intel files)")
 
     # 9h. codebase/ — codebase mapping docs
     codebase_dir = planning_dir / "codebase"
     if codebase_dir.is_dir():
         codebase_count = len(list(codebase_dir.glob("*.md")))
         if codebase_count > 0:
-            scan["docs_found"].append(f".planning/codebase/ ({codebase_count} mapping docs)")
+            scan["docs_found"].append(f"${PLANNING_DIR}/codebase/ ({codebase_count} mapping docs)")
 
     # 9i. research/ — pre-roadmap research
     research_dir = planning_dir / "research"
     if research_dir.is_dir():
         research_count = len(list(research_dir.glob("*.md")))
         if research_count > 0:
-            scan["docs_found"].append(f".planning/research/ ({research_count} research docs)")
+            scan["docs_found"].append(f"${PLANNING_DIR}/research/ ({research_count} research docs)")
 
     # 9j. design-normalized/ — extracted design assets
     design_dir = planning_dir / "design-normalized"
     if design_dir.is_dir():
         design_count = len(list(design_dir.rglob("*.md"))) + len(list(design_dir.rglob("*.png")))
         if design_count > 0:
-            scan["docs_found"].append(f".planning/design-normalized/ ({design_count} design refs)")
+            scan["docs_found"].append(f"${PLANNING_DIR}/design-normalized/ ({design_count} design refs)")
 
     # 9k. milestones/ — completed milestone archives
     milestones_dir = planning_dir / "milestones"
     if milestones_dir.is_dir():
         milestone_count = len(list(milestones_dir.iterdir()))
         if milestone_count > 0:
-            scan["docs_found"].append(f".planning/milestones/ ({milestone_count} archived milestones)")
+            scan["docs_found"].append(f"${PLANNING_DIR}/milestones/ ({milestone_count} archived milestones)")
 
-    # 9l. Top-level loose docs in .planning/
+    # 9l. Top-level loose docs in ${PLANNING_DIR}/
     for f in planning_dir.glob("*.md"):
         if f.name not in {"PROJECT.md", "FOUNDATION.md", "REQUIREMENTS.md", "ROADMAP.md", "STATE.md", "SCOPE.md", "PROJECT-SCOPE.md"}:
-            scan["docs_found"].append(f".planning/{f.name}")
+            scan["docs_found"].append(f"${PLANNING_DIR}/{f.name}")
 
 # 10. Existing vg.config.md (already-confirmed config — highest trust)
 if Path(".claude/vg.config.md").exists():
@@ -556,7 +556,7 @@ Map answer to MODE: v→view, u→update, m→milestone, w→rewrite. Default if
 
    Đề xuất: ⭐ [m] Migrate (RECOMMENDED)
             Tự extract FOUNDATION.md từ PROJECT.md + scan codebase + vg.config.md cũ
-            Backup PROJECT.md v1 → .planning/.archive/{ts}/PROJECT.v1.md
+            Backup PROJECT.md v1 → ${PLANNING_DIR}/.archive/{ts}/PROJECT.v1.md
             → /vg:project --migrate
 
    Lựa chọn khác:
@@ -991,7 +991,7 @@ Output: pointer to next step "Run /vg:roadmap để add phases cho milestone m�
 Double confirm via AskUserQuestion:
 ```
 "⛔ REWRITE = destructive. Existing PROJECT.md + FOUNDATION.md + vg.config.md sẽ được:
- - Backup → .planning/.archive/{timestamp}/
+ - Backup → ${PLANNING_DIR}/.archive/{timestamp}/
  - Replaced với artifacts mới sau full re-run
 
  Confirm? [y] Yes — proceed / [n] No — abort"
@@ -1049,7 +1049,7 @@ Steps:
    | ...
 
    PROJECT.md sẽ được slim down — di chuyển foundation fields ra FOUNDATION.md.
-   Backup PROJECT.md cũ → .planning/.archive/{ts}/PROJECT.v1.md
+   Backup PROJECT.md cũ → ${PLANNING_DIR}/.archive/{ts}/PROJECT.v1.md
    ```
 6. AskUserQuestion: "Confirm migration? [y/n]"
 7. If yes:
@@ -1120,7 +1120,7 @@ Print next-step pointer based on mode:
 
 ## 1. Platform & Topology (8 dimensions)
 
-**Namespace:** All FOUNDATION decisions use `F-XX` (project-level, stable across milestones). Per-phase decisions live in `.planning/phases/*/CONTEXT.md` as `P{phase}.D-XX`.
+**Namespace:** All FOUNDATION decisions use `F-XX` (project-level, stable across milestones). Per-phase decisions live in `${PLANNING_DIR}/phases/*/CONTEXT.md` as `P{phase}.D-XX`.
 
 | # | Dimension | Value | Decision | Confidence |
 |---|-----------|-------|----------|------------|
@@ -1197,7 +1197,7 @@ User only asked về fields marked `<ASK>` (typically: ssh_alias, deploy.path, d
 
 ## Resumable draft format
 
-`.planning/.project-draft.json`:
+`${PLANNING_DIR}/.project-draft.json`:
 ```json
 {
   "started_at": "2026-04-17T...",

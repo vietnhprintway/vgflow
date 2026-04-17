@@ -32,7 +32,7 @@ Cross-phase security correlation that per-phase `/vg:secure-phase` cannot catch.
 Three operations:
 1. **Decay**: auto-escalate unresolved OPEN threats, auto-archive old MITIGATED
 2. **Correlate**: apply `config.security.composite_rules` to detect threats spanning multiple phases (e.g., broken-auth + broken-access = critical composite)
-3. **Report**: generate `.planning/security-audit-{date}.md` with trends, open counts, composite risks
+3. **Report**: generate `${PLANNING_DIR}/security-audit-{date}.md` with trends, open counts, composite risks
 
 Run before milestone completion OR on-demand for periodic security posture review.
 </objective>
@@ -161,7 +161,7 @@ For each new composite, emit telemetry `security_cross_phase_threat`.
 
 <step name="3_generate_audit_report">
 
-Write `.planning/security-audit-${today}.md`:
+Write `${PLANNING_DIR}/security-audit-${today}.md`:
 
 ```markdown
 # Security Milestone Audit — ${milestone_id}
@@ -210,7 +210,7 @@ Dry-run: {true|false}
 - {if open critical ≥ 3}: "Milestone cannot complete per config. Run /vg:secure-phase on affected phases."
 ```
 
-Attach to `.planning/milestones/${milestone}/` if milestone dir exists, else to `.planning/` root.
+Attach to `${PLANNING_DIR}/milestones/${milestone}/` if milestone dir exists, else to `${PLANNING_DIR}/` root.
 </step>
 
 <step name="4_milestone_complete_gate">
@@ -226,7 +226,7 @@ if [[ "$ARGUMENTS" =~ --milestone-gate ]]; then
   open_crit=$(count threats where status IN (OPEN, IN_PROGRESS) AND severity == "critical")
   if [ "$open_crit" -gt 0 ]; then
     echo "⛔ Milestone gate: ${open_crit} critical threats OPEN. Cannot archive milestone."
-    echo "   See: .planning/SECURITY-REGISTER.md"
+    echo "   See: ${PLANNING_DIR}/SECURITY-REGISTER.md"
     exit 1
   fi
 fi
@@ -238,7 +238,7 @@ fi
 <success_criteria>
 - Decay policy applied (escalate stale OPEN, archive old MITIGATED)
 - Composite threats computed per config.security.composite_rules
-- `.planning/security-audit-{date}.md` written with exec summary + trends
+- `${PLANNING_DIR}/security-audit-{date}.md` written with exec summary + trends
 - Telemetry events emitted for escalations + composites
 - Milestone complete gate: blocks if critical OPEN threats exist
 - Zero register corruption on failure (atomic writes via temp file + rename)

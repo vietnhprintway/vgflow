@@ -126,7 +126,7 @@ if [ -f "${CURRENT_PHASE_DIR}/.deferred-incomplete" ]; then
     exit 1
   else
     echo "⚠ --allow-deferred set — advancing with ${PHASE_NUMBER} still deferred. Tech debt recorded."
-    echo "next-advance-with-deferred: ${PHASE_NUMBER} ts=$(date -u +%FT%TZ)" >> .planning/deferred-debt.log
+    echo "next-advance-with-deferred: ${PHASE_NUMBER} ts=$(date -u +%FT%TZ)" >> ${PLANNING_DIR}/deferred-debt.log
   fi
 fi
 ```

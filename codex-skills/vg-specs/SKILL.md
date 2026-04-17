@@ -29,7 +29,7 @@ If argument-hint in source frontmatter is not empty and user provides no args, a
 <objective>
 Generate a concise SPECS.md defining phase goal, scope, constraints, and success criteria. This is the FIRST step of the VG pipeline — specs must be locked before scope, blueprint, or build can proceed.
 
-Output: `.planning/phases/{phase_dir}/SPECS.md`
+Output: `${PLANNING_DIR}/phases/{phase_dir}/SPECS.md`
 </objective>
 
 <process>

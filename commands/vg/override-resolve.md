@@ -7,7 +7,7 @@ allowed-tools: Read, Bash, Grep, AskUserQuestion
 
 # /vg:override-resolve — Manual Override Resolution (v1.9.0+)
 
-Resolves ONE entry in `.planning/OVERRIDE-DEBT.md` by DEBT-ID. Two modes:
+Resolves ONE entry in `${PLANNING_DIR}/OVERRIDE-DEBT.md` by DEBT-ID. Two modes:
 
 - **Default (no flag):** status → `RESOLVED` (clean manual resolution — user confirms gate intent is satisfied without a telemetry-linked re-run)
 - **`--wont-fix`:** status → `WONT_FIX` (permanent decline — override is intentionally kept, e.g. scaffolding phase where no tests were ever planned)
@@ -50,7 +50,7 @@ if [ -z "$REASON" ]; then
   exit 1
 fi
 
-REGISTER="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+REGISTER="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
 if [ ! -f "$REGISTER" ]; then
   echo "⛔ Register không tồn tại: ${REGISTER}"
   exit 1

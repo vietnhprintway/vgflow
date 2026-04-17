@@ -7,14 +7,14 @@ description: Telemetry Pipeline (Shared Reference) — append-only jsonl event l
 
 > **⚠ Runtime note (v1.9.0 T3):** Runnable bash code is at [`_shared/lib/telemetry.sh`](lib/telemetry.sh). Commands MUST `source` the `.sh` file — this `.md` file is documentation only (YAML frontmatter + markdown headers + fenced code blocks cannot be sourced by bash). The bash snippets below are kept in sync with `.sh` for readability.
 
-Every workflow decision point emits a structured JSON event to `.planning/telemetry.jsonl`. Data-driven workflow improvement: which gates fire most, which override flags get abused, which fix-routing tier wins, average phase duration.
+Every workflow decision point emits a structured JSON event to `${PLANNING_DIR}/telemetry.jsonl`. Data-driven workflow improvement: which gates fire most, which override flags get abused, which fix-routing tier wins, average phase duration.
 
 ## Config (add to `.claude/vg.config.md`)
 
 ```yaml
 telemetry:
   enabled: true
-  path: ".planning/telemetry.jsonl"
+  path: "${PLANNING_DIR}/telemetry.jsonl"
   retention_days: 90                # events older than N days deleted on next emit (cheap)
   sample_rate: 1.0                  # 0.0–1.0 fraction of events to record (1.0 = all)
   event_types_skip: []              # optional blocklist: ["narration", "debug"]
@@ -84,7 +84,7 @@ telemetry:
 telemetry_init() {
   [ "${CONFIG_TELEMETRY_ENABLED:-true}" = "true" ] || return 0
   export TELEMETRY_SESSION_ID="${TELEMETRY_SESSION_ID:-$(openssl rand -hex 8 2>/dev/null || printf '%08x%08x' $RANDOM $RANDOM)}"
-  export TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  export TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   mkdir -p "$(dirname "$TELEMETRY_PATH")" 2>/dev/null || true
 
   # Cheap retention: truncate events older than retention_days (only rewrite if cutoff reached)
@@ -105,7 +105,7 @@ emit_telemetry_v2() {
   local event_type="$1" phase="$2" step="$3" gate_id="${4:-}" outcome="${5:-}" payload_json="${6-}"
   [ -z "$payload_json" ] && payload_json='{}'
   local correlation_id="${7:-}" command="${8:-${VG_CURRENT_COMMAND:-unknown}}"
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
 
   # Sampling
   local rate="${CONFIG_TELEMETRY_SAMPLE_RATE:-1.0}"
@@ -182,7 +182,7 @@ sys.stdout.write(json.dumps(d, ensure_ascii=False))
 # Query API — filter events by gate_id / outcome / phase / event_type / since
 # Usage: telemetry_query --gate-id=X --outcome=OVERRIDE --since=2026-04-10
 telemetry_query() {
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   [ -f "$path" ] || return 0
   local gate_id="" outcome="" phase="" event_type="" since=""
   for arg in "$@"; do
@@ -221,7 +221,7 @@ PY
 telemetry_warn_overrides() {
   local threshold="${1:-2}"
   local milestone_since="${2:-$(date -u -d '30 days ago' +%FT%TZ 2>/dev/null || date -u +%FT%TZ)}"
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   [ -f "$path" ] || return 0
   ${PYTHON_BIN:-python3} - "$path" "$threshold" "$milestone_since" <<'PY'
 import json, sys
@@ -249,7 +249,7 @@ PY
 
 # Retention pruner
 telemetry_prune() {
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   local days="${CONFIG_TELEMETRY_RETENTION_DAYS:-90}"
   [ -f "$path" ] || return 0
   ${PYTHON_BIN:-python3} - "$path" "$days" <<'PY'

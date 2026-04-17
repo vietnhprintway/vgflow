@@ -7,7 +7,7 @@ description: Override Debt Register (Shared Reference) — track every --allow/-
 
 > **⚠ Runtime note (v1.9.0 T3):** Runnable bash code is at [`_shared/lib/override-debt.sh`](lib/override-debt.sh). Commands MUST `source` the `.sh` file — this `.md` file is documentation only (YAML frontmatter + markdown headers + fenced code blocks cannot be sourced by bash). The bash snippets below are kept in sync with `.sh` for readability.
 
-Every VG override flag (`--allow-*`, `--skip-*`, `--override-*`) MUST log to `.planning/OVERRIDE-DEBT.md`. Debt register makes invisible technical debt visible, forces review, blocks `accept` when critical debt is unresolved.
+Every VG override flag (`--allow-*`, `--skip-*`, `--override-*`) MUST log to `${PLANNING_DIR}/OVERRIDE-DEBT.md`. Debt register makes invisible technical debt visible, forces review, blocks `accept` when critical debt is unresolved.
 
 ## ⛔ Time-based expiry is BANNED (v1.8.0)
 
@@ -28,7 +28,7 @@ Prior versions auto-escalated or auto-forgave overrides after N days. That model
 
 ```yaml
 debt:
-  register_path: ".planning/OVERRIDE-DEBT.md"
+  register_path: "${PLANNING_DIR}/OVERRIDE-DEBT.md"
   # NO auto_expire_days — time-based expiry is BANNED in v1.8.0+
   # Overrides expire ONLY when the bypassed gate re-runs cleanly (via telemetry event).
   blocking_severity: ["critical"]   # /vg:accept blocks if unresolved entries at these severities
@@ -53,7 +53,7 @@ debt:
 
 ## Entry schema (v1.8.0)
 
-Each row in `.planning/OVERRIDE-DEBT.md` carries:
+Each row in `${PLANNING_DIR}/OVERRIDE-DEBT.md` carries:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -84,7 +84,7 @@ log_override_debt() {
   local step="$3"        # e.g. "build.wave-3"
   local reason="$4"      # user-provided justification or auto-derived context
   local gate_id="${5:-}" # telemetry gate_id of the bypassed gate (for event-based resolution)
-  local register="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+  local register="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
 
   # Bootstrap file if missing
   if [ ! -f "$register" ]; then
@@ -142,7 +142,7 @@ override_resolve() {
   local phase="$2"
   local telemetry_event_id="$3"
   local status="${4:-RESOLVED}"
-  local register="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+  local register="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
   [ -f "$register" ] || return 0
   [ -z "$gate_id" ] && { echo "override_resolve: gate_id required" >&2; return 1; }
   case "$status" in RESOLVED|WONT_FIX) ;; *) echo "override_resolve: invalid status '$status' (want RESOLVED|WONT_FIX)" >&2; return 1 ;; esac
@@ -193,7 +193,7 @@ PY
 #   Prints emitted event_id on success, or empty string + nonzero exit on failure.
 override_resolve_by_id() {
   local debt_id="$1" new_status="$2" reason="$3"
-  local register="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+  local register="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
   [ -f "$register" ] || { echo "override_resolve_by_id: register not found" >&2; return 1; }
   [ -z "$debt_id" ] && { echo "override_resolve_by_id: debt_id required" >&2; return 1; }
   [ -z "$reason" ] && { echo "override_resolve_by_id: reason required" >&2; return 1; }
@@ -250,7 +250,7 @@ PY
 # Helper — list unresolved overrides (resolved_by_event_id == null, status == OPEN)
 # Returns: JSON array to stdout. Each entry: {id, severity, phase, step, flag, reason, logged_ts, gate_id, legacy}
 override_list_unresolved() {
-  local register="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+  local register="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
   [ -f "$register" ] || { echo "[]"; return 0; }
 
   ${PYTHON_BIN:-python3} - "$register" <<'PY'
@@ -287,7 +287,7 @@ PY
 # Helper — migrate legacy entries (pre-v1.8.0, no resolved_by_event_id column)
 # Adds gate_id="" + resolved_by_event_id="" + legacy=true columns in-place. Idempotent.
 override_migrate_legacy() {
-  local register="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+  local register="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
   [ -f "$register" ] || return 0
 
   ${PYTHON_BIN:-python3} - "$register" <<'PY'
@@ -331,7 +331,7 @@ PY
 # Checks OPEN entries at blocking severity that are NOT resolved by event
 check_blocking_debt() {
   local phase="$1"
-  local register="${CONFIG_DEBT_REGISTER_PATH:-.planning/OVERRIDE-DEBT.md}"
+  local register="${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}"
   [ -f "$register" ] || return 0
 
   local blocking_sev="${CONFIG_DEBT_BLOCKING_SEVERITY:-critical}"

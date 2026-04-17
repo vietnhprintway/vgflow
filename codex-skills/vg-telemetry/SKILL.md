@@ -27,7 +27,7 @@ If argument-hint in source frontmatter is not empty and user provides no args, a
 
 
 <objective>
-Read `.planning/telemetry.jsonl` and summarize workflow behavior:
+Read `${PLANNING_DIR}/telemetry.jsonl` and summarize workflow behavior:
 1. Gate hit frequency (which gates fire most → candidates for UX improvement)
 2. Override flag usage (which flags get abused → candidates for removal)
 3. Fix routing distribution (inline vs spawn vs escalated → model cost analysis)
@@ -42,7 +42,7 @@ Output: human-readable table by default, or JSON/CSV for tooling.
 
 <step name="0_config">
 Source config loader. Read:
-- `CONFIG_TELEMETRY_PATH` (default `.planning/telemetry.jsonl`)
+- `CONFIG_TELEMETRY_PATH` (default `${PLANNING_DIR}/telemetry.jsonl`)
 - `CONFIG_TELEMETRY_ENABLED` (block if false)
 
 If telemetry disabled: print "Telemetry disabled in config. Enable via `telemetry.enabled: true` in vg.config.md." and exit 0.
@@ -58,7 +58,7 @@ Parse args:
 <step name="1_load_and_filter">
 
 ```bash
-TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+TELEMETRY_PATH="${CONFIG_TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
 
 if [ ! -f "$TELEMETRY_PATH" ]; then
   echo "No telemetry data yet: ${TELEMETRY_PATH}"
@@ -206,9 +206,9 @@ PY
 <step name="3_csv_export">
 
 If `--format=csv`, emit one CSV file per aggregate:
-- `.planning/telemetry-summary-gates.csv`
-- `.planning/telemetry-summary-overrides.csv`
-- `.planning/telemetry-summary-durations.csv`
+- `${PLANNING_DIR}/telemetry-summary-gates.csv`
+- `${PLANNING_DIR}/telemetry-summary-overrides.csv`
+- `${PLANNING_DIR}/telemetry-summary-durations.csv`
 
 Use pandas if available, else manual CSV write.
 </step>

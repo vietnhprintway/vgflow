@@ -262,7 +262,7 @@ esac
 
 | Command | Write timing | Artifacts |
 |---------|-------------|-----------|
-| `/vg:project` | After Round 7 atomic write | `PROJECT.md`, `FOUNDATION.md`, `vg.config.md` (project-level manifest at `.planning/.artifact-manifest.json`) |
+| `/vg:project` | After Round 7 atomic write | `PROJECT.md`, `FOUNDATION.md`, `vg.config.md` (project-level manifest at `${PLANNING_DIR}/.artifact-manifest.json`) |
 | `/vg:roadmap` | After ROADMAP.md write | `ROADMAP.md` (project-level) |
 | `/vg:specs` | After write | `SPECS.md` |
 | `/vg:scope` | After Round 5 write | `CONTEXT.md`, `DISCUSSION-LOG.md` |

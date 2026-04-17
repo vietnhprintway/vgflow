@@ -76,12 +76,12 @@ Key difference from V4 execute: executors read API-CONTRACTS.md to ensure BE rou
 <step name="0_gate_integrity_precheck">
 **T8 gate (cổng) integrity precheck — blocks build if /vg:update left unresolved gate conflicts (xung đột).**
 
-If `.planning/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. Until a human resolves them via `/vg:reapply-patches --verify-gates`, the pipeline cannot trust its own enforcement logic — so we BLOCK (chặn).
+If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. Until a human resolves them via `/vg:reapply-patches --verify-gates`, the pipeline cannot trust its own enforcement logic — so we BLOCK (chặn).
 
 ```bash
-if [ -f ".planning/vgflow-patches/gate-conflicts.md" ]; then
+if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved."
-  echo "   File: .planning/vgflow-patches/gate-conflicts.md"
+  echo "   File: ${PLANNING_DIR}/vgflow-patches/gate-conflicts.md"
   echo "   Cause: /vg:update 3-way merge altered hard-gate (cổng cứng) blocks."
   echo "   Fix:   /vg:reapply-patches --verify-gates"
   exit 1
@@ -101,7 +101,7 @@ source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/de
 if type -t resolve_phase_dir >/dev/null 2>&1; then
   PHASE_DIR_CANDIDATE=$(resolve_phase_dir "$PHASE_ARG" 2>/dev/null || echo "")
 else
-  PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_ARG}* 2>/dev/null | head -1)
+  PHASE_DIR_CANDIDATE=$(ls -d ${PLANNING_DIR}/phases/${PHASE_ARG}* 2>/dev/null | head -1)
 fi
 
 session_start "build" "${PHASE_ARG:-unknown}"
@@ -230,7 +230,7 @@ Each sub-step should: `TaskUpdate: status="in_progress"` at start, `status="comp
 Load context:
 ```bash
 # VG-native phase init (no GSD dependency)
-PHASE_DIR=$(ls -d .planning/phases/*${PHASE_ARG}* 2>/dev/null | head -1)
+PHASE_DIR=$(ls -d ${PLANNING_DIR}/phases/*${PHASE_ARG}* 2>/dev/null | head -1)
 PHASE_NUMBER=$(echo "${PHASE_DIR}" | grep -oP '\d+(\.\d+)*' | head -1)
 PHASE_NAME=$(basename "${PHASE_DIR}" | sed "s/^[0-9.]*-//")
 PLAN_COUNT=$(ls "${PHASE_DIR}"/PLAN*.md 2>/dev/null | wc -l)
@@ -340,7 +340,7 @@ Read `${PHASE_DIR}/API-CONTRACTS.md`. Per plan task, extract only endpoint secti
 
 ```bash
 # Resolve DESIGN_OUTPUT_DIR from config (fallback to default)
-DESIGN_OUTPUT_DIR="${config.design_assets.output_dir:-.planning/design-normalized}"
+DESIGN_OUTPUT_DIR="${config.design_assets.output_dir:-${PLANNING_DIR}/design-normalized}"
 DESIGN_MANIFEST="${DESIGN_OUTPUT_DIR}/manifest.json"
 
 # If any task has <design-ref>, verify manifest + referenced assets exist
@@ -1577,8 +1577,8 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 
 # 3. Update ROADMAP.md — mark phase as "in progress" (not complete until accept)
-if [ -f ".planning/ROADMAP.md" ]; then
-  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* executed/" ".planning/ROADMAP.md" 2>/dev/null || true
+if [ -f "${PLANNING_DIR}/ROADMAP.md" ]; then
+  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* executed/" "${PLANNING_DIR}/ROADMAP.md" 2>/dev/null || true
 fi
 ```
 

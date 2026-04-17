@@ -22,7 +22,7 @@ allowed-tools:
 <objective>
 Rebuild the graphify knowledge graph from current codebase state and extract a structured codebase-map.md that other VG pipeline commands consume for context (god nodes, communities, cross-module edges).
 
-Output: `.planning/codebase-map.md` (+ graphify-out/ updated as side effect)
+Output: `${PLANNING_DIR}/codebase-map.md` (+ graphify-out/ updated as side effect)
 
 Pipeline: project → roadmap → **map** → prioritize → specs → scope → blueprint → build → review → test → accept
 </objective>

@@ -6,7 +6,7 @@ description: "Design system lifecycle — browse/import/create/view/edit DESIGN.
 <rules>
 1. **Multi-design support** — project may have multiple design systems per role (SSP admin, DSP admin, Publisher, Advertiser). Use `--role=<name>` to target role-specific design.
 2. **Pre-paywall source** — fetches from `Meliwat/awesome-design-md-pre-paywall` (free). Official `VoltAgent/awesome-design-md` moved content behind getdesign.md paywall.
-3. **File convention** — project-level: `.planning/design/DESIGN.md`. Role-level: `.planning/design/{role}/DESIGN.md`. Phase-override: `.planning/phases/XX/DESIGN.md`.
+3. **File convention** — project-level: `${PLANNING_DIR}/design/DESIGN.md`. Role-level: `${PLANNING_DIR}/design/{role}/DESIGN.md`. Phase-override: `${PLANNING_DIR}/phases/XX/DESIGN.md`.
 4. **Resolution priority (highest first)** — phase > role > project > none.
 5. **Idempotent** — running `--import` twice downloads again (brand files may be updated upstream).
 </rules>
@@ -83,8 +83,8 @@ List all 58 available brands, grouped by category. User can pick one to import n
 design_system_browse_grouped
 echo ""
 echo "To import a brand:"
-echo "  /vg:design-system --import stripe              # → .planning/design/DESIGN.md (project-level)"
-echo "  /vg:design-system --import linear --role=ssp   # → .planning/design/ssp/DESIGN.md (role-level)"
+echo "  /vg:design-system --import stripe              # → ${PLANNING_DIR}/design/DESIGN.md (project-level)"
+echo "  /vg:design-system --import linear --role=ssp   # → ${PLANNING_DIR}/design/ssp/DESIGN.md (role-level)"
 ```
 
 ### Mode: `import`
@@ -100,9 +100,9 @@ fi
 
 # Determine target path
 if [ -n "$ROLE" ]; then
-  TARGET="${CONFIG_DESIGN_SYSTEM_ROLE_DIR:-.planning/design}/${ROLE}/DESIGN.md"
+  TARGET="${CONFIG_DESIGN_SYSTEM_ROLE_DIR:-${PLANNING_DIR}/design}/${ROLE}/DESIGN.md"
 else
-  TARGET="${CONFIG_DESIGN_SYSTEM_PROJECT_LEVEL:-.planning/design/DESIGN.md}"
+  TARGET="${CONFIG_DESIGN_SYSTEM_PROJECT_LEVEL:-${PLANNING_DIR}/design/DESIGN.md}"
 fi
 
 # Confirm if target exists
@@ -199,8 +199,8 @@ if ! grep -qE "^design_system:" .claude/vg.config.md; then
 design_system:
   enabled: true
   source_repo: "Meliwat/awesome-design-md-pre-paywall"
-  project_level: ".planning/design/DESIGN.md"
-  role_dir: ".planning/design"
+  project_level: "${PLANNING_DIR}/design/DESIGN.md"
+  role_dir: "${PLANNING_DIR}/design"
   phase_override_pattern: "{phase_dir}/DESIGN.md"
   inject_on_build: true
   validate_on_review: true

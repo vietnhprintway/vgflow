@@ -2,7 +2,7 @@
 # Phase Directory Resolver — bash function library (v1.9.2.2)
 #
 # Problem this solves:
-#   Naive pattern `ls -d .planning/phases/${PHASE_NUMBER}*` fails when:
+#   Naive pattern `ls -d ${PLANNING_DIR}/phases/${PHASE_NUMBER}*` fails when:
 #   - User types `7.12` but dir is `07.12-*` (zero-padded)
 #   - User types `07.12` and wants main phase but `07.12.1-*` sub-phase also matches
 #   - User types phase with no directory yet (greenfield)
@@ -22,7 +22,7 @@
 #   PHASE_DIR=$(resolve_phase_dir "$PHASE_NUMBER") || exit 1
 #
 # Replaces this buggy one-liner (found in 10+ files pre-v1.9.2.2):
-#   PHASE_DIR=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+#   PHASE_DIR=$(ls -d ${PLANNING_DIR}/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
 
 resolve_phase_dir() {
   local input="${1:-}"
@@ -31,7 +31,7 @@ resolve_phase_dir() {
     return 1
   fi
 
-  local phases_dir="${PHASES_DIR:-.planning/phases}"
+  local phases_dir="${PHASES_DIR:-${PLANNING_DIR}/phases}"
   if [ ! -d "$phases_dir" ]; then
     echo "resolve_phase_dir: phases directory missing at '$phases_dir'" >&2
     return 1

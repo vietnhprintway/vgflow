@@ -34,14 +34,14 @@ If argument-hint in source frontmatter is not empty and user provides no args, a
 5. **DISCUSSION-LOG.md is APPEND-ONLY** — never overwrite, never delete existing content.
 6. **Resolution is interactive** — conflicts and gaps require user decision, not AI auto-fix.
 7. **Minimum 2 phases** — warn (not block) if only 1 phase scoped.
-8. **Incremental by default (tăng cường theo delta)** — scope is narrowed to changed + new + dependent phases via `.planning/.scope-review-baseline.json`. Use `--full` for complete rescan (mốc gốc — full baseline rebuild).
+8. **Incremental by default (tăng cường theo delta)** — scope is narrowed to changed + new + dependent phases via `${PLANNING_DIR}/.scope-review-baseline.json`. Use `--full` for complete rescan (mốc gốc — full baseline rebuild).
 </rules>
 
 <objective>
 Cross-phase scope validation gate. Run after scoping all (or multiple) phases, before starting blueprint on any of them.
 Detects decision conflicts, module overlaps, endpoint collisions, dependency gaps, and scope creep across phases.
 
-Output: .planning/SCOPE-REVIEW.md (report with gate verdict)
+Output: ${PLANNING_DIR}/SCOPE-REVIEW.md (report with gate verdict)
 
 Pipeline position: specs -> scope -> **scope-review** -> blueprint -> build -> review -> test -> accept
 </objective>

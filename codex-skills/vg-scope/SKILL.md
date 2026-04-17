@@ -74,11 +74,11 @@ Orchestrator MUST:
 
 Skip challenger when `config.scope.adversarial_check: false` (rapid prototyping) or answer is trivial (Y/N, single-word confirm — helper auto-detects via `challenger_is_trivial`).
 
-**Dimension Expander (v1.9.3 R3.2 — NEW, proactive gap finding, v1.9.5 R3.4 fd-3 content fix):** Source `.claude/commands/vg/_shared/lib/dimension-expander.sh` at top of command. At the END of EACH round (Rounds 1-5) and at the END of the Deep Probe Loop, AFTER the adversarial challenger loop concludes and BEFORE advancing to next round, invoke `expand_dimensions "$ROUND" "$ROUND_TOPIC" "$round_qa_accumulated" ".planning/FOUNDATION.md"`.
+**Dimension Expander (v1.9.3 R3.2 — NEW, proactive gap finding, v1.9.5 R3.4 fd-3 content fix):** Source `.claude/commands/vg/_shared/lib/dimension-expander.sh` at top of command. At the END of EACH round (Rounds 1-5) and at the END of the Deep Probe Loop, AFTER the adversarial challenger loop concludes and BEFORE advancing to next round, invoke `expand_dimensions "$ROUND" "$ROUND_TOPIC" "$round_qa_accumulated" "${PLANNING_DIR}/FOUNDATION.md"`.
 
 **v1.9.5 R3.4 FIX — same pattern as challenger:** Helper emits prompt CONTENT on fd 3. Orchestrator capture pattern:
 ```bash
-PROMPT=$(expand_dimensions "$ROUND" "$ROUND_TOPIC" "$accumulated" ".planning/FOUNDATION.md" 3>&1 1>/dev/null 2>/dev/null)
+PROMPT=$(expand_dimensions "$ROUND" "$ROUND_TOPIC" "$accumulated" "${PLANNING_DIR}/FOUNDATION.md" 3>&1 1>/dev/null 2>/dev/null)
 ```
 
 Orchestrator MUST:
@@ -188,7 +188,7 @@ AskUserQuestion:
 - "View" -> display contents, then re-ask
 - "Skip" -> exit with "Next: /vg:blueprint {phase}"
 
-**If codebase-map.md exists:** Read `.planning/codebase-map.md` silently -> inject god nodes + communities as context for discussion rounds.
+**If codebase-map.md exists:** Read `${PLANNING_DIR}/codebase-map.md` silently -> inject god nodes + communities as context for discussion rounds.
 
 **Read SPECS.md:** Extract Goal, In-scope items, Out-of-scope items, Constraints, Success criteria. Hold in memory for all rounds.
 
@@ -238,7 +238,7 @@ From response, lock decisions:
 
 **Adversarial challenge** (v1.9.1 R3 + v1.9.3 R3.2 upgrade — 8 lenses + Opus, applies to EVERY round including Rounds 2-5 and deep probes): after recording the user answer but BEFORE advancing to the next round, run `challenge_answer` + `challenger_dispatch` per the protocol in `<process>` header. If the challenger flags an issue and user chooses **Address**, re-enter this round with the user's revised answer. If **Acknowledge** → append under `## Acknowledged tradeoffs` in `CONTEXT.md.staged`. If **Defer** → append under `## Open questions`.
 
-**Dimension expansion** (v1.9.3 R3.2 NEW, applies to EVERY round including Rounds 2-5 and deep probes — runs ONCE per round AFTER all Q&A + adversarial challenges complete, BEFORE advancing to next round): Invoke `expand_dimensions "$ROUND" "$ROUND_TOPIC" "$round_qa_accumulated" ".planning/FOUNDATION.md"` where `$round_qa_accumulated` = all user answers of this round merged, `$ROUND_TOPIC` = the round's topic string (e.g., "Domain & Business" for Round 1). Dispatch Task tool (model=`${config.scope.dimension_expand_model:-opus}`, zero parent context) with prompt contents, parse subagent JSON, call `expander_dispatch` per the protocol in `<process>` header. If `critical_missing[]` or `nice_to_have_missing[]` non-empty, user picks: **Address critical** → re-enter round appending each CRITICAL dimension as new Q → merge user's new answers. **Acknowledge** → append dimensions under `## Acknowledged gaps` in `CONTEXT.md.staged`. **Defer** → append under `## Open questions` for blueprint to re-raise.
+**Dimension expansion** (v1.9.3 R3.2 NEW, applies to EVERY round including Rounds 2-5 and deep probes — runs ONCE per round AFTER all Q&A + adversarial challenges complete, BEFORE advancing to next round): Invoke `expand_dimensions "$ROUND" "$ROUND_TOPIC" "$round_qa_accumulated" "${PLANNING_DIR}/FOUNDATION.md"` where `$round_qa_accumulated` = all user answers of this round merged, `$ROUND_TOPIC` = the round's topic string (e.g., "Domain & Business" for Round 1). Dispatch Task tool (model=`${config.scope.dimension_expand_model:-opus}`, zero parent context) with prompt contents, parse subagent JSON, call `expander_dispatch` per the protocol in `<process>` header. If `critical_missing[]` or `nice_to_have_missing[]` non-empty, user picks: **Address critical** → re-enter round appending each CRITICAL dimension as new Q → merge user's new answers. **Acknowledge** → append dimensions under `## Acknowledged gaps` in `CONTEXT.md.staged`. **Defer** → append under `## Open questions` for blueprint to re-raise.
 
 ### Round 2 — Technical Approach
 
@@ -360,7 +360,7 @@ fi
 
 **If `$DESIGN_CONTEXT` empty (no DESIGN.md):** Round 4 Q offers 3 options:
 1. **Pick from 58 brands** — `/vg:design-system --browse` để list. User pick → auto-run `/vg:design-system --import <brand> --role=<current-role>`.
-2. **Import existing** — user paste DESIGN.md content hoặc link URL → save to `.planning/design/DESIGN.md` hoặc `.planning/design/{role}/DESIGN.md`.
+2. **Import existing** — user paste DESIGN.md content hoặc link URL → save to `${PLANNING_DIR}/design/DESIGN.md` hoặc `${PLANNING_DIR}/design/{role}/DESIGN.md`.
 3. **Create from scratch** — `/vg:design-system --create --role=<role>` → guided discussion tạo DESIGN.md custom.
 4. **Skip (not recommended)** — UI phase without design standards → flag "design-debt" trong CONTEXT.md.
 

@@ -16,8 +16,8 @@ visual_regression:
   threshold_pct: 2.0                             # max allowed diff per view
   baseline_dir: "apps/web/e2e/screenshots/baseline"
   current_dir: "apps/web/e2e/screenshots"
-  diff_output_dir: ".planning/phases/{phase}/visual-diffs"
-  report_path: ".planning/phases/{phase}/visual-diff.json"
+  diff_output_dir: "${PLANNING_DIR}/phases/{phase}/visual-diffs"
+  report_path: "${PLANNING_DIR}/phases/{phase}/visual-diff.json"
   ignore_regions: []                             # ["dashboard:1200,0,200,100"] — x,y,w,h per view
   auto_promote_on_first_run: true                # if no baseline exists, save current as baseline
 ```

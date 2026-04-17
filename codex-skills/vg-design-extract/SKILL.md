@@ -77,7 +77,7 @@ Defaults: SCOPE=all, capture_states=config.design_assets.render_states.
 Collect all assets matching config.design_assets.paths (or --paths override).
 
 ```bash
-OUTPUT_DIR="${config.design_assets.output_dir}"   # default .planning/design-normalized
+OUTPUT_DIR="${config.design_assets.output_dir}"   # default ${PLANNING_DIR}/design-normalized
 mkdir -p "$OUTPUT_DIR"
 
 # Resolve normalizer script path — portable across machines/CI

@@ -48,10 +48,10 @@ Pipeline: specs → scope → blueprint → build → review → test → **acce
 <step name="0_gate_integrity_precheck">
 **T8 gate (cổng) integrity precheck — blocks accept if /vg:update left unresolved gate conflicts (xung đột).**
 
-If `.planning/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
+If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
 
 ```bash
-if [ -f ".planning/vgflow-patches/gate-conflicts.md" ]; then
+if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved — run /vg:reapply-patches --verify-gates first."
   exit 1
 fi
@@ -72,7 +72,7 @@ if [ -z "$PHASE_ARG" ]; then
 fi
 
 # Locate phase dir (handles both "7.6" and "07.6")
-PHASE_DIR=$(find .planning/phases -maxdepth 1 -type d \( -name "${PHASE_ARG}*" -o -name "0${PHASE_ARG}*" \) 2>/dev/null | head -1)
+PHASE_DIR=$(find ${PLANNING_DIR}/phases -maxdepth 1 -type d \( -name "${PHASE_ARG}*" -o -name "0${PHASE_ARG}*" \) 2>/dev/null | head -1)
 if [ -z "$PHASE_DIR" ]; then
   echo "⛔ Phase dir not found for: $PHASE_ARG"
   exit 1
@@ -510,7 +510,7 @@ PY
 
 # Section A.1 — scan all phase artifacts (PLAN, SUMMARY, UAT, etc.) for F-XX references from FOUNDATION.md
 # If cited, include FOUNDATION.md decision in UAT (to verify F-XX assumption still holds)
-FOUNDATION_FILE=".planning/FOUNDATION.md"
+FOUNDATION_FILE="${PLANNING_DIR}/FOUNDATION.md"
 if [ -f "$FOUNDATION_FILE" ]; then
   ${PYTHON_BIN} - <<PY > "${VG_TMP}/uat-foundation.txt"
 import re
@@ -789,7 +789,7 @@ For each unique design-ref in `${VG_TMP}/uat-designs.txt`:
 ```
 AskUserQuestion:
   "Design ref: {ref}
-   Screenshot: .planning/design-normalized/screenshots/{ref}.png (or similar)
+   Screenshot: ${PLANNING_DIR}/design-normalized/screenshots/{ref}.png (or similar)
    Built output matches screenshot (layout, spacing, components)?
 
    [p] Pass — visual match
@@ -1043,8 +1043,8 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 
 # VG-native ROADMAP update (grep + sed)
-if [ -f ".planning/ROADMAP.md" ]; then
-  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* complete/" ".planning/ROADMAP.md" 2>/dev/null || true
+if [ -f "${PLANNING_DIR}/ROADMAP.md" ]; then
+  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* complete/" "${PLANNING_DIR}/ROADMAP.md" 2>/dev/null || true
 fi
 ```
 

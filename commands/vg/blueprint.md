@@ -142,7 +142,7 @@ Run first: /vg:scope {phase}
 # If project has design assets configured, ensure they're normalized BEFORE planning
 # (so R4 granularity check + executor design_context have something to point at)
 if [ -n "${config.design_assets.paths[0]}" ]; then
-  DESIGN_OUT="${config.design_assets.output_dir:-.planning/design-normalized}"
+  DESIGN_OUT="${config.design_assets.output_dir:-${PLANNING_DIR}/design-normalized}"
   DESIGN_MANIFEST="${DESIGN_OUT}/manifest.json"
 
   # Stale check: any source asset newer than manifest?

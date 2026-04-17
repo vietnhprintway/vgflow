@@ -5,13 +5,13 @@ description: Security Register (Shared Reference) — cumulative milestone-level
 
 # Security Register — Shared Helper
 
-Per-phase security audits miss cross-phase composite threats (e.g., auth hole in P5 + privilege escalation in P7 = together they're CRITICAL even if each alone is MEDIUM). `.planning/SECURITY-REGISTER.md` is a cumulative milestone-level ledger of all threats, their mitigations, and cross-phase correlations.
+Per-phase security audits miss cross-phase composite threats (e.g., auth hole in P5 + privilege escalation in P7 = together they're CRITICAL even if each alone is MEDIUM). `${PLANNING_DIR}/SECURITY-REGISTER.md` is a cumulative milestone-level ledger of all threats, their mitigations, and cross-phase correlations.
 
 ## Config (add to `.claude/vg.config.md`)
 
 ```yaml
 security:
-  register_path: ".planning/SECURITY-REGISTER.md"
+  register_path: "${PLANNING_DIR}/SECURITY-REGISTER.md"
   taxonomy:                              # supported threat classifications
     - stride                             # Spoofing, Tampering, Repudiation, Information disclosure, DoS, Elevation
     - owasp_top_10                       # injection, broken-auth, sensitive-data, xxe, broken-access, ...
@@ -31,7 +31,7 @@ security:
     required_before_milestone_complete: true
 ```
 
-## File schema — `.planning/SECURITY-REGISTER.md`
+## File schema — `${PLANNING_DIR}/SECURITY-REGISTER.md`
 
 ```markdown
 # Security Register (Milestone: {milestone_id})
@@ -71,7 +71,7 @@ register_threat() {
   local title="$5"                      # short description
   local status="${6:-OPEN}"             # OPEN|IN_PROGRESS|MITIGATED|ACCEPTED_RISK
   local evidence="${7:--}"              # file:line references
-  local register="${CONFIG_SECURITY_REGISTER_PATH:-.planning/SECURITY-REGISTER.md}"
+  local register="${CONFIG_SECURITY_REGISTER_PATH:-${PLANNING_DIR}/SECURITY-REGISTER.md}"
 
   # Bootstrap if missing
   if [ ! -f "$register" ]; then
@@ -151,7 +151,7 @@ PY
 
 # Check /vg:accept gate
 check_security_accept_gate() {
-  local register="${CONFIG_SECURITY_REGISTER_PATH:-.planning/SECURITY-REGISTER.md}"
+  local register="${CONFIG_SECURITY_REGISTER_PATH:-${PLANNING_DIR}/SECURITY-REGISTER.md}"
   [ -f "$register" ] || return 0
   local blocking="${CONFIG_SECURITY_ACCEPT_GATE_BLOCK_ON_OPEN:-critical}"
 
@@ -173,7 +173,7 @@ check_security_accept_gate() {
 
 # Decay policy — called from /vg:security-audit-milestone
 apply_decay_policy() {
-  local register="${CONFIG_SECURITY_REGISTER_PATH:-.planning/SECURITY-REGISTER.md}"
+  local register="${CONFIG_SECURITY_REGISTER_PATH:-${PLANNING_DIR}/SECURITY-REGISTER.md}"
   [ -f "$register" ] || return 0
   local archive_days="${CONFIG_SECURITY_DECAY_POLICY_MITIGATED_ARCHIVE_DAYS:-90}"
   local escalate_days="${CONFIG_SECURITY_DECAY_POLICY_UNRESOLVED_ESCALATE_DAYS:-30}"

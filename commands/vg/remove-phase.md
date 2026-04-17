@@ -125,7 +125,7 @@ AskUserQuestion:
   header: "Remove Phase ${PHASE_NUMBER}: ${PHASE_NAME}"
   question: "How should this phase be removed?"
   options:
-    - "Remove + archive (recommended) — move to .planning/archive/${PHASE_NAME}/"
+    - "Remove + archive (recommended) — move to ${PLANNING_DIR}/archive/${PHASE_NAME}/"
     - "Remove + delete — permanently delete phase directory"
     - "Cancel — abort removal"
 ```
@@ -229,7 +229,7 @@ Phase ${PHASE_NUMBER} removed: ${PHASE_NAME}
 
 <success_criteria>
 - Phase block removed from ROADMAP.md
-- Phase directory archived to .planning/archive/ or permanently deleted (per user choice)
+- Phase directory archived to ${PLANNING_DIR}/archive/ or permanently deleted (per user choice)
 - REQUIREMENTS.md Phase column reset to "---" for previously-mapped REQ-IDs
 - Dependent phases' "Depends on" field updated to remove reference
 - No existing phase numbers changed (gap in numbering is acceptable)

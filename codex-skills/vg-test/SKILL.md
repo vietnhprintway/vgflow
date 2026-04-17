@@ -86,10 +86,10 @@ Every browser tool call = `{MCP_PREFIX}browser_navigate`, `{MCP_PREFIX}browser_s
 <step name="00_gate_integrity_precheck">
 **T8 gate (cổng) integrity precheck — blocks test if /vg:update left unresolved gate conflicts (xung đột).**
 
-If `.planning/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
+If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
 
 ```bash
-if [ -f ".planning/vgflow-patches/gate-conflicts.md" ]; then
+if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved — run /vg:reapply-patches --verify-gates first."
   exit 1
 fi
@@ -108,7 +108,7 @@ source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/de
 if type -t resolve_phase_dir >/dev/null 2>&1; then
   PHASE_DIR_CANDIDATE=$(resolve_phase_dir "$PHASE_NUMBER" 2>/dev/null || echo "")
 else
-  PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+  PHASE_DIR_CANDIDATE=$(ls -d ${PLANNING_DIR}/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
 fi
 
 session_start "test" "${PHASE_NUMBER:-unknown}"
@@ -829,8 +829,8 @@ For each failing goal, classify most likely cause:
 ## What to do next
 
 ▶ **Step 1: Read this file + check goal details**
-   cat .planning/phases/{phase}/REVIEW-FEEDBACK.md
-   cat .planning/phases/{phase}/GOAL-COVERAGE-MATRIX.md
+   cat ${PLANNING_DIR}/phases/{phase}/REVIEW-FEEDBACK.md
+   cat ${PLANNING_DIR}/phases/{phase}/GOAL-COVERAGE-MATRIX.md
 
 ▶ **Step 2: Match each failing goal to a remediation path below**
 
@@ -847,7 +847,7 @@ Per-goal commands (filled in dynamically for THIS phase):
 ▶ **Step 3: After your fixes, pick ONE:**
 
    A) Verified all fixes, want to retry auto-loop fresh:
-      `rm .planning/phases/{phase}/test-loop-state.json`
+      `rm ${PLANNING_DIR}/phases/{phase}/test-loop-state.json`
       `/vg:test {phase}`
 
    B) Small targeted retry (no codegen, just rerun tests):
@@ -946,8 +946,8 @@ Next actions — pick one based on diagnosis:
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Step 1 — INVESTIGATE (required before any next action):             │
-│   cat .planning/phases/{phase}/REVIEW-FEEDBACK.md                   │
-│   cat .planning/phases/{phase}/GOAL-COVERAGE-MATRIX.md              │
+│   cat ${PLANNING_DIR}/phases/{phase}/REVIEW-FEEDBACK.md                   │
+│   cat ${PLANNING_DIR}/phases/{phase}/GOAL-COVERAGE-MATRIX.md              │
 │   Identify: which goals failed, WHY (assertion / selector / infra)  │
 └─────────────────────────────────────────────────────────────────────┘
 
@@ -965,7 +965,7 @@ B) Test spec itself wrong (selector, wait, data setup):
 C) Goal spec unrealistic / needs redesign:
    # Edit TEST-GOALS.md → loosen criteria or reclassify priority
    # Or move goal to future phase:
-   #   Add entry to .planning/KNOWN-ISSUES.json with target_phase
+   #   Add entry to ${PLANNING_DIR}/KNOWN-ISSUES.json with target_phase
    /vg:test {phase} --regression-only
 
 D) Goal needs non-E2E verification (perf, worker, cross-system):
@@ -2295,8 +2295,8 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 
 # VG-native ROADMAP update (grep + sed)
-if [ -f ".planning/ROADMAP.md" ]; then
-  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* tested/" ".planning/ROADMAP.md" 2>/dev/null || true
+if [ -f "${PLANNING_DIR}/ROADMAP.md" ]; then
+  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* tested/" "${PLANNING_DIR}/ROADMAP.md" 2>/dev/null || true
 fi
 ```
 

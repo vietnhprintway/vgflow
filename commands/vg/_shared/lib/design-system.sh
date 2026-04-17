@@ -8,9 +8,9 @@
 # Multi-design support (user feedback 2026-04-18):
 #   Project may have multiple roles/dashboards (SSP Admin, DSP Admin, Publisher,
 #   Advertiser) with DIFFERENT design systems. Resolution order (highest priority first):
-#     1. Phase-level:   .planning/phases/XX/DESIGN.md
-#     2. Role-level:    .planning/design/{role}/DESIGN.md
-#     3. Project-level: .planning/design/DESIGN.md
+#     1. Phase-level:   ${PLANNING_DIR}/phases/XX/DESIGN.md
+#     2. Role-level:    ${PLANNING_DIR}/design/{role}/DESIGN.md
+#     3. Project-level: ${PLANNING_DIR}/design/DESIGN.md
 #     4. None → scope Round 4 prompts user to pick/import/create
 #
 # Source repo: Meliwat/awesome-design-md-pre-paywall (user chose pre-paywall 2026-04-18)
@@ -28,15 +28,15 @@
 #   design_system:
 #     enabled: true
 #     source_repo: "Meliwat/awesome-design-md-pre-paywall"
-#     project_level: ".planning/design/DESIGN.md"
-#     role_dir: ".planning/design"
+#     project_level: "${PLANNING_DIR}/design/DESIGN.md"
+#     role_dir: "${PLANNING_DIR}/design"
 #     phase_override_pattern: "{phase_dir}/DESIGN.md"
 #     inject_on_build: true
 #     validate_on_review: true
 
 DESIGN_SYSTEM_DEFAULT_REPO="Meliwat/awesome-design-md-pre-paywall"
-DESIGN_SYSTEM_DEFAULT_PROJECT_PATH=".planning/design/DESIGN.md"
-DESIGN_SYSTEM_DEFAULT_ROLE_DIR=".planning/design"
+DESIGN_SYSTEM_DEFAULT_PROJECT_PATH="${PLANNING_DIR}/design/DESIGN.md"
+DESIGN_SYSTEM_DEFAULT_ROLE_DIR="${PLANNING_DIR}/design"
 
 design_system_enabled() {
   [ "${CONFIG_DESIGN_SYSTEM_ENABLED:-true}" = "true" ] || return 1
@@ -112,7 +112,7 @@ design_system_browse() {
 }
 
 # Fetch a brand's DESIGN.md to target path.
-# Usage: design_system_fetch "stripe" ".planning/design/DESIGN.md"
+# Usage: design_system_fetch "stripe" "${PLANNING_DIR}/design/DESIGN.md"
 design_system_fetch() {
   local brand="$1"
   local target="$2"

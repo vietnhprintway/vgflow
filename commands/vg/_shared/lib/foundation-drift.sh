@@ -20,8 +20,8 @@ foundation_drift_check() {
 foundation_drift_semantic_check() {
   local scan_text="$1"
   local source="$2"
-  local foundation_file="${FOUNDATION_FILE:-.planning/FOUNDATION.md}"
-  local register_file="${DRIFT_REGISTER:-.planning/.drift-register.md}"
+  local foundation_file="${FOUNDATION_FILE:-${PLANNING_DIR}/FOUNDATION.md}"
+  local register_file="${DRIFT_REGISTER:-${PLANNING_DIR}/.drift-register.md}"
 
   # No FOUNDATION.md → skip silently (legacy / pre-v1.6.0)
   [ -f "$foundation_file" ] || return 0
@@ -49,8 +49,8 @@ from pathlib import Path
 
 scan_text  = os.environ.get("_VG_DRIFT_SCAN", "")
 source     = os.environ.get("_VG_DRIFT_SOURCE", "unknown")
-found_path = Path(os.environ.get("_VG_DRIFT_FOUND", ".planning/FOUNDATION.md"))
-reg_path   = Path(os.environ.get("_VG_DRIFT_REG", ".planning/.drift-register.md"))
+found_path = Path(os.environ.get("_VG_DRIFT_FOUND", "${PLANNING_DIR}/FOUNDATION.md"))
+reg_path   = Path(os.environ.get("_VG_DRIFT_REG", "${PLANNING_DIR}/.drift-register.md"))
 
 # ───────── 1. Parse FOUNDATION.md ─────────
 # Support BOTH structured yaml block AND legacy table format.
@@ -399,7 +399,7 @@ EOF
 # Helper for /vg:doctor — count unfixed entries, return JSON
 # Output (stdout): {"unfixed":N, "warn_unfixed":M, "entries":[...]}
 foundation_drift_check_register() {
-  local register_file="${DRIFT_REGISTER:-.planning/.drift-register.md}"
+  local register_file="${DRIFT_REGISTER:-${PLANNING_DIR}/.drift-register.md}"
   if [ ! -f "$register_file" ]; then
     echo '{"unfixed":0,"warn_unfixed":0,"info_unfixed":0,"entries":[]}'
     return 0

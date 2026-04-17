@@ -36,7 +36,7 @@ expander_enabled() {
 # Count prior expansions emitted for this phase/session — loop guard
 expander_count_for_phase() {
   local phase="$1"
-  local path="${TELEMETRY_PATH:-.planning/telemetry.jsonl}"
+  local path="${TELEMETRY_PATH:-${PLANNING_DIR}/telemetry.jsonl}"
   [ -f "$path" ] || { echo 0; return; }
   ${PYTHON_BIN:-python3} - "$path" "$phase" <<'PY'
 import json, sys
@@ -70,7 +70,7 @@ expand_dimensions() {
   local round_num="$1"     # "1" | "2" | "3" | "4" | "5" | "deep-probe"
   local round_topic="$2"   # "Domain & Business" | "Technical Approach" | ... | "Deep Probe Loop"
   local accumulated="$3"   # all Q&A pairs of this round, user answers merged
-  local foundation_path="${4:-.planning/FOUNDATION.md}"
+  local foundation_path="${4:-${PLANNING_DIR}/FOUNDATION.md}"
 
   if ! expander_enabled; then
     echo '{"dimensions_total":0,"dimensions_addressed":0,"dimensions_missing":0,"critical_missing":[],"nice_to_have_missing":[],"_skipped":"disabled"}'

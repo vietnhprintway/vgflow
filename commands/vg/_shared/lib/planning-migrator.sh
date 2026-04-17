@@ -2,14 +2,14 @@
 # Planning Migrator — migrate .planning/ → .vg/ (v1.12.0 R7)
 #
 # Purpose: VG workflow uses .vg/ as canonical. GSD legacy uses .planning/.
-# Migrator scans .planning/ comprehensively, classifies each file as VG-owned
+# Migrator scans ${PLANNING_DIR}/ comprehensively, classifies each file as VG-owned
 # vs GSD-owned, copies VG-owned to .vg/ following VG file convention strictly.
 #
 # Idempotent: safe to re-run. Compares hashes, only copies if differ.
-# Re-running pulls latest from .planning/ → updates .vg/ (preserves user edits
+# Re-running pulls latest from ${PLANNING_DIR}/ → updates .vg/ (preserves user edits
 # in .vg-only files via .pre-migrate backup).
 #
-# Comprehensive: walks ALL files in .planning/, doesn't skip silently.
+# Comprehensive: walks ALL files in ${PLANNING_DIR}/, doesn't skip silently.
 # Reports: NEW / UPDATED / UNCHANGED / SKIPPED-GSD / BACKED-UP per file.
 #
 # Exposed functions:
