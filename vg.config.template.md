@@ -446,6 +446,44 @@ phase_profiles:
     test_mode: "markdown-lint"
     goal_coverage: "SPECS.doc_targets"
 
+# === Scope Adversarial Check (v1.9.1 R3 + v1.9.3 R3.2) ===
+# Spawns isolated Opus subagent after every user answer in /vg:scope rounds
+# and /vg:project foundation rounds. Challenges via 8 lenses (v1.9.3):
+# contradiction / hidden_assumption / edge_case / foundation_conflict /
+# security / performance / failure_mode / integration_chain.
+# Model upgraded Haiku→Opus in v1.9.3 R3.2 — scope needs reasoning depth
+# to find real gaps, not superficial checks.
+# Disable for rapid prototyping projects where challenge friction > value.
+scope:
+  adversarial_check: true               # master switch — false to skip all challenges
+  adversarial_model: "opus"             # subagent model (zero parent context) — v1.9.3: upgraded from haiku
+  adversarial_max_rounds: 3             # loop guard: max challenges per phase
+  adversarial_skip_trivial: true        # skip Y/N single-word confirmations (helper auto-detects)
+
+  # ─── v1.9.3 R3.2 Dimension Expander ────────────────────────────────
+  # Proactive gap-finding at END of each round (1 call/round, not per-answer).
+  # Separate from answer-challenger: expander asks "what dimensions have we NOT
+  # covered?" whereas challenger asks "is this specific answer wrong?".
+  dimension_expand_check: true          # master switch — false to skip all expansions
+  dimension_expand_model: "opus"        # Opus for reasoning depth (dimensions require breadth)
+  dimension_expand_max: 6               # loop guard: max expansions per phase (5 rounds + 1 deep probe)
+
+# === Review Phase 3 Fix Routing (v1.9.1 R2) ===
+# 3-tier severity-based fix routing in /vg:review Phase 3:
+#   MINOR     → inline main agent fix (fast, no context switch)
+#   MODERATE  → spawn Sonnet subagent (isolated, cheaper, bounded)
+#   MAJOR     → escalate to user (requires human judgment)
+# Severity classified by: fix_scope (files), blast_radius (callers), contract changes.
+review:
+  fix_routing:
+    enabled: true                       # master switch — false disables routing (fallback all inline)
+    inline_threshold_loc: 20            # fixes <= N lines stay inline
+    spawn_threshold_loc: 150            # fixes > N but < escalate → spawn Sonnet
+    escalate_threshold_loc: 500         # fixes > N lines → block + escalate to user
+    escalate_on_contract_change: true   # API-CONTRACTS.md touched → always escalate
+    escalate_on_critical_domain: true   # touches critical_goal_domains → always escalate
+    max_iterations: 3                   # max fix iterations before giving up
+
 # =====================================================================
 # === Mobile Configuration =============================================
 # =====================================================================

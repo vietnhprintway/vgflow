@@ -36,9 +36,9 @@ Pipeline: specs -> **scope** -> blueprint -> build -> review -> test -> accept
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first. Use config variables ($PLANNING_DIR, $PHASES_DIR, $PROFILE).
 
-**Adversarial challenger (v1.9.1 R3):** Source `.claude/commands/vg/_shared/lib/answer-challenger.sh` at top of command. After EVERY user answer in Rounds 1-5 AND in the Deep Probe Loop, invoke `challenge_answer "$user_answer" "round-$ROUND" "phase-scope" "$accumulated_draft"`. The helper writes a subagent prompt to a tmp file (path emitted on fd 3 + stderr). Orchestrator MUST:
+**Adversarial challenger (v1.9.1 R3, v1.9.3 R3.2 upgraded — 8 lenses + Opus):** Source `.claude/commands/vg/_shared/lib/answer-challenger.sh` at top of command. After EVERY user answer in Rounds 1-5 AND in the Deep Probe Loop, invoke `challenge_answer "$user_answer" "round-$ROUND" "phase-scope" "$accumulated_draft"`. The helper writes a subagent prompt to a tmp file (path emitted on fd 3 + stderr). Orchestrator MUST:
 1. Read the prompt file
-2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.adversarial_model:-haiku}`, zero parent context) with prompt contents
+2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.adversarial_model:-opus}` — v1.9.3 default Opus, zero parent context) with prompt contents
 3. Parse subagent stdout (one JSON line)
 4. Call `challenger_dispatch "$subagent_json" "round-$ROUND" "phase-scope" "$PHASE_NUMBER"`
 5. If `has_issue=true` → AskUserQuestion with 3 options:
@@ -49,6 +49,24 @@ Pipeline: specs -> **scope** -> blueprint -> build -> review -> test -> accept
 7. If `challenger_count_for_phase` reaches `config.scope.adversarial_max_rounds` (default 3) → helper auto-skips remaining challenges (loop guard)
 
 Skip challenger when `config.scope.adversarial_check: false` (rapid prototyping) or answer is trivial (Y/N, single-word confirm — helper auto-detects via `challenger_is_trivial`).
+
+**Dimension Expander (v1.9.3 R3.2 — NEW, proactive gap finding):** Source `.claude/commands/vg/_shared/lib/dimension-expander.sh` at top of command. At the END of EACH round (Rounds 1-5) and at the END of the Deep Probe Loop, AFTER the adversarial challenger loop concludes and BEFORE advancing to next round, invoke `expand_dimensions "$ROUND" "$ROUND_TOPIC" "$round_qa_accumulated" ".planning/FOUNDATION.md"`. The helper writes a subagent prompt to tmp (path on fd 3 + stderr). Orchestrator MUST:
+1. Read the prompt file
+2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.dimension_expand_model:-opus}`, zero parent context) with prompt contents
+3. Parse subagent stdout (one JSON line)
+4. Call `expander_dispatch "$subagent_json" "round-$ROUND" "$PHASE_NUMBER"`
+5. If `critical_missing[] > 0` OR `nice_to_have_missing[] > 0` → AskUserQuestion with 3 options:
+   - **Address critical** → re-enter round with each CRITICAL missing dimension added as new Q (append to round-$ROUND-followups.md)
+   - **Acknowledge** → record dimensions under `## Acknowledged gaps` in CONTEXT.md staged
+   - **Defer to open questions** → record under `## Open questions` in CONTEXT.md staged (will be re-raised in blueprint)
+6. Call `expander_record_user_choice "$PHASE_NUMBER" "round-$ROUND" "$choice"` to resolve telemetry
+7. If `expander_count_for_phase` reaches `config.scope.dimension_expand_max` (default 6 = 5 rounds + 1 deep probe) → helper auto-skips remaining expansions (loop guard)
+
+Skip dimension-expander when `config.scope.dimension_expand_check: false` (rapid prototyping). Unlike challenger, expander runs ONCE per round (not per answer) — cost is bounded.
+
+**Two helpers, complementary scope:**
+- `answer-challenger` (per-answer): "is this specific answer wrong?" — 8 lenses on single answer
+- `dimension-expander` (per-round): "what haven't we discussed yet?" — gap analysis on whole round
 
 <step name="0_parse_and_validate">
 ## Step 0: Parse arguments + validate prerequisites
@@ -187,7 +205,9 @@ From response, lock decisions:
 - Each decision captures: title, decision text, rationale
 - **Namespace enforcement:** Always prefix with `P${PHASE_NUMBER}.` (where ${PHASE_NUMBER} is extracted from $ARGUMENTS). If phase is "7.10.1", the decision ID is `P7.10.1.D-01`. Never write bare `D-01` (legacy — blocked by commit-msg hook from v1.10.1).
 
-**Adversarial challenge** (v1.9.1 R3, applies to EVERY round including Rounds 2-5 and deep probes): after recording the user answer but BEFORE advancing to the next round, run `challenge_answer` + `challenger_dispatch` per the protocol in `<process>` header. If the challenger flags an issue and user chooses **Address**, re-enter this round with the user's revised answer. If **Acknowledge** → append under `## Acknowledged tradeoffs` in `CONTEXT.md.staged`. If **Defer** → append under `## Open questions`.
+**Adversarial challenge** (v1.9.1 R3 + v1.9.3 R3.2 upgrade — 8 lenses + Opus, applies to EVERY round including Rounds 2-5 and deep probes): after recording the user answer but BEFORE advancing to the next round, run `challenge_answer` + `challenger_dispatch` per the protocol in `<process>` header. If the challenger flags an issue and user chooses **Address**, re-enter this round with the user's revised answer. If **Acknowledge** → append under `## Acknowledged tradeoffs` in `CONTEXT.md.staged`. If **Defer** → append under `## Open questions`.
+
+**Dimension expansion** (v1.9.3 R3.2 NEW, applies to EVERY round including Rounds 2-5 and deep probes — runs ONCE per round AFTER all Q&A + adversarial challenges complete, BEFORE advancing to next round): Invoke `expand_dimensions "$ROUND" "$ROUND_TOPIC" "$round_qa_accumulated" ".planning/FOUNDATION.md"` where `$round_qa_accumulated` = all user answers of this round merged, `$ROUND_TOPIC` = the round's topic string (e.g., "Domain & Business" for Round 1). Dispatch Task tool (model=`${config.scope.dimension_expand_model:-opus}`, zero parent context) with prompt contents, parse subagent JSON, call `expander_dispatch` per the protocol in `<process>` header. If `critical_missing[]` or `nice_to_have_missing[]` non-empty, user picks: **Address critical** → re-enter round appending each CRITICAL dimension as new Q → merge user's new answers. **Acknowledge** → append dimensions under `## Acknowledged gaps` in `CONTEXT.md.staged`. **Defer** → append under `## Open questions` for blueprint to re-raise.
 
 ### Round 2 — Technical Approach
 

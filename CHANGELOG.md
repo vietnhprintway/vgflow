@@ -2,6 +2,87 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.3] - 2026-04-18
+
+### R3.2 — Scope Adversarial Upgrade + Dimension Expander
+
+**Problem:** v1.9.1 R3 shipped `answer-challenger` với default model `haiku`. User phản hồi: scope là nơi tìm gap + critique, cần reasoning cao nhất mới phát hiện được gap thật (security threat, failure mode, integration break). Haiku reasoning depth không đủ → challenges nông, dễ miss.
+
+**Problem 2:** Challenger trả lời câu hỏi "is this answer wrong?" nhưng thiếu câu hỏi quan trọng khác: "what haven't we discussed yet?". Proactive dimension expansion bị miss — user phải tự nhớ hỏi security/perf/failure mode cho mỗi round.
+
+### 2 fixes shipped cùng release
+
+**Fix A: answer-challenger — Haiku → Opus + 4→8 lenses**
+
+- Default `scope.adversarial_model`: `haiku` → `opus` (user có thể override về haiku nếu quota căng)
+- Prompt mở rộng từ 4 → 8 lenses:
+  - L1 Contradiction (giữ)
+  - L2 Hidden assumption (giữ)
+  - L3 Edge case (giữ)
+  - L4 Foundation conflict (giữ)
+  - **L5 Security threat NEW** — auth/authz bypass, data leak, injection, CSRF, rate-limit bypass
+  - **L6 Performance budget NEW** — unbounded query, blocking call, cache miss cost, p95 latency
+  - **L7 Failure mode NEW** — idempotency, timeout, circuit breaker, partial failure, poison message, retry storm
+  - **L8 Integration chain NEW** — downstream caller contract, upstream dep guarantee, webhook retry, data contract, schema migration
+- Priority order when multiple fire: Security > Failure > Contradiction > Foundation > Integration > Edge > Hidden > Performance
+- `issue_kind` enum mở rộng: `security | performance | failure_mode | integration_chain` (ngoài 4 cũ)
+- Dispatcher narration Vietnamese cho 4 kind mới (bảo mật/perf budget/failure mode/integration chain)
+
+**Fix B: dimension-expander NEW — proactive per-round gap finding**
+
+NEW `_shared/lib/dimension-expander.sh` (~350 LOC, `bash -n` clean):
+
+- Trigger: END của mỗi round (1-5 + deep probe) sau khi Q&A + adversarial challenges complete
+- Model: Opus (config `scope.dimension_expand_model`, default `opus`)
+- Prompt: zero-context subagent nhận ROUND_TOPIC + accumulated answers + FOUNDATION → tự derive 8-12 dimensions cho topic → classify ADDRESSED/PARTIAL/MISSING → phân loại CRITICAL vs NICE-TO-HAVE
+- Output JSON: `dimensions_total`, `dimensions_addressed`, `critical_missing[]`, `nice_to_have_missing[]`
+- Dispatcher: narrate gaps trong VN, AskUserQuestion 3 options (Address/Acknowledge/Defer), telemetry event `scope_dimension_expanded`
+- Loop guard: `dimension_expand_max: 6` (5 rounds + 1 deep probe)
+- **Complementary, not redundant** với answer-challenger:
+  - Challenger: per-answer, "is this specific answer wrong?"
+  - Expander: per-round, "what dimensions haven't we discussed?"
+
+### Config changes
+
+Thêm vào `scope:` section:
+```yaml
+scope:
+  adversarial_model: "opus"              # was "haiku"
+  dimension_expand_check: true           # NEW master switch
+  dimension_expand_model: "opus"         # NEW
+  dimension_expand_max: 6                # NEW loop guard
+```
+
+Thêm `review:` section (v1.9.1 R2 đã có trong code nhưng config chưa):
+```yaml
+review:
+  fix_routing:
+    inline_threshold_loc: 20
+    spawn_threshold_loc: 150
+    escalate_threshold_loc: 500
+    escalate_on_contract_change: true
+    escalate_on_critical_domain: true
+    max_iterations: 3
+```
+
+### Cost impact
+
+Scope cost tăng ~20x (Haiku → Opus cho answer-challenger) + ~$0.03/round cho dimension-expander.
+Estimated: $0.15-0.30/phase scope (vs $0.01 trước). Acceptable vì scope là decision-critical step.
+Override: user set `adversarial_model: "haiku"` hoặc `adversarial_check: false` để về cost cũ.
+
+### Files
+
+- **MODIFIED** `_shared/lib/answer-challenger.sh` — default model + 8-lens prompt + 4 new issue_kind
+- **NEW** `_shared/lib/dimension-expander.sh` (~350 LOC) — per-round gap-finding subagent protocol
+- **MODIFIED** `commands/vg/scope.md` — dimension-expander hook in `<process>` header + per-round narration
+- **MODIFIED** `vg.config.template.md` — scope section rewrite + review section NEW
+
+### Migration
+
+Auto via `/vg:update` (3-way merge). User keeping custom `adversarial_model: "haiku"` sẽ stay (config preservation).
+Fresh install gets Opus default. `dimension_expand_check: true` enabled by default — set `false` to disable completely.
+
 ## [1.9.2.6] - 2026-04-18
 
 ### 2 bugs dò được qua 9 smoke tests — shipped

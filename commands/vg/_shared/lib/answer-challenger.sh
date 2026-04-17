@@ -3,13 +3,18 @@
 # Companion runtime for: .claude/commands/vg/_shared/answer-challenger.md (docs)
 #
 # Purpose: Every user answer in a scope/project discussion round gets adversarially
-# challenged by an isolated Haiku subagent. The subagent receives ONLY the answer +
-# accumulated draft + FOUNDATION.md + prior decisions — no parent context, no goals.
-# It checks 4 lenses:
+# challenged by an isolated Opus subagent (v1.9.3 R3.2 — upgraded from Haiku for
+# reasoning depth). The subagent receives ONLY the answer + accumulated draft +
+# FOUNDATION.md + prior decisions — no parent context, no goals.
+# It checks 8 lenses (expanded from 4 in v1.9.3):
 #   1. Contradicts prior decisions (D-XX / F-XX)?
 #   2. Hidden assumption not stated?
 #   3. Edge case missed (failure / scale / concurrency / timezone / unicode / multi-tenant)?
 #   4. FOUNDATION conflict (platform / compliance / scale drift)?
+#   5. Security threat (auth / authz / data leak / injection / rate-limit bypass)?
+#   6. Performance budget (latency / throughput / DB query cost / memory / p95)?
+#   7. Failure mode (retry / idempotency / circuit breaker / partial fail / timeout)?
+#   8. Integration chain (downstream caller / upstream dep / webhook contract / data contract)?
 #
 # Exposed functions:
 #   - challenger_enabled
@@ -66,7 +71,7 @@ PY
 
 # Main API — build adversarial subagent prompt, emit path on fd 3, return fallback JSON
 # The VG command orchestrator is responsible for reading the prompt file, dispatching
-# the Task tool (model=haiku, zero parent context), and piping subagent stdout back.
+# the Task tool (model=opus per v1.9.3 R3.2, zero parent context), and piping subagent stdout back.
 #
 # Usage: result=$(challenge_answer "$answer" "$round_id" "$scope_kind" "$accumulated")
 # Result (one JSON line): {has_issue, issue_kind, evidence, follow_up_question, proposed_alternative}
@@ -85,7 +90,7 @@ challenge_answer() {
     return 0
   fi
 
-  local subagent_model="${CONFIG_SCOPE_ADVERSARIAL_MODEL:-haiku}"
+  local subagent_model="${CONFIG_SCOPE_ADVERSARIAL_MODEL:-opus}"  # v1.9.3 R3.2: upgraded from haiku
   local prompt_path="${VG_TMP:-/tmp}/answer-challenger-$(date +%s)-$$.txt"
   mkdir -p "$(dirname "$prompt_path")" 2>/dev/null || true
 
@@ -113,7 +118,7 @@ ${accumulated}
 ${foundation_excerpt:-"(no FOUNDATION.md yet — this is likely /vg:project round)"}
 
 ══════════════════════════════════════════════════════════════════════════════
-YOUR 4-LENS ADVERSARIAL CHECK
+YOUR 8-LENS ADVERSARIAL CHECK (v1.9.3 — expanded from 4 lenses)
 ══════════════════════════════════════════════════════════════════════════════
 
 Lens 1 — CONTRADICTS PRIOR DECISION?
@@ -136,23 +141,62 @@ Lens 4 — FOUNDATION CONFLICT?
     - FOUNDATION says "no PII stored" but answer introduces user profiles
     - FOUNDATION says "VPS hosting" but answer assumes serverless cold-start
 
+Lens 5 — SECURITY THREAT?
+  Does the answer create an attack surface?
+    - Authentication: missing auth check on sensitive endpoint
+    - Authorization: org-scoped resource without tenancy check (IDOR)
+    - Data leak: response/log exposes secret / PII / internal ID format
+    - Injection: unsanitized input into SQL / Mongo query / shell / template
+    - CSRF: state-changing endpoint without CSRF protection
+    - Rate-limit bypass: expensive endpoint without throttle / quota
+
+Lens 6 — PERFORMANCE BUDGET?
+  Will the answer blow past budget? Check for:
+    - Unbounded query (N+1, missing LIMIT, full table scan)
+    - Synchronous blocking call in hot path (sleep, cross-DC fetch, file I/O)
+    - Cache miss cost (no caching on expensive derivation)
+    - Chatty protocol (10 round-trips where 1 would do)
+    - Memory spike (load full collection into memory when cursor would suffice)
+    - p95 latency beyond config.perf_budgets for this surface
+
+Lens 7 — FAILURE MODE?
+  Does the answer handle failures correctly?
+    - Idempotency: retry causes duplicate side-effect?
+    - Timeout: unbounded wait (no timeout) on external call?
+    - Circuit breaker: cascading failure when dependency down?
+    - Partial failure: multi-write with no rollback / compensating action?
+    - Poison message: malformed input crashes worker repeatedly?
+    - Retry storm: exponential-backoff missing, thundering herd?
+
+Lens 8 — INTEGRATION CHAIN?
+  Does the answer break cross-service contracts?
+    - Downstream caller: API shape change breaks existing consumer
+    - Upstream dep: relies on behavior not guaranteed by dep contract
+    - Webhook contract: response format/retry semantics not aligned with receiver
+    - Data contract: writes field that downstream reader doesn't know about
+    - Schema migration: additive vs breaking; rollout vs rollback plan
+
 ══════════════════════════════════════════════════════════════════════════════
 DECISION
 ══════════════════════════════════════════════════════════════════════════════
 
-If ALL 4 lenses are clean → has_issue=false. Done.
+If ALL 8 lenses are clean → has_issue=false. Done.
 
 If ANY lens flags a concrete issue → has_issue=true. Pick THE MOST CRITICAL one.
 
+Priority order when multiple lenses fire: Security > Failure Mode > Contradiction
+  > Foundation Conflict > Integration Chain > Edge Case > Hidden Assumption
+  > Performance Budget.
+
 Do NOT invent issues. Do NOT nitpick grammar / wording. Only flag if the answer
-will cause real trouble downstream (build / test / deploy / compliance).
+will cause real trouble downstream (build / test / deploy / compliance / ops).
 
 ══════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT — exactly ONE line of strict JSON, no prose before/after
 ══════════════════════════════════════════════════════════════════════════════
 {"has_issue": true|false,
- "issue_kind": "contradiction|hidden_assumption|edge_case|foundation_conflict|",
- "evidence": "<≤200 char pointer: D-XX / F-XX cited, or specific edge case>",
+ "issue_kind": "contradiction|hidden_assumption|edge_case|foundation_conflict|security|performance|failure_mode|integration_chain|",
+ "evidence": "<≤200 char pointer: D-XX / F-XX cited, or specific edge case / attack vector / budget>",
  "follow_up_question": "<≤200 char VN question for user to resolve>",
  "proposed_alternative": "<≤200 char VN concrete alternative phrasing>"}
 PROMPT
@@ -204,10 +248,14 @@ challenger_dispatch() {
   # Issue detected — narrate in Vietnamese with glossary translations
   local kind_vn
   case "$issue_kind" in
-    contradiction)        kind_vn="mâu thuẫn (contradiction)" ;;
-    hidden_assumption)    kind_vn="giả định ngầm (hidden assumption)" ;;
+    contradiction)        kind_vn="mâu thuẫn (contradiction) với decision trước" ;;
+    hidden_assumption)    kind_vn="giả định ngầm (hidden assumption) chưa state" ;;
     edge_case)            kind_vn="edge case bị bỏ sót" ;;
     foundation_conflict)  kind_vn="khác biệt nền tảng (foundation conflict)" ;;
+    security)             kind_vn="rủi ro bảo mật (security threat) — attack surface mới" ;;
+    performance)          kind_vn="vượt budget hiệu năng (performance budget)" ;;
+    failure_mode)         kind_vn="failure mode chưa xử lý (retry / idempotency / timeout)" ;;
+    integration_chain)    kind_vn="phá contract integration (downstream / upstream / webhook)" ;;
     *)                    kind_vn="vấn đề ($issue_kind)" ;;
   esac
 
