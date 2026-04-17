@@ -2,6 +2,16 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.3.1] - 2026-04-17
+
+### Fixed (CRITICAL — data safety)
+- **`/vg:migrate` step 4 `_enrich_context` was losing decisions silently** — agent wrote directly to `CONTEXT.md`, overwriting original. If agent dropped or merged D-XX decisions, they were **permanently lost** (backup in `.gsd-backup/` but no automatic diff/rollback).
+- **Fix:** Agent now writes to `CONTEXT.md.enriched` staging file. Three gates run before promoting to `CONTEXT.md`:
+  1. **Decision-ID preservation**: every `D-XX` in original must exist in staging (missing → abort, no overwrite)
+  2. **Body-preservation**: each decision body must be ≥ 80% similar to original (rewritten prose → abort)
+  3. **Sub-section coverage**: warns if `**Endpoints:**` count ≠ decision count (non-fatal)
+- Only if all 3 gates pass → staging promoted to `CONTEXT.md` atomically. On failure, staging preserved for user review; original CONTEXT.md untouched.
+
 ## [1.3.0] - 2026-04-17
 
 ### Added

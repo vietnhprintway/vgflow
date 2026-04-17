@@ -205,16 +205,128 @@ Agent(model="sonnet", description="Enrich CONTEXT.md for phase ${PHASE_NUMBER}")
     Grep existing endpoints in codebase related to this phase's domain.
     </code_scan_hints>
     
-    Output: write enriched CONTEXT.md to ${PHASE_DIR}/CONTEXT.md
+    Output: write enriched CONTEXT.md to ${PHASE_DIR}/CONTEXT.md.enriched (STAGING — NOT overwriting CONTEXT.md yet)
 ```
 
-**Post-conversion validation:**
+**⛔ CRITICAL: Agent writes to STAGING file, not CONTEXT.md directly.** Validation below must pass before promoting staging → CONTEXT.md.
+
+**Post-conversion validation (tightened 2026-04-17 — decision preservation gate):**
+
 ```bash
-DECISIONS=$(grep -c "^## D-" "${PHASE_DIR}/CONTEXT.md")
-ENDPOINTS=$(grep -c "^\*\*Endpoints:\*\*" "${PHASE_DIR}/CONTEXT.md")
-if [ "$DECISIONS" != "$ENDPOINTS" ]; then
-  echo "WARNING: ${DECISIONS} decisions but only ${ENDPOINTS} Endpoint sections. Some decisions may be missing sub-sections."
+STAGING="${PHASE_DIR}/CONTEXT.md.enriched"
+ORIGINAL="${PHASE_DIR}/.gsd-backup/CONTEXT.md.gsd"
+
+if [ ! -f "$STAGING" ]; then
+  echo "⛔ Agent did not write staging file ${STAGING}. Aborting."
+  exit 1
 fi
+
+if [ ! -f "$ORIGINAL" ]; then
+  echo "⛔ Backup missing at ${ORIGINAL} — step 3 did not run? Aborting."
+  exit 1
+fi
+
+# ─── Gate 1: Every D-XX in ORIGINAL must exist in STAGING ───────────
+${PYTHON_BIN:-python3} - "$ORIGINAL" "$STAGING" <<'PY' || exit 1
+import re, sys
+orig_path, stage_path = sys.argv[1], sys.argv[2]
+orig = open(orig_path, encoding='utf-8').read()
+stage = open(stage_path, encoding='utf-8').read()
+
+# Extract decision IDs (D-01, D-02, etc.) — flexible matching for ## or ### prefix
+def ids(text):
+    return set(re.findall(r'(?mi)^#+\s*(D-\d+)\s*:', text))
+
+orig_ids = ids(orig)
+stage_ids = ids(stage)
+
+missing = sorted(orig_ids - stage_ids, key=lambda x: int(x.split('-')[1]))
+extra = sorted(stage_ids - orig_ids, key=lambda x: int(x.split('-')[1]))
+
+if missing:
+    print(f"⛔ DECISIONS LOST: agent dropped {len(missing)} decision(s) from original:")
+    for d in missing:
+        print(f"    {d}")
+    print(f"\n    Original had {len(orig_ids)} decisions: {sorted(orig_ids)}")
+    print(f"    Staging has  {len(stage_ids)} decisions: {sorted(stage_ids)}")
+    print("")
+    print(f"    Staging file kept at: {stage_path} for inspection")
+    print(f"    Original preserved:    {orig_path}")
+    print(f"    CONTEXT.md NOT modified. Re-run with different agent prompt or manual migration.")
+    sys.exit(1)
+
+if extra:
+    print(f"⚠ WARNING: staging has {len(extra)} decision(s) not in original: {extra}")
+    print(f"  Agent may have invented decisions. Review staging before accepting.")
+    # Not fatal but loud
+
+print(f"✓ All {len(orig_ids)} decisions preserved: {sorted(orig_ids)}")
+PY
+
+# ─── Gate 2: Decision BODY preserved (fuzzy — must not be rewritten) ─
+${PYTHON_BIN:-python3} - "$ORIGINAL" "$STAGING" <<'PY' || exit 1
+import re, sys, difflib
+orig = open(sys.argv[1], encoding='utf-8').read()
+stage = open(sys.argv[2], encoding='utf-8').read()
+
+def extract_bodies(text):
+    """Return dict D-XX -> body text (between header and next header / sub-section)."""
+    bodies = {}
+    # Split by decision headers
+    chunks = re.split(r'(?mi)^(#+\s*D-\d+\s*:[^\n]*)', text)
+    # chunks: [preamble, header1, body1, header2, body2, ...]
+    i = 1
+    while i < len(chunks):
+        header = chunks[i]
+        body = chunks[i+1] if i+1 < len(chunks) else ""
+        m = re.search(r'(D-\d+)', header)
+        if m:
+            did = m.group(1)
+            # Strip VG sub-sections (**Endpoints:**, **UI Components:**, **Test Scenarios:**)
+            body_clean = re.split(r'(?m)^\*\*(?:Endpoints|UI Components|Test Scenarios):\*\*', body)[0]
+            bodies[did] = body_clean.strip()
+        i += 2
+    return bodies
+
+orig_bodies = extract_bodies(orig)
+stage_bodies = extract_bodies(stage)
+
+drift_threshold = 0.80  # similarity ratio; < threshold = body was rewritten
+rewrites = []
+for did, orig_body in orig_bodies.items():
+    stage_body = stage_bodies.get(did, "")
+    if not orig_body.strip() and not stage_body.strip():
+        continue
+    ratio = difflib.SequenceMatcher(None, orig_body, stage_body).ratio()
+    if ratio < drift_threshold:
+        rewrites.append((did, ratio, orig_body[:100], stage_body[:100]))
+
+if rewrites:
+    print(f"⛔ DECISION BODY REWRITTEN: agent rewrote prose for {len(rewrites)} decision(s):")
+    for did, ratio, orig_snip, stage_snip in rewrites:
+        print(f"    {did}: similarity={ratio:.0%}")
+        print(f"      ORIGINAL: {orig_snip!r}")
+        print(f"      STAGING:  {stage_snip!r}")
+    print("")
+    print(f"    Rule #1 violated: 'Keep ALL existing decision text EXACTLY as-is'.")
+    print(f"    CONTEXT.md NOT modified. Staging preserved for review: $STAGING")
+    sys.exit(1)
+
+print(f"✓ All decision bodies preserved (>= 80% similarity)")
+PY
+
+# ─── Gate 3: Sub-section coverage check (existing) ───
+DECISIONS=$(grep -cE "^#+\s*D-[0-9]+" "$STAGING")
+ENDPOINTS=$(grep -c "^\*\*Endpoints:\*\*" "$STAGING")
+if [ "$DECISIONS" != "$ENDPOINTS" ]; then
+  echo "⚠ WARNING: ${DECISIONS} decisions but ${ENDPOINTS} Endpoint sections. Some decisions may be missing sub-sections."
+  echo "   Proceeding (non-fatal) — user should verify manually."
+fi
+
+# ─── All gates passed: promote staging → CONTEXT.md atomically ───
+echo ""
+echo "✓ Migration gates passed. Promoting staging → CONTEXT.md"
+mv "$STAGING" "${PHASE_DIR}/CONTEXT.md"
 
 # ⛔ Hallucination check (tightened 2026-04-17): enriched CONTEXT may hallucinate endpoints.
 # For every endpoint mentioned in Endpoints sections, grep actual API route files
