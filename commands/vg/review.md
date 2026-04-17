@@ -104,7 +104,13 @@ Follow `.claude/commands/vg/_shared/session-lifecycle.md` helper.
 
 ```bash
 PHASE_NUMBER=$(echo "$ARGUMENTS" | awk '{print $1}')
-PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+# v1.9.2.2 — handle zero-padding (`7.12` → `07.12-*`) via shared resolver
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/dev/null || true
+if type -t resolve_phase_dir >/dev/null 2>&1; then
+  PHASE_DIR_CANDIDATE=$(resolve_phase_dir "$PHASE_NUMBER" 2>/dev/null || echo "")
+else
+  PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+fi
 
 # Emit session-start banner → distinct separator for Claude Code tail UI
 session_start "review" "${PHASE_NUMBER:-unknown}"

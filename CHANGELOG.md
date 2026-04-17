@@ -2,6 +2,52 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.2.2] - 2026-04-17
+
+### Hotfix — Phase directory lookup with zero-padding
+
+**Bug discovered live while running `/vg:review 7.12`:**
+
+User typed `7.12`. Phase directory is `.planning/phases/07.12-conversion-tracking-pixel/` (zero-padded). Naive glob `ls -d .planning/phases/${PHASE_NUMBER}*` = `ls -d .planning/phases/7.12*` → no match → PHASE_DIR empty → entire review pipeline silent-fails with cryptic generic errors (no "phase not found" message).
+
+Confirmed in 3 runnable sites:
+- `review.md:107`
+- `test.md:92`
+- `build.md:90`
+
+### Fix — `_shared/lib/phase-resolver.sh` (new helper)
+
+`resolve_phase_dir PHASE_NUMBER` — returns directory path, handles:
+
+1. **Exact match with dash suffix**: `07.12-*` (prevents matching sub-phases like `07.12.1-*`)
+2. **Zero-pad integer part**: `7.12` → `07.12-*` (fixes the reported bug)
+3. **Fallback boundary-aware prefix**: only `-` or `.` as boundary (prevents `99` matching `999.1-*`)
+4. **Clear error on miss**: lists available phases + tips
+
+**Verification**:
+```
+resolve_phase_dir 7.12     → .planning/phases/07.12-conversion-tracking-pixel/  ✓
+resolve_phase_dir 07.12    → .planning/phases/07.12-conversion-tracking-pixel/  ✓
+resolve_phase_dir 07.12.1  → .planning/phases/07.12.1-pixel-infra-provisioning/ ✓
+resolve_phase_dir 99       → stderr error + list, rc=1  ✓
+```
+
+### Patched commands
+
+- `commands/vg/review.md` step `00_session_lifecycle`
+- `commands/vg/test.md` step `00_session_lifecycle`
+- `commands/vg/build.md` step `00_session_lifecycle`
+
+All 3 now source `phase-resolver.sh` and call `resolve_phase_dir`. Fallback to old logic if helper missing (backward-compat).
+
+### Migration v1.9.2.1 → v1.9.2.2
+
+No user action needed. Transparent fix. Users typing phase numbers without zero-padding (`7.12`, `5.3`) will now correctly resolve to padded directories.
+
+### Known limitation
+
+Other 7 files that reference `${PHASE_NUMBER}*` pattern (specs.md, project.md, migrate.md, session-lifecycle.md, vg-executor-rules.md, visual-regression.md, architect-prompt-template.md) — not runnable code, just documentation examples. No fix needed.
+
 ## [1.9.2.1] - 2026-04-17
 
 ### Hotfix — `feature-legacy` profile for phases without SPECS.md

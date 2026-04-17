@@ -89,7 +89,13 @@ Follow `.claude/commands/vg/_shared/session-lifecycle.md`.
 
 ```bash
 PHASE_NUMBER=$(echo "$ARGUMENTS" | awk '{print $1}')
-PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+# v1.9.2.2 — handle zero-padding via shared resolver
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/dev/null || true
+if type -t resolve_phase_dir >/dev/null 2>&1; then
+  PHASE_DIR_CANDIDATE=$(resolve_phase_dir "$PHASE_NUMBER" 2>/dev/null || echo "")
+else
+  PHASE_DIR_CANDIDATE=$(ls -d .planning/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
+fi
 
 session_start "test" "${PHASE_NUMBER:-unknown}"
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "test" "$PHASE_DIR_CANDIDATE"
