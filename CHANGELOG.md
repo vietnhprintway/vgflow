@@ -2,6 +2,49 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.2.5] - 2026-04-18
+
+### probe_api substring match — eliminate false BLOCKED
+
+**Bug discovered live running review 7.12 Phase 4d with v1.9.2.4 matrix:**
+
+Phase 7.12 GOAL-COVERAGE-MATRIX showed 15 BLOCKED for API goals. Spot check G-02:
+
+```
+G-02 BLOCKED | no_handler_for:POST /conversion-goals
+```
+
+But the handler EXISTS:
+```
+apps/api/src/modules/conversion/conversion.plugin.ts:21:
+  await fastify.register(conversionRoutes(service), { prefix: '/api/v1/conversion-goals' })
+```
+
+Root cause: probe_api extracted `tail -1` path fragment → `/conversion-goals`. Then grepped `['"\\`]/conversion-goals['"\\`]` — required fragment as standalone quoted string. But code has `'/api/v1/conversion-goals'` — fragment in middle of longer literal → no match → false BLOCKED.
+
+### Fix — 2-tier fragment + substring match
+
+Try full path first, then last segment as fallback. Grep pattern allows substring within quoted literal: `['"\\`][^'"\\`]*${frag}[^'"\\`]*['"\\`]`
+
+### Phase 7.12 live result (v1.9.2.4 → v1.9.2.5)
+
+| Metric | v1.9.2.4 | v1.9.2.5 |
+|--------|----------|----------|
+| READY | 10 | **24** |
+| BLOCKED | 15 | **1** |
+| NOT_SCANNED | 14 | 14 |
+
+14 previously-false BLOCKED → correctly READY with evidence. Only 1 genuine BLOCKED remains. 14 NOT_SCANNED = 6 UI goals (need browser) + 8 probe-unparseable criteria.
+
+Priority pass %:
+- critical: 8/12 (66.7%) — need browser for 4 UI goals
+- important: 14/20 (70%) — need browser for 2 UI + fix 4 probe-unparseable
+- nice-to-have: 2/7 (28.6%) — mostly UI + unparseable
+
+### Migration v1.9.2.4 → v1.9.2.5
+
+Transparent. Re-run `/vg:review` on phases with previous false BLOCKED → now mostly READY.
+
 ## [1.9.2.4] - 2026-04-18
 
 ### Phase 4b/4d matrix merger runnable

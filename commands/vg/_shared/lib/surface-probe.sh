@@ -82,38 +82,47 @@ probe_api() {
   method=$(echo "$endpoint_line" | awk '{print $1}')
   path=$(echo "$endpoint_line" | awk '{print $2}')
 
-  # Strip path params / hostnames for grep — keep simple path fragment
-  # e.g. "pixel.vollx.com/p/{id}.js" → "/p/" ; "/api/v1/xxx" → "/xxx"
-  local path_frag
-  path_frag=$(echo "$path" | sed -E 's|^https?://[^/]+||; s|^[^/]+(/)|\1|' | \
-              sed -E 's|\{[^}]+\}|[^/]+|g' | grep -oE '/[a-zA-Z0-9][a-zA-Z0-9._\-]*' | tail -1)
+  # Clean path — strip hostname + params — keep full relative path
+  local path_clean
+  path_clean=$(echo "$path" | sed -E 's|^https?://[^/]+||; s|^[^/]+/|/|' | \
+               sed -E 's|\{[^}]+\}|.|g')
 
-  [ -z "$path_frag" ] && { echo "SKIPPED|path_unparseable:${path}"; return 0; }
+  # Extract ALL meaningful path fragments (longest → shortest) for multi-level grep
+  # e.g. "/api/v1/conversion-goals" → ["/api/v1/conversion-goals", "/conversion-goals"]
+  local frags=()
+  frags+=("$path_clean")
+  # Last segment (most distinctive — e.g. "conversion-goals" from "/api/v1/conversion-goals")
+  local last_seg
+  last_seg=$(echo "$path_clean" | grep -oE '/[a-zA-Z0-9][a-zA-Z0-9._\-]*' | tail -1)
+  [ -n "$last_seg" ] && [ "$last_seg" != "$path_clean" ] && frags+=("$last_seg")
 
-  # Search patterns from config or sensible defaults
+  # Search patterns
   local scan_paths="apps/api/src apps/pixel/src apps/workers/src packages/api"
   local scan_exts="ts tsx js jsx mjs rs py go rb"
-
-  # Build grep include patterns
   local include_args=""
-  for ext in $scan_exts; do
-    include_args="$include_args --include=*.$ext"
-  done
+  for ext in $scan_exts; do include_args="$include_args --include=*.$ext"; done
 
   local hit=""
-  for dir in $scan_paths; do
-    [ -d "$dir" ] || continue
-    # Case-insensitive method + path fragment within same file within 5 lines
-    hit=$(grep -rEnl $include_args "['\"\`]${path_frag}['\"\`]" "$dir" 2>/dev/null | head -3)
-    [ -n "$hit" ] && break
+  local matched_frag=""
+  for frag in "${frags[@]}"; do
+    for dir in $scan_paths; do
+      [ -d "$dir" ] || continue
+      # Match frag as substring within string/template literal (not necessarily whole)
+      # e.g. prefix: '/api/v1/conversion-goals' contains 'conversion-goals'
+      hit=$(grep -rEnl $include_args "['\"\`][^'\"\`]*${frag}[^'\"\`]*['\"\`]" "$dir" 2>/dev/null | head -3)
+      if [ -n "$hit" ]; then
+        matched_frag="$frag"
+        break 2
+      fi
+    done
   done
 
   if [ -n "$hit" ]; then
     local first_hit
     first_hit=$(echo "$hit" | head -1)
-    echo "READY|handler=${first_hit}${path_frag}"
+    echo "READY|handler=${first_hit}|matched=${matched_frag}"
   else
-    echo "BLOCKED|no_handler_for:${method} ${path_frag}"
+    echo "BLOCKED|no_handler_for:${method} ${path_clean}"
   fi
 }
 
