@@ -46,6 +46,20 @@ mkdir -p "$TARGET/.claude/templates/vg"
 cp "$SCRIPT_DIR/commands/vg/"*.md "$TARGET/.claude/commands/vg/"
 cp "$SCRIPT_DIR/commands/vg/_shared/"*.md "$TARGET/.claude/commands/vg/_shared/"
 
+# v1.11.0 R5 — copy bash helpers (_shared/lib/*.sh + test-runners)
+mkdir -p "$TARGET/.claude/commands/vg/_shared/lib"
+cp "$SCRIPT_DIR/commands/vg/_shared/lib/"*.sh "$TARGET/.claude/commands/vg/_shared/lib/" 2>/dev/null || true
+chmod +x "$TARGET/.claude/commands/vg/_shared/lib/"*.sh 2>/dev/null || true
+LIB_COUNT=$(ls "$TARGET/.claude/commands/vg/_shared/lib/"*.sh 2>/dev/null | wc -l | tr -d ' ')
+echo "  → ${LIB_COUNT} bash helpers in _shared/lib/"
+
+# Copy test-runners if present
+if [ -d "$SCRIPT_DIR/commands/vg/_shared/lib/test-runners" ]; then
+  mkdir -p "$TARGET/.claude/commands/vg/_shared/lib/test-runners"
+  cp "$SCRIPT_DIR/commands/vg/_shared/lib/test-runners/"*.sh "$TARGET/.claude/commands/vg/_shared/lib/test-runners/" 2>/dev/null || true
+  chmod +x "$TARGET/.claude/commands/vg/_shared/lib/test-runners/"*.sh 2>/dev/null || true
+fi
+
 # Skills: api-contract + design scanner/hunter + haiku-scanner (review) + crossai (multi-CLI engine)
 cp "$SCRIPT_DIR/skills/api-contract/SKILL.md" "$TARGET/.claude/skills/api-contract/"
 if [ -f "$SCRIPT_DIR/skills/vg-design-scanner/SKILL.md" ]; then
