@@ -2604,6 +2604,57 @@ if [ "$UI_GOAL_COUNT" -eq 0 ]; then
 fi
 ```
 
+**Mixed-phase surface probe execution (v1.9.2.3 P3):**
+
+For phases có CẢ UI goals (cần browser) VÀ backend goals (api/data/integration/time-driven), browser phase chỉ cover UI goals. Backend goals PHẢI được probe SEPARATELY để avoid rơi vào NOT_SCANNED branch.
+
+```bash
+# Run surface probes cho goals có surface ≠ ui
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/surface-probe.sh" 2>/dev/null || true
+if type -t run_surface_probe >/dev/null 2>&1; then
+  PROBE_RESULTS_JSON="${PHASE_DIR}/.surface-probe-results.json"
+  echo '{"probed_at":"'"$(date -u +%FT%TZ)"'","results":{' > "$PROBE_RESULTS_JSON"
+  FIRST=true
+
+  # Extract goal_id + surface pairs from TEST-GOALS.md
+  ${PYTHON_BIN} -c "
+import re
+tg = open('${PHASE_DIR}/TEST-GOALS.md', encoding='utf-8').read()
+for gid, surface in re.findall(r'^## Goal (G-[\w]+):.*?^\*\*Surface:\*\* (\w[\w-]*)', tg, re.M|re.S):
+    print(f'{gid} {surface}')
+" | while read -r gid surface; do
+    surface="${surface%$'\r'}"
+    # Skip UI — browser phase handles them
+    [ "$surface" = "ui" ] || [ "$surface" = "ui-mobile" ] && continue
+
+    PROBE=$(run_surface_probe "$gid" "$surface" "$PHASE_DIR" 2>/dev/null)
+    STATUS=$(echo "$PROBE" | cut -d'|' -f1)
+    EVIDENCE=$(echo "$PROBE" | cut -d'|' -f2- | sed 's/"/\\"/g')
+
+    [ "$FIRST" = "true" ] && FIRST=false || echo "," >> "$PROBE_RESULTS_JSON"
+    printf '"%s":{"surface":"%s","status":"%s","evidence":"%s"}' \
+           "$gid" "$surface" "$STATUS" "$EVIDENCE" >> "$PROBE_RESULTS_JSON"
+  done
+
+  echo '}}' >> "$PROBE_RESULTS_JSON"
+
+  # Summary narration
+  PROBED=$(${PYTHON_BIN} -c "
+import json
+d = json.load(open('$PROBE_RESULTS_JSON'))['results']
+from collections import Counter
+c = Counter(r['status'] for r in d.values())
+print(f'Phase 4a surface probes: {len(d)} backend goals probed → {dict(c)}')")
+  echo "▸ $PROBED"
+fi
+```
+
+**Phase 4b integration:** Khi check goal_sequences cho backend goals (surface ≠ ui), trước khi mark NOT_SCANNED hãy check `.surface-probe-results.json`:
+- Nếu probe READY → map → STATUS: READY với evidence từ probe (handler path, migration file, caller reference).
+- Nếu probe BLOCKED → map → STATUS: BLOCKED với evidence là probe reason.
+- Nếu probe INFRA_PENDING → map → STATUS: INFRA_PENDING.
+- Nếu probe SKIPPED (can't parse criteria) → fallthrough to NOT_SCANNED branch → buộc user cải thiện TEST-GOALS hoặc override.
+
 **Infra dependency filter (config-driven):**
 
 If goal has `**Infra deps:**` field (e.g., `[clickhouse, kafka, pixel_server]`):

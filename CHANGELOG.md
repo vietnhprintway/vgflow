@@ -2,6 +2,61 @@
 
 All notable changes to VG workflow documented here. Format follows [Keep a Changelog](https://keepachangelog.com/), adheres to [SemVer](https://semver.org/).
 
+## [1.9.2.3] - 2026-04-17
+
+### Mixed-phase surface probes — fix NOT_SCANNED black hole for backend goals
+
+**Bug discovered running `/vg:review 7.12` post-v1.9.2.2:**
+
+v1.9.1 R1 shipped surface classification (26 api + 6 data + 6 ui + 1 integration goals tagged correctly). v1.9.2 shipped phase profile system. BUT for **mixed phase** (UI + backend goals cùng tồn tại), only pure-backend fast-path (UI_GOAL_COUNT==0) được implement thực sự. Surface probes cho `api/data/integration/time-driven` trong mixed phase chỉ có pseudo-code docs — KHÔNG có bash thực.
+
+**Hệ quả 7.12**:
+- 6 UI goals → browser scan cover được
+- 33 backend goals → KHÔNG có sequence → rơi vào "NOT_SCANNED" branch
+- 4c-pre gate BLOCK với 33 intermediate goals → block_resolve L2 architect
+- User bị đẩy vào loop 33 goals "cần resolve trước exit"
+
+### Fix — `_shared/lib/surface-probe.sh` (new ~250 LOC helper)
+
+**4 probe functions**:
+- `probe_api(gid, block)` — extract HTTP method + path, grep handler trong `apps/*/src/**` → READY hoặc BLOCKED
+- `probe_data(gid, block)` — extract table/collection name (3 strategies: backtick, SQL keyword, bare snake_case fallback) + grep migrations + check `infra_deps` → READY/BLOCKED/INFRA_PENDING
+- `probe_integration(gid, block, phase_dir)` — check fixture file OR grep keyword (postback/webhook/kafka/etc) trong source
+- `probe_time_driven(gid, block)` — grep cron/setInterval/BullQueue/Agenda registration
+
+**Dispatcher** `run_surface_probe(gid, surface, phase_dir, test_goals_file)` — routes per surface, normalizes CRLF (Windows git-bash bug fix), returns `STATUS|EVIDENCE`.
+
+### Review.md patch
+
+Phase 4a được mở rộng với **"Mixed-phase surface probe execution"** section — chạy probes cho mọi goal surface ≠ ui, ghi `.surface-probe-results.json`. Phase 4b integration: check probe result TRƯỚC khi rơi vào NOT_SCANNED branch.
+
+### Phase 7.12 dry-run results
+
+```
+33 backend goals probed:
+  READY:         10  ← handler/migration/caller found
+  BLOCKED:       15  ← pattern mismatch or missing
+  INFRA_PENDING:  0
+  SKIPPED:        8  ← can't parse endpoint/table from criteria
+```
+
+10 READY > 0 NOT_SCANNED (previous behavior) — probes actually execute. 15 BLOCKED là false-positives do heuristic endpoint extraction chưa handle subdomain paths (`pixel.vollx.com/event`) — future iteration improves.
+
+### Bugs fixed during implementation
+
+1. `awk` reserved word `in` conflict → renamed variable `inside`
+2. Windows CRLF (`\r`) from `python -c` output → `tr -d '\r'` normalization in `run_surface_probe`
+3. Table identifier extraction too narrow (backtick-only) → 3-tier fallback (backtick → SQL keyword → bare snake_case)
+
+### Known limitations
+
+- Endpoint pattern extraction simple (regex on criteria text) — 15/33 BLOCKED là tune-able
+- Config-driven paths hardcoded hiện tại (`apps/api/src`, etc.) — next iteration will read from `config.code_patterns.backend_src`
+
+### Migration v1.9.2.2 → v1.9.2.3
+
+Transparent. Review trên mixed phase tự động chạy probes thay vì mark NOT_SCANNED. Không cần user action.
+
 ## [1.9.2.2] - 2026-04-17
 
 ### Hotfix — Phase directory lookup with zero-padding
