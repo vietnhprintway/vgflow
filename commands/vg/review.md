@@ -3118,18 +3118,93 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 ```
 
-Display:
+**Display — VERDICT-AWARE next steps (MANDATORY format).**
+
+The closing message MUST follow this structure regardless of orchestrator (Claude / Codex / Gemini).
+Every finding section MUST end with a concrete actionable command, not just a description.
+
+### When verdict = PASS
 ```
-Review complete for Phase {N}.
-  Code scan: contract {PASS|WARNING}, {N} elements inventoried
-  Discovery: {views} views, {actions} actions tested
-  Fix loop: {iterations} iterations, {fixes} fixes applied
-  Goals: {ready}/{total} ready (critical: {N}/{N}, important: {N}/{N})
-  Gate: {PASS|BLOCK} (weighted: critical 100%, important 80%, nice-to-have 50%)
-  Artifacts: RUNTIME-MAP.json + GOAL-COVERAGE-MATRIX.md
-  State: STATE.md updated (reviewed)
-  Next: /vg:test {phase}
+Review complete for Phase {N} — PASS.
+  Goals: {ready}/{total} READY ({pct}%)
+  Gate: PASS (critical {C}/{C} 100%, important {I}/{I_total} ≥80%)
+  Artifacts: RUNTIME-MAP.json + GOAL-COVERAGE-MATRIX.md{REVIEW_FEEDBACK_SUFFIX}
+
+Next:
+  /vg:test {phase}            # codegen + run regression suite
 ```
+
+### When verdict = FLAG (passed but with improvements)
+```
+Review complete for Phase {N} — FLAG ({N} non-blocking findings).
+  Goals: {ready}/{total} READY
+  Gate: PASS-WITH-FLAGS
+
+Findings (improvements — non-blocking):
+  - [Med] {one-line summary} → fix at {file:line}, then commit
+  - [Low] {one-line summary} → defer or fix at {file:line}
+  ... (full detail in REVIEW-FEEDBACK.md)
+
+Next (pick one):
+  /vg:test {phase}                          # proceed — flags are advisory
+  edit {file:line}; git commit; /vg:next    # fix flags first, then continue
+```
+
+### When verdict = BLOCK (cannot proceed)
+```
+Review complete for Phase {N} — BLOCK.
+  Goals: {ready}/{total} READY ({blocked} BLOCKED, {failed} FAILED, {unreach} UNREACHABLE)
+  Gate: BLOCK ({reason — e.g., "critical goal G-03 FAILED" or "infra success_criteria 1/8 READY"})
+
+Findings (severity-grouped — full detail in REVIEW-FEEDBACK.md):
+  ⛔ Critical/Nghiêm trọng ({N}):
+     1. {one-line summary}
+        ↳ Fix: {concrete action — file:line, command, or workflow}
+        ↳ Verify: {how to confirm — curl, test, diff}
+     2. ...
+  ⚠ High/Cao ({N}):
+     ... (same format)
+  ⓘ Medium/Trung bình ({N}):
+     ... (same format)
+
+Next steps (pick the matching path — DO NOT just re-run /vg:review blindly):
+
+  A. Fix code bugs found → re-review:
+     # Edit affected files (paths above), then:
+     git add -A && git commit -m "fix({phase}-XX): {summary}"
+     /vg:review {phase} --retry-failed      # only re-scan failed goals (faster)
+     # OR /vg:review {phase}                # full re-scan if many fixes
+
+  B. If findings need scope discussion (architectural, decision change):
+     /vg:amend {phase}                       # mid-phase change request workflow
+     # then re-blueprint + re-build before re-review
+
+  C. If findings are infra/env (services down, config missing):
+     /vg:doctor                              # diagnose env + service health
+     # fix infra → /vg:review {phase}
+
+  D. If finding is BUG in /vg:review tooling itself (not phase code):
+     /vg:bug-report                          # surface to vietdev99/vgflow
+
+  E. If you DISAGREE with verdict (false positive):
+     # Open REVIEW-FEEDBACK.md, dispute specific finding with evidence
+     /vg:review {phase} --override-reason "..." --allow-failed=G-XX
+     # Will register in OVERRIDE-DEBT — re-evaluated at /vg:accept
+```
+
+### Hard rules for AI orchestrator (Claude/Codex/Gemini)
+1. **Never end a BLOCK review without listing per-finding fixes + verify steps.** Bare list of issues = user has to re-derive next action — anti-pattern.
+2. **Use RELATIVE paths** in narration (`apps/api/src/plugins/health.ts:23`), NOT absolute (`/D/Workspace/...`). Absolute paths waste 60% of terminal width on repeated prefixes.
+3. **Per-finding format MUST be:**
+   ```
+   {N}. [Severity] {ONE LINE root-cause}
+        ↳ Fix:    {file:line edit OR shell command OR workflow}
+        ↳ Verify: {1-line check command OR test ID}
+        ↳ Refs:   {file:line, file:line}  (only if 2+ refs needed)
+   ```
+4. **Closing MUST contain "Next:" block** with at least 2 labeled options (A/B/C...) when verdict ≠ PASS.
+5. **If executor cannot run something** (bash broken, no internet, missing creds), say so EXPLICITLY and tell user the manual command to run instead. Don't bury it in middle of output.
+
 </step>
 
 </process>

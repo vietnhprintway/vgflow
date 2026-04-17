@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.12.4] - 2026-04-18
+
+### Added
+- **review: VERDICT-AWARE next-steps block (mandatory)** — `/vg:review` close-out message MUST include verdict-specific actionable commands (PASS / FLAG / BLOCK paths). Per-finding format MUST be `[Severity] one-line + ↳ Fix + ↳ Verify + ↳ Refs`. Closing MUST list 2+ labeled options (A/B/C: re-review after fix / amend scope / fix infra / dispute verdict).
+- **review: Hard rules for AI orchestrator (Claude/Codex/Gemini)** — never end BLOCK without per-finding fixes. Use RELATIVE paths in narration (absolute paths waste 60% terminal width). Surface "executor cannot run X" failures explicitly, not buried.
+
+Reason: user reported Codex /vg:review output for Phase 08 listed 7 BLOCK findings + wrote 2 artifact files but had NO actionable next steps — just bare list. User had to re-derive what to fix and how. Closing message now mandates concrete commands per finding + per-verdict routing.
+
+Source: vietdev99/vgflow user feedback (image-cache attachment, session 2026-04-18)
 ## [1.12.3] - 2026-04-18
 
 ### Fixed (bug-reporter delivery)
