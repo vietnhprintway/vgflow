@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.13.2] - 2026-04-20
+
+Thêm công cụ **UI Component Map** — vẽ cây component dạng ASCII + JSON từ code React/Vue/Svelte, dùng cho 2 mục đích:
+
+### Mục đích
+
+1. **Bản đồ hiện trạng (As-is map)** — khi phase sửa view đã có, script quét code hiện tại sinh `UI-MAP-AS-IS.md` để planner hiểu cấu trúc trước khi viết plan.
+2. **Bản vẽ đích (To-be blueprint)** — planner viết `UI-MAP.md` chứa cây component mong muốn + JSON tree. Executor bám theo khi build. Post-wave script sinh cây thực tế → diff với UI-MAP.md → phát hiện lệch (drift) → BLOCK nếu vượt ngưỡng.
+
+### Added
+
+- **`scripts/generate-ui-map.mjs`** — port từ gist TongDucThanhNam (đã audit clean: chỉ đọc AST + xuất ASCII, không network/file write/exec/eval). Port từ Bun → Node 20+, bỏ hardcode `apps/mobile` + expo-router, config-driven qua `ui_map:` section trong vg.config.md. Hỗ trợ React, React Native, Vue, Svelte (qua extension detection). Auto-detect router: expo-router / next-app / react-router / tanstack-router / none.
+
+- **`scripts/verify-ui-structure.py`** — cổng kiểm tra (gate) so sánh UI-MAP.md (kế hoạch đích) với cây thực tế. Phân loại lệch thành MISSING (thiếu), UNEXPECTED (dư thừa), LAYOUT_SHIFT (lệch bố cục). Ngưỡng cấu hình qua `ui_map.max_missing` / `max_unexpected` / `layout_advisory`.
+
+- **`commands/vg/_shared/templates/UI-MAP-template.md`** — mẫu cho planner viết UI-MAP.md với cây ASCII (người đọc) + JSON tree (máy so sánh).
+
+### Wired vào pipeline
+
+- **`blueprint.md`** sub-step mới `2b6b_ui_map` (profile web-fullstack/web-frontend-only): nếu phase có task FE, sinh UI-MAP-AS-IS.md (nếu sửa view cũ) → planner viết UI-MAP.md (to-be).
+- **`build.md`** step 10 bổ sung drift check: sau post-mortem + goal coverage, chạy generate-ui-map.mjs trên code vừa build → verify-ui-structure.py diff với UI-MAP.md → warn nếu lệch.
+- **`templates/vg/vg.config.template.md`** thêm section `ui_map:` (enabled, src, entry, router, aliases, max_missing, max_unexpected, layout_advisory).
+
+### Rule tiếng Việt tăng cường (term-glossary.md)
+
+User báo "AI không tuân theo" rule v1.14.0+ về VN-first narration. Nguyên nhân: rule viết cho command output, AI hiểu nhầm không áp dụng chat reply.
+
+Thêm section mới "RULE v1.14.0+ R2 (2026-04-20 reinforce — AI narration)":
+- Áp dụng cho mọi reply của AI trong session VG (không chỉ command output)
+- Bảng 15 term hay vi phạm với bản thay tiếng Việt (CONFIRMED→XÁC NHẬN, Verdict→Kết luận, Audit→Rà soát, Drift→Lệch hướng, Root cause→Nguyên nhân gốc, v.v.)
+- Yêu cầu cứng: trước khi gửi reply > 50 từ hoặc có bảng markdown, AI tự đếm term EN, > 2 → rewrite
+- Kèm 2 ví dụ AI đã vi phạm trong session 2026-04-19 → sửa đúng
+
+### Relation với artifacts UI hiện có (không đè)
+
+- `design-normalized/` (từ `/vg:design-extract`) = nguồn thiết kế gốc (screenshots + DOM raw)
+- `DESIGN.md` (từ `/vg:design-system`) = quy chuẩn style (color/typography/spacing)
+- `UI-SPEC.md` (từ blueprint step 2b6_ui_spec) = spec design token cấp phase
+- **`UI-MAP.md` (MỚI)** = cây component cụ thể cho từng view — contract cho executor
+- **`UI-MAP-AS-IS.md` (MỚI)** = cây hiện trạng của code cũ (generated)
+
+Bốn artifact bổ sung nhau.
+
 ## [1.13.1] - 2026-04-19
 
 Post-Phase-10 adversarial audit fixes. User feedback: "code chưa gọn, không dùng graphify, sinh duplicate, sai goals". Audit confirmed graphify stale 10h during Phase 10 build + 0 telemetry events + goals declared without test traceability. Root cause: `(recovered)` commits from manual recovery bypassed skill framework entirely.

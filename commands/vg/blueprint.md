@@ -1080,6 +1080,97 @@ UI-SPEC:
 ```
 </step>
 
+<step name="2b6b_ui_map" profile="web-fullstack,web-frontend-only">
+## Sub-step 2b6b: UI-MAP (bản vẽ đích cây component)
+
+**Mục tiêu:** Tạo `UI-MAP.md` chứa cây component kế hoạch đích (to-be blueprint) cho các
+view mới/sửa trong phase này. Executor sẽ bám vào cây này khi viết code, verify-ui-structure.py
+sẽ so sánh post-wave để phát hiện lệch hướng (drift).
+
+**Khác biệt với 2b6_ui_spec:**
+- `UI-SPEC.md` = spec cấp cao (design tokens, typography, interactions) — thường áp dụng toàn phase.
+- `UI-MAP.md` = cây component cụ thể cho từng view — thứ executor bám theo từng dòng.
+
+**Skip khi:**
+- Phase không có task UI (profile backend-only)
+- Config `ui_map.enabled: false`
+
+```bash
+# Đọc config ui_map
+UI_MAP_ENABLED=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /enabled:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "true")
+
+if [ "$UI_MAP_ENABLED" != "true" ]; then
+  echo "ℹ ui_map disabled in config — skipping UI-MAP generation"
+  touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+else
+  # Kiểm tra phase có touch FE không
+  FE_TASKS=$(grep -cE "(\.tsx|\.jsx|\.vue|\.svelte)" "${PHASE_DIR}"/PLAN*.md 2>/dev/null || echo "0")
+
+  if [ "${FE_TASKS:-0}" -eq 0 ]; then
+    echo "ℹ Phase không có task FE — skip UI-MAP"
+    touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+  else
+    echo "Phase có ${FE_TASKS} dòng task FE. Chuẩn bị UI-MAP.md..."
+
+    # ─── Bước 1: Sinh as-is map nếu phase sửa view cũ ───
+    # Detect: task có edit file UI đã tồn tại
+    EXISTING_UI_FILES=$(grep -hE "^\s*-\s*(Edit|Modify):" "${PHASE_DIR}"/PLAN*.md 2>/dev/null | \
+                        grep -oE "[a-z_-]+\.(tsx|jsx|vue|svelte)" | sort -u)
+
+    if [ -n "$EXISTING_UI_FILES" ]; then
+      echo "Phát hiện task sửa view cũ — sinh UI-MAP-AS-IS.md để planner hiểu cấu trúc hiện tại"
+
+      UI_MAP_SRC=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /src:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+      UI_MAP_ENTRY=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /entry:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+
+      if [ -n "$UI_MAP_SRC" ] && [ -n "$UI_MAP_ENTRY" ]; then
+        node .claude/scripts/generate-ui-map.mjs \
+          --src "$UI_MAP_SRC" \
+          --entry "$UI_MAP_ENTRY" \
+          --format both \
+          --output "${PHASE_DIR}/UI-MAP-AS-IS.md" 2>&1 | tail -3
+      else
+        echo "⚠ ui_map.src / ui_map.entry chưa cấu hình — bỏ qua as-is scan"
+      fi
+    fi
+
+    # ─── Bước 2: Planner viết UI-MAP.md (to-be blueprint) ───
+    # Orchestrator spawn planner agent với:
+    # - CONTEXT.md (decisions)
+    # - PLAN*.md (tasks)
+    # - UI-SPEC.md (component inventory nếu có)
+    # - UI-MAP-AS-IS.md (cây hiện trạng nếu phase sửa view cũ)
+    # - Design refs từ design-normalized/ (nếu có)
+    #
+    # Output: ${PHASE_DIR}/UI-MAP.md với:
+    #   - Cây ASCII cho mỗi view mới/sửa
+    #   - JSON tree (machine-readable, cho verify-ui-structure.py diff)
+    #   - Layout notes (class layout + style keys mong muốn)
+    #
+    # Template ở ${REPO_ROOT}/.claude/commands/vg/_shared/templates/UI-MAP-template.md
+
+    if [ ! -f "${PHASE_DIR}/UI-MAP.md" ]; then
+      echo "▸ Orchestrator cần spawn planner agent (model=${MODEL_PLANNER:-opus}) để viết UI-MAP.md"
+      echo "   Input: CONTEXT.md + PLAN*.md + UI-SPEC.md + UI-MAP-AS-IS.md (nếu có)"
+      echo "   Output: ${PHASE_DIR}/UI-MAP.md"
+      echo ""
+      echo "   Planner prompt (tóm tắt):"
+      echo "   'Với mỗi view tạo mới hoặc cải tạo trong phase này, vẽ cây component"
+      echo "    dạng ASCII + JSON. Mỗi node component ghi: tên, file path đích, class"
+      echo "    layout mong muốn, state/props gì quan trọng. Cây phải khả thi (executor"
+      echo "    build theo được). Nếu sửa view cũ: điều chỉnh UI-MAP-AS-IS.md.'"
+    else
+      echo "ℹ UI-MAP.md đã có — skip regeneration. Xoá file này để regenerate."
+    fi
+
+    touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+  fi
+fi
+```
+
+**Gate (chưa block, chỉ warn):** nếu phase có task FE nhưng UI-MAP.md không có, in warning — step 2d validation sẽ escalate.
+</step>
+
 <step name="2b7_flow_detect" profile="web-fullstack,web-frontend-only">
 ## Sub-step 2b7: FLOW-SPEC AUTO-DETECT (deterministic, no AI for detection)
 

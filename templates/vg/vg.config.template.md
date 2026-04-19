@@ -488,6 +488,22 @@ surfaces:
 
 # ─── End v1.12.6 patch ──────────────────────────────────────────────────
 
+# ─── v1.13.2: UI Component Map (Bản đồ cây component) ──────────────────────
+# Tool: .claude/scripts/generate-ui-map.mjs — phân tích AST React/Vue/Svelte,
+# vẽ cây component dạng ASCII + JSON. Gate: .claude/scripts/verify-ui-structure.py
+# so sánh cây thực tế sau build vs UI-MAP.md (bản vẽ đích do planner viết).
+ui_map:
+  enabled: true                                # true = auto-generate UI map ở blueprint + verify drift ở build
+  src: "{{frontend.src_dir}}"                  # vd "apps/web/src" — dir chứa component (đọc đệ quy)
+  entry: "{{frontend.entry_file}}"             # vd "apps/web/src/App.tsx" — file gốc để bắt đầu dò import
+  router: ""                                   # hint: expo-router|next-app|react-router|tanstack-router|none
+                                               # để trống = tự dò qua import signature
+  aliases:                                     # path alias (phải khớp tsconfig.paths)
+    - "@={{frontend.src_dir}}"                 # vd "@=apps/web/src"
+  max_missing: 0                               # số component trong UI-MAP kế hoạch nhưng không có trong code → BLOCK nếu > N
+  max_unexpected: 3                            # số component trong code nhưng không có trong UI-MAP → BLOCK nếu > N
+  layout_advisory: true                        # true = chỉ warn khi class layout khác, không BLOCK
+
 graphify:
   enabled: true                                # true = use graphify | false = grep fallback
   graph_path: "graphify-out/graph.json"        # snapshot location relative to repo root

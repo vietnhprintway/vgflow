@@ -1934,6 +1934,43 @@ if [ "$POSTMORTEM_RC" -ne 0 ] || [ "$GOAL_COVERAGE_RC" -ne 0 ]; then
   echo "⚠ Post-mortem flagged issues — review will enforce. Run: /vg:review ${PHASE_NUMBER}"
 fi
 
+# UI structure drift check (chỉ chạy nếu UI-MAP.md tồn tại)
+if [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
+  echo ""
+  echo "━━━ UI structure drift (lệch cấu trúc UI) ━━━"
+
+  UI_MAP_SRC=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /src:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+  UI_MAP_ENTRY=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /entry:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+
+  if [ -n "$UI_MAP_SRC" ] && [ -n "$UI_MAP_ENTRY" ]; then
+    # Sinh cây thực tế từ code vừa build
+    node .claude/scripts/generate-ui-map.mjs \
+      --src "$UI_MAP_SRC" \
+      --entry "$UI_MAP_ENTRY" \
+      --format json \
+      --output "${PHASE_DIR}/.ui-map-actual.json" 2>&1 | tail -3
+
+    # So sánh với UI-MAP.md (kế hoạch đích)
+    MAX_MISSING=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /max_missing:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "0")
+    MAX_UNEXPECTED=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /max_unexpected:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "3")
+
+    ${PYTHON_BIN} .claude/scripts/verify-ui-structure.py \
+      --expected "${PHASE_DIR}/UI-MAP.md" \
+      --actual "${PHASE_DIR}/.ui-map-actual.json" \
+      --max-missing "$MAX_MISSING" \
+      --max-unexpected "$MAX_UNEXPECTED" \
+      --layout-advisory
+    UI_DRIFT_RC=$?
+
+    if [ "$UI_DRIFT_RC" -eq 2 ]; then
+      echo ""
+      echo "⚠ UI structure drift vượt ngưỡng — /vg:review sẽ BLOCK nếu không khắc phục"
+    fi
+  else
+    echo "⚠ ui_map.src/entry chưa cấu hình — bỏ qua UI drift check"
+  fi
+fi
+
 touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
 ```
 </step>

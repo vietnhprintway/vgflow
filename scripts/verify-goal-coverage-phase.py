@@ -38,7 +38,8 @@ GOAL_ID_PAT = re.compile(
     r"(?m)^(?:#{1,4}\s*(?:Goal\s+)?|\|\s*|\s*-\s*\*\*)(G-\d+)",
 )
 VERIFICATION_PAT = re.compile(
-    r"(?i)verification[:\s]+(\w+)",
+    r"verification\W+(\w+)",
+    re.IGNORECASE,
 )
 TS_IN_TEST_PAT = re.compile(r"\bTS-(\d+)\b")
 

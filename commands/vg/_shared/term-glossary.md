@@ -51,8 +51,73 @@ Bước tiếp: chạy /vg:review 07.13 --retry-failed
 - Nếu xuất hiện ngoài context cho phép (command ID, file name, format identifier) → warn hoặc fail commit-msg hook
 - Commands v1.14.0+ phải pass lint; legacy commands (v1.13 và trước) chưa bắt buộc nhưng nên sweep
 
-**Migration path:**  
+**Migration path:**
 Commands cũ (viết theo rule v1.13 cũ "EN + VN ngoặc") vẫn hoạt động, nhưng sweep phải làm trong step 18 của plan implementation v1.14.0.
+
+---
+
+## RULE v1.14.0+ R2 (2026-04-20 reinforce — AI narration)
+
+**Lý do reinforce:** 2026-04-20 user phản hồi "có vẻ AI không tuân theo" — AI (Claude)
+tự xuất narration trong session toàn từ EN chưa dịch (`CONFIRMED`, `REFUTED`, `Evidence`,
+`Verdict`, `Audit`, `Drift`). Rule v1.14.0 viết cho command output — AI hiểu nhầm không
+áp dụng cho chat reply.
+
+**Bổ sung cho AI orchestrator khi trả lời user:**
+
+Mỗi reply của Claude trong session VG (không chỉ command output, kể cả chat natural) tuân
+theo cùng rule `VN-first, EN chỉ trong ngoặc khi là identifier quen thuộc`.
+
+Bảng các term AI hay vi phạm (và cách thay):
+
+| Term AI hay viết (EN) | Thay bằng (VN) |
+|---|---|
+| CONFIRMED / REFUTED / PARTIAL | XÁC NHẬN / PHẢN BÁC / MỘT PHẦN |
+| Verdict | Kết luận |
+| Evidence | Bằng chứng |
+| Audit | Rà soát |
+| Drift | Lệch hướng |
+| Root cause | Nguyên nhân gốc |
+| Gate / Gated | Cổng chặn / bị chặn |
+| Blueprint | Bản vẽ đích |
+| Recovery mode | Chế độ khôi phục |
+| Fallback | Phương án dự phòng |
+| Scaffold | Khung sườn |
+| Wire / Wired | Mắc nối / đã mắc vào |
+| Deprecated | Đã bỏ |
+| Diff | So sánh chênh lệch |
+| Commit / Push | _giữ EN_ (tên lệnh git, chuẩn ngành) |
+| Branch / Merge | _giữ EN_ (chuẩn git) |
+| Hook | _giữ EN_ + `(điểm cắm)` lần đầu |
+
+**Rule cụ thể cho AI reply:**
+
+1. Mỗi câu trả lời đầu tiên trong turn → scan các term bảng trên, nếu có → rewrite sang VN.
+2. Bảng / report dạng `| Column | Value |` — tên cột ưu tiên VN (`Kết luận`, `Bằng chứng`).
+3. Term kỹ thuật thật sự khó dịch (HTTP 200, JSON, API endpoint, type safety) → giữ EN, không cần ngoặc.
+4. Tên file, code path, command `/vg:*`, identifier `G-XX/D-XX` → giữ nguyên, không dịch.
+
+**Cách AI tự kiểm trước khi gửi:**
+
+Trước khi gửi reply có >50 từ hoặc có bảng markdown, AI tự đọc lại và đếm số term EN thuộc
+bảng trên. Nếu > 2 → rewrite. Đây là yêu cầu cứng, không phải "cố gắng".
+
+**Ví dụ tôi (Claude) đã vi phạm trong session 2026-04-19 đến 2026-04-20:**
+
+Sai (viết):
+> **User claim**: Không dùng graphify — **CONFIRMED**: 0 mentions trong wave contexts,
+> graph stale 10h. **Evidence count:** 3
+
+Đúng phải viết:
+> **Bạn đưa ra**: Không dùng graphify — **XÁC NHẬN**: 0 nơi nhắc tới trong các wave
+> context, graph (đồ thị) cũ 10 giờ. **Số bằng chứng:** 3
+
+Sai (viết):
+> Root cause: `(recovered)` commits bypassed skill framework.
+
+Đúng phải viết:
+> Nguyên nhân gốc: các commit có đuôi `(recovered)` đi ngoài khung skill (khung quy trình),
+> bỏ qua các cổng kiểm tra.
 
 ---
 
