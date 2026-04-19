@@ -158,6 +158,12 @@ fi
 Scanner is authoritative: reads `PIPELINE-STATE.steps.scope.config_amendments_needed[]` array (populated by `/vg:scope` step 5). Enrichment pulls surface name + paths + stack from decision YAML snippet in CONTEXT.md. Generic (non-surface) amendments require manual edit — preflight blocks, user edits, re-runs.
 
 **Rationale:** surfaces config drives multi-surface gate, design-system lookup, multi-platform E2E routing. Missing surface → silent workflow misalignment. Forcing apply before tasks spawn ensures planner + executor see correct config.
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/0_amendment_preflight.done"
+```
 </step>
 
 <step name="1_parse_args">
@@ -174,6 +180,12 @@ Validate: phase exists. Determine `$PHASE_DIR`.
 - `--from=2b` → skip 2a, start at 2b_contracts (PLAN*.md must exist)
 - `--from=2c` → skip 2a+2b, start at 2c_verify (PLAN*.md + API-CONTRACTS.md must exist)
 - `--from=2d` → same as `--crossai-only`
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/1_parse_args.done"
+```
 </step>
 
 <step name="create_task_tracker">
@@ -191,6 +203,12 @@ TaskCreate: "2d. CrossAI review"               (activeForm: "Running CrossAI rev
 
 Store task IDs for updating status as each sub-step runs.
 Each sub-step should: `TaskUpdate: status="in_progress"` at start, `status="completed"` at end.
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/create_task_tracker.done"
+```
 </step>
 
 <step name="2_verify_prerequisites">
@@ -291,6 +309,12 @@ fi
 ```
 
 Skip gracefully when `design_assets.paths` empty (pure backend phase).
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2_verify_prerequisites.done"
+```
 </step>
 
 <step name="2a_plan">
@@ -547,6 +571,55 @@ else
 fi
 ```
 
+### R5 prompt size gate (v1.14.4+ — pre-spawn planner)
+
+Rule 5 khai max ~300 lines planner context. Gate đếm tổng size của các file tiêm vào prompt. Vượt = BLOCK để tránh drift/context overflow.
+
+```bash
+# Size check: sum lines of all files injected into planner prompt
+R5_FILES=(
+  "${PHASE_DIR}/.graphify-brief.md"
+  "${PHASE_DIR}/.deploy-lessons-brief.md"
+  "${PHASE_DIR}/SPECS.md"
+  "${PHASE_DIR}/CONTEXT.md"
+  "${PHASE_DIR}/RIPPLE-ANALYSIS.md"
+  ".claude/commands/vg/_shared/vg-planner-rules.md"
+)
+R5_TOTAL=0
+R5_PER_FILE=""
+for f in "${R5_FILES[@]}"; do
+  if [ -f "$f" ]; then
+    n=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
+    R5_TOTAL=$((R5_TOTAL + n))
+    R5_PER_FILE="${R5_PER_FILE}\n    $(basename "$f"): ${n}"
+  fi
+done
+
+R5_HARD_MAX="${CONFIG_BLUEPRINT_PLANNER_MAX_LINES:-1200}"
+if [ "$R5_TOTAL" -gt "$R5_HARD_MAX" ]; then
+  echo "⛔ R5 planner prompt overflow: ${R5_TOTAL} lines > hard max ${R5_HARD_MAX}"
+  printf "Per-file breakdown:%b\n" "$R5_PER_FILE"
+  echo ""
+  echo "Nguyên nhân thường gặp:"
+  echo "  - SPECS.md quá dài → split sang PRD bổ sung, tinh gọn"
+  echo "  - CONTEXT.md có decisions dư → clean hoặc split phase"
+  echo "  - graphify-brief god-node table quá dài → giảm top-N trong step 2a"
+  echo ""
+  echo "Override: /vg:blueprint ${PHASE_NUMBER} --override-reason='<reason>' (log debt)"
+  echo "Raise threshold: config.blueprint.planner_max_lines = ${R5_TOTAL} trong vg.config.md"
+  if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
+    exit 1
+  else
+    if type -t log_override_debt >/dev/null 2>&1; then
+      log_override_debt "blueprint-r5-planner-overflow" "${PHASE_NUMBER}" "planner prompt ${R5_TOTAL} lines > ${R5_HARD_MAX}" "$PHASE_DIR"
+    fi
+    echo "⚠ --override-reason set — proceeding despite R5 breach"
+  fi
+else
+  echo "✓ R5 planner prompt: ${R5_TOTAL} lines (hard max ${R5_HARD_MAX})"
+fi
+```
+
 Spawn planner agent với VG-specific rules + graphify brief + deploy_lessons brief:
 ```
 Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
@@ -696,6 +769,12 @@ Plan granularity check:
   R5 scope >250 LOC: {N}
   Warnings injected: {total}
 ```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2a_plan.done"
+```
 </step>
 
 <step name="2a5_cross_system_check">
@@ -797,6 +876,12 @@ fi
 Planner should convert each warning into task annotations: `<edits-schema>X</edits-schema>` so the graph can track changes reliably.
 
 **⚠ Recurring problem (Phase 13 retro):** when planner produces 22 tasks but only 3 have `<edits-*>` annotations, the caller script can only compute blast-radius for those 3. The other 19 silently get zero callers — appearing safe when they may have many. See `vg-planner-rules.md` for the rule that EVERY code-touching task MUST have at least one `<edits-*>` attribute.
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2a5_cross_system_check.done"
+```
 </step>
 
 <step name="2b_contracts">
@@ -920,6 +1005,12 @@ FE code reads `response.data.error.message` for toast — never `response.status
 **Output:** Write `${PHASE_DIR}/API-CONTRACTS.md`. Must contain at least 1 code block per endpoint.
 
 If no API routes or web pages detected → write minimal contract with CONTEXT-derived endpoints only. Still enforce code block format.
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2b_contracts.done"
+```
 </step>
 
 <step name="2b5_test_goals">
@@ -1027,6 +1118,90 @@ Coverage: {covered}/{total} decisions → {percentage}%
 
 Write `${PHASE_DIR}/TEST-GOALS.md`.
 
+### Rule 3b gate: Persistence check coverage (v1.14.4+)
+
+Post-generation verify: mọi mutation goal PHẢI có `**Persistence check:**` block. Thiếu → blueprint fail sớm, không đợi review Layer 4 catch.
+
+```bash
+GOALS_FILE="${PHASE_DIR}/TEST-GOALS.md"
+if [ -f "$GOALS_FILE" ]; then
+  PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "$GOALS_FILE" <<'PY'
+import re, sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding='utf-8')
+
+# Parse per-goal sections: '## Goal G-XX' or '### Goal G-XX' header boundaries
+goal_pattern = re.compile(r'(^#{2,3}\s+(?:Goal\s+)?G-\d+[^\n]*)\n(.*?)(?=^#{2,3}\s+(?:Goal\s+)?G-\d+|\Z)',
+                          re.MULTILINE | re.DOTALL)
+
+mutation_goals_missing_persist = []
+mutation_count = 0
+persist_count = 0
+
+for m in goal_pattern.finditer(text):
+    header = m.group(1).strip()
+    body = m.group(2)
+    gid_match = re.search(r'G-\d+', header)
+    gid = gid_match.group(0) if gid_match else '?'
+
+    # Extract mutation evidence value (not just header existence)
+    mut_match = re.search(r'\*\*Mutation evidence:\*\*\s*(.+?)(?=\n\s*\n|\n\*\*|\Z)', body, re.DOTALL)
+    has_mutation = False
+    if mut_match:
+        mut_value = mut_match.group(1).strip()
+        # Non-empty + not "N/A" / "none"
+        if mut_value and not re.match(r'^(N/A|none|—|-|_)\s*$', mut_value, re.I):
+            has_mutation = True
+            mutation_count += 1
+
+    # Check persistence block presence
+    has_persist = bool(re.search(r'\*\*Persistence check:\*\*', body))
+    if has_persist:
+        persist_count += 1
+
+    # Gate: mutation present but persistence missing
+    if has_mutation and not has_persist:
+        mutation_goals_missing_persist.append(gid)
+
+if mutation_goals_missing_persist:
+    print(f"⛔ Rule 3b violation: {len(mutation_goals_missing_persist)} mutation goal(s) thiếu Persistence check:")
+    for gid in mutation_goals_missing_persist:
+        print(f"   - {gid}")
+    print("")
+    print("Mỗi goal có **Mutation evidence** (state thay đổi) PHẢI có block:")
+    print("   **Persistence check:**")
+    print("   - Pre-submit: read <field> value")
+    print("   - Action: <what user does>")
+    print("   - Post-submit wait: API 2xx + toast")
+    print("   - Refresh: page.reload() OR navigate away + back")
+    print("   - Re-read: <where to re-read>")
+    print("   - Assert: <field> = <new value> AND != <pre value>")
+    print("")
+    print("Lý do: Layer 4 persistence gate ở review/test sẽ catch ghost save bug.")
+    print("Thiếu Persistence check block = review matrix-merger không eval được → goal BLOCKED.")
+    sys.exit(1)
+
+print(f"✓ Rule 3b: {mutation_count} mutation goals, {persist_count} with Persistence check")
+PY
+  PERSIST_RC=$?
+  if [ "$PERSIST_RC" != "0" ]; then
+    echo "blueprint-r3b-violation phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/blueprint-state.log"
+    # Allow override via explicit flag (debt logged)
+    if [[ "$ARGUMENTS" =~ --allow-missing-persistence ]]; then
+      if type -t log_override_debt >/dev/null 2>&1; then
+        log_override_debt "blueprint-missing-persistence" "${PHASE_NUMBER}" "mutation goals without Persistence check block" "$PHASE_DIR"
+      fi
+      echo "⚠ --allow-missing-persistence set — proceeding, logged to debt register"
+    else
+      echo "   Fix: edit TEST-GOALS.md, thêm Persistence check block cho các goals liệt kê ở trên"
+      echo "   Override (NOT recommended): /vg:blueprint ${PHASE_NUMBER} --from=2b5 --allow-missing-persistence"
+      exit 1
+    fi
+  fi
+fi
+```
+
 **Bidirectional linkage with PLAN (mandatory post-gen):**
 
 After TEST-GOALS.md is written, inject cross-references so build step 8 can quickly find context:
@@ -1088,6 +1263,12 @@ Behaviour by return code:
 After classification, include per-goal surface in blueprint narration:
 ```
 🎯 Goal surfaces: 17 ui · 5 api · 3 data · 2 time-driven · 1 integration
+```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2b5_test_goals.done"
 ```
 </step>
 
@@ -1166,6 +1347,12 @@ UI-SPEC:
   Design refs consumed: {N}
   Tokens: {N} | Components: {N} | Pages: {N}
   Conflicts flagged: {N}
+```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2b6_ui_spec.done"
 ```
 </step>
 
@@ -1422,6 +1609,12 @@ Flow detection:
   FLOW-SPEC.md: {generated|skipped (no chains)}
   Flows defined: {N}
 ```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2b7_flow_detect.done"
+```
 </step>
 
 <step name="2c_verify">
@@ -1431,44 +1624,106 @@ Automated contract verification. Must complete in <5 seconds.
 
 ```bash
 CONTRACTS="${PHASE_DIR}/API-CONTRACTS.md"
-API_ROUTES="${config.code_patterns.api_routes}"
-WEB_PAGES="${config.code_patterns.web_pages}"
+CONTEXT="${PHASE_DIR}/CONTEXT.md"
+API_ROUTES="${CONFIG_CODE_PATTERNS_API_ROUTES:-apps/api/src}"
+WEB_PAGES="${CONFIG_CODE_PATTERNS_WEB_PAGES:-apps/web/src}"
+
+if [ ! -f "$CONTRACTS" ]; then
+  echo "⛔ API-CONTRACTS.md not found — step 2b must run first"
+  exit 1
+fi
+
+# Extract endpoints (method, path) from contracts — supports both header formats
+CONTRACT_EPS=$(grep -oE '^###\s+(GET|POST|PUT|DELETE|PATCH)\s+/\S+' "$CONTRACTS" \
+  | sed 's/^###[[:space:]]*//' | sort -u)
+
+# Extract endpoints from CONTEXT.md — both VG-native bullet + legacy header
+CONTEXT_EPS=""
+if [ -f "$CONTEXT" ]; then
+  BULLET_EPS=$(grep -oE '^\s*-\s+(GET|POST|PUT|DELETE|PATCH)\s+/\S+' "$CONTEXT" \
+    | sed -E 's/^\s*-\s+//' | sort -u)
+  HEADER_EPS=$(grep -oE '^###\s+([0-9]+\.[0-9]+\s+)?(GET|POST|PUT|DELETE|PATCH)\s+/\S+' "$CONTEXT" \
+    | sed -E 's/^###[[:space:]]*([0-9]+\.[0-9]+[[:space:]]+)?//' | sort -u)
+  CONTEXT_EPS=$(printf '%s\n%s\n' "$BULLET_EPS" "$HEADER_EPS" | sort -u | sed '/^$/d')
+fi
+
 MISMATCHES=0
+MISSING_ENDPOINTS=""
+MISSING_HANDLERS=""
 
-# 1. Contract fields vs HTML form fields
-if [ -n "$WEB_PAGES" ] && [ -d "$WEB_PAGES" ]; then
-  # For each endpoint with request fields in contracts:
-  #   grep form field names in web pages
-  #   Missing field → mismatch++
+# 1. Contract endpoints vs CONTEXT decisions — every CONTEXT endpoint must have contract
+if [ -n "$CONTEXT_EPS" ]; then
+  while IFS= read -r ep; do
+    [ -z "$ep" ] && continue
+    # Normalize (method + path only, strip trailing comments)
+    ep_norm=$(echo "$ep" | awk '{print $1, $2}')
+    if ! echo "$CONTRACT_EPS" | grep -qFx "$ep_norm"; then
+      MISSING_ENDPOINTS="${MISSING_ENDPOINTS}\n   - ${ep_norm}"
+      MISMATCHES=$((MISMATCHES + 1))
+    fi
+  done <<< "$CONTEXT_EPS"
 fi
 
-# 2. Contract fields vs Zod schema (if backend exists)
-if [ -n "$API_ROUTES" ] && [ -d "$API_ROUTES" ]; then
-  # For each endpoint with response fields in contracts:
-  #   grep field names in Zod schemas
-  #   Missing field → mismatch++
+# 2. Contract endpoints vs backend handlers (code-pattern grep)
+if [ -d "$API_ROUTES" ] && [ -n "$CONTRACT_EPS" ]; then
+  while IFS= read -r ep; do
+    [ -z "$ep" ] && continue
+    method=$(echo "$ep" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+    path=$(echo "$ep" | awk '{print $2}')
+    # Path with colons for params (e.g., /sites/:id)
+    path_escaped=$(echo "$path" | sed 's/\//\\\//g; s/\./\\./g')
+    # Grep route definitions — fastify/express/hono patterns
+    if ! grep -rqE "(\.|router\.|app\.|fastify\.|${method}\s*\(\s*['\"])${path_escaped}['\"]|(route|path):\s*['\"]${path_escaped}['\"]" \
+         "$API_ROUTES" 2>/dev/null; then
+      MISSING_HANDLERS="${MISSING_HANDLERS}\n   - ${ep} (no handler detected)"
+      MISMATCHES=$((MISMATCHES + 1))
+    fi
+  done <<< "$CONTRACT_EPS"
 fi
 
-# 3. Contract endpoints vs CONTEXT decisions
-# Parse endpoints from CONTEXT.md — supports both formats:
-#   VG-native bullet: "- POST /api/v1/sites (auth: publisher, purpose: create)"
-#     regex: ^\s*-\s+(GET|POST|PUT|DELETE|PATCH)\s+(/\S+)
-#   Legacy header:   "### POST /api/v1/sites"
-#     regex: ^###\s+(?:\d+\.\d+\s+)?(GET|POST|PUT|DELETE|PATCH)\s+(/\S+)
-# For each matched (method, path) pair:
-#   Check at least one endpoint in contracts covers it
-#   No endpoint → mismatch++
+ENDPOINT_COUNT=$(echo "$CONTRACT_EPS" | grep -c . || echo 0)
+CONTEXT_COUNT=$(echo "$CONTEXT_EPS" | grep -c . || echo 0)
+
+echo "Verify 1 (grep): ${ENDPOINT_COUNT} contract endpoints, ${CONTEXT_COUNT} CONTEXT endpoints, ${MISMATCHES} mismatches"
+
+if [ "$MISMATCHES" -eq 0 ]; then
+  echo "✓ PASS"
+elif [ "$MISMATCHES" -le 3 ]; then
+  echo "⚠ WARNING — ${MISMATCHES} mismatches (auto-fix threshold)"
+  [ -n "$MISSING_ENDPOINTS" ] && printf "Missing in contracts:%b\n" "$MISSING_ENDPOINTS"
+  [ -n "$MISSING_HANDLERS" ] && printf "Missing handlers (may land in build step):%b\n" "$MISSING_HANDLERS"
+else
+  echo "⛔ BLOCK — ${MISMATCHES} mismatches (>3)"
+  [ -n "$MISSING_ENDPOINTS" ] && printf "Missing in contracts:%b\n" "$MISSING_ENDPOINTS"
+  [ -n "$MISSING_HANDLERS" ] && printf "Missing handlers:%b\n" "$MISSING_HANDLERS"
+  echo ""
+  echo "Fix: re-run step 2b để regenerate contracts đầy đủ hoặc update CONTEXT.md"
+  if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
+    exit 1
+  else
+    if type -t log_override_debt >/dev/null 2>&1; then
+      log_override_debt "blueprint-2c-mismatches" "${PHASE_NUMBER}" "${MISMATCHES} endpoint mismatches between contracts and CONTEXT/handlers" "$PHASE_DIR"
+    fi
+    echo "⚠ --override-reason set — proceeding, logged to debt register"
+  fi
+fi
 ```
 
 **Results:**
 - 0 mismatches → PASS, proceed to 2d
 - 1-3 mismatches → WARNING, auto-fix contracts, re-verify once
-- 4+ mismatches → BLOCK, show mismatch table, ask user to review contracts
+- 4+ mismatches → BLOCK, show mismatch table (override via --override-reason log debt)
 
 Display:
 ```
 Verify 1 (grep): {N} endpoints checked, {M} field comparisons
 Result: {PASS|WARNING|BLOCK} — {N} mismatches
+```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2c_verify.done"
 ```
 </step>
 
@@ -1521,6 +1776,12 @@ Classifications:
 
 WARN → non-blocking report. User can `<also-edits>foo/bar/` on an upstream task to declare the new dir is intentional.
 FAIL → hard exit 1. PLAN author must fix.
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2c_verify_plan_paths.done"
+```
 </step>
 
 <step name="2c1c_verify_utility_reuse">
@@ -1576,6 +1837,12 @@ WARN conditions:
 - Task declares NEW helper (not in contract) AND spans ≥2 non-utils file paths — suggests reuse that should start in utils.
 
 **Override:** `--override-reason=<issue-id>` on `/vg:blueprint` allows passing with debt logged. Use only when the new helper is genuinely phase-local (e.g., deal-specific formatter only used in 1 file forever).
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2c1c_verify_utility_reuse.done"
+```
 </step>
 
 <step name="2c2_compile_check">
@@ -1652,6 +1919,12 @@ Display:
 ```
 Verify 2 (compile): {N} code blocks extracted
 Compile check: {PASS|FAIL} via {config.contract_format.compile_cmd}
+```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2c2_compile_check.done"
 ```
 </step>
 
@@ -1942,9 +2215,68 @@ Plan validation: PASSED (iteration $N/${max})
 CrossAI review: $verdict ($score/10)
 Proceeding to commit.
 ```
+
+```bash
+# R7 step marker (v1.14.4+ — enforced via 3_complete gate)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/2d_validation_gate.done"
+```
 </step>
 
 <step name="3_complete">
+
+### R7 step markers verify gate (v1.14.4+)
+
+Trước khi commit blueprint artifacts, verify mọi step đã touch marker. Missing marker = step silently skipped → blueprint incomplete.
+
+```bash
+EXPECTED_STEPS=$(${PYTHON_BIN} .claude/scripts/filter-steps.py \
+  --command .claude/commands/vg/blueprint.md \
+  --profile "${PHASE_PROFILE:-feature}" \
+  --output-ids 2>/dev/null || echo "")
+
+if [ -z "$EXPECTED_STEPS" ]; then
+  echo "⚠ filter-steps.py unavailable — skipping marker verify (soft)"
+else
+  MISSING_MARKERS=""
+  IFS=',' read -ra STEP_ARR <<< "$EXPECTED_STEPS"
+  for step in "${STEP_ARR[@]}"; do
+    step=$(echo "$step" | xargs)
+    [ -z "$step" ] && continue
+    # step 3_complete marker written below; skip self-check
+    [ "$step" = "3_complete" ] && continue
+    if [ ! -f "${PHASE_DIR}/.step-markers/${step}.done" ]; then
+      MISSING_MARKERS="${MISSING_MARKERS} ${step}"
+    fi
+  done
+
+  if [ -n "$MISSING_MARKERS" ]; then
+    echo "⛔ R7 violation: blueprint steps silently skipped —${MISSING_MARKERS}"
+    echo "   Blueprint không được commit với steps thiếu. Nguyên nhân phổ biến:"
+    echo "   - Flag --from=2b/2c/2d skip step trước"
+    echo "   - Step fail mid-execution nhưng không early exit"
+    echo "   - Code path bypass touch command"
+    echo ""
+    echo "   Fix options:"
+    echo "   1. Re-run /vg:blueprint ${PHASE_NUMBER} (không --from) để chạy đủ steps"
+    echo "   2. --override-reason='<explicit>' nếu cố tình skip (log debt)"
+    if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
+      exit 1
+    else
+      if type -t log_override_debt >/dev/null 2>&1; then
+        log_override_debt "blueprint-r7-missing-markers" "${PHASE_NUMBER}" "steps skipped:${MISSING_MARKERS}" "$PHASE_DIR"
+      fi
+      echo "⚠ --override-reason set — proceeding despite R7 breach, logged to debt"
+    fi
+  else
+    STEP_COUNT=$(echo "$EXPECTED_STEPS" | tr ',' '\n' | wc -l | tr -d ' ')
+    echo "✓ R7 markers complete: ${STEP_COUNT} steps"
+  fi
+fi
+```
+
+### Display summary
+
 Count plans, endpoints, decisions. Display:
 ```
 Blueprint complete for Phase {N}.
@@ -1959,6 +2291,12 @@ Commit all artifacts:
 ```bash
 git add ${PHASE_DIR}/PLAN*.md ${PHASE_DIR}/API-CONTRACTS.md ${PHASE_DIR}/crossai/
 git commit -m "blueprint({phase}): plans + API contracts — CrossAI {verdict}"
+```
+
+```bash
+# R7 step marker (self-final)
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/3_complete.done"
 ```
 </step>
 
