@@ -8,15 +8,76 @@ metadata:
 <codex_skill_adapter>
 ## Codex ⇆ Claude Code tool mapping
 
-This skill was originally designed for Claude Code. When running in Codex CLI:
+This skill was originally designed for Claude Code. When running in Codex CLI, translate tool calls using the table + patterns below.
 
-| Claude tool | Codex equivalent |
-|------|------------------|
-| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) |
-| Task (agent spawn) | Use `codex exec --model <model>` subprocess with isolated prompt |
-| TaskCreate/TaskUpdate | N/A — use inline markdown headers and status narration |
-| WebFetch | `curl -sfL` or `gh api` for GitHub URLs |
-| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively |
+### Tool mapping table
+
+| Claude tool | Codex equivalent | Notes |
+|---|---|---|
+| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) | For multi-select, format as "1. Option / 2. Option" and parse reply |
+| Task (agent spawn) | `codex exec --model <model> "<prompt>"` subprocess | Foreground: `codex exec ... > /tmp/out.txt`. Parallel: launch N subprocesses + `wait`. See "Agent spawn" below |
+| TaskCreate/TaskUpdate/TodoWrite | N/A — use inline markdown headers + status narration | Codex does not have a persistent task tail UI. Write `## ━━━ Phase X: step ━━━` in stdout instead |
+| Monitor | Bash loop with `echo` + `sleep 3` polling | Codex streams stdout directly, no separate monitor channel |
+| ScheduleWakeup | N/A — Codex is one-shot; user must re-invoke | Skill must tolerate single-execution model; no sleeping |
+| WebFetch | `curl -sfL <url>` or `gh api <path>` | For GitHub URLs prefer `gh` for auth handling |
+| mcp__playwright{1-5}__* | See "Playwright MCP" below | Playwright MCP tools ARE available in Codex's main orchestrator |
+| mcp__graphify__* | `python -c "from graphify import ..."` inline | Graphify CLI/module works identically in Codex |
+| mcp__context7__*, mcp__exa__*, mcp__firecrawl__* | Skip or fall back to WebFetch | Only available via SDK; not bundled in Codex CLI |
+| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively | No adapter needed |
+
+### Agent spawn (Task → codex exec)
+
+Claude Code spawns isolated agents via `Task(subagent_type=..., prompt=...)`. Codex equivalent:
+
+```bash
+# Single agent, foreground (wait for completion + read output)
+codex exec --model gpt-5 "<full isolated prompt>" > /tmp/agent-result.txt 2>&1
+RESULT=$(cat /tmp/agent-result.txt)
+
+# Multiple agents, parallel (Claude's pattern of 1 message with N Task calls)
+codex exec --model gpt-5 "<prompt 1>" > /tmp/agent-1.txt 2>&1 &
+PID1=$!
+codex exec --model gpt-5 "<prompt 2>" > /tmp/agent-2.txt 2>&1 &
+PID2=$!
+wait $PID1 $PID2
+R1=$(cat /tmp/agent-1.txt); R2=$(cat /tmp/agent-2.txt)
+```
+
+**Critical constraints when spawning:**
+- Subagent inherits working directory + env vars, but **no MCP server access** (Codex exec spawns fresh CLI instance without `--mcp` wired). Subagent CANNOT call `mcp__playwright*__`, `mcp__graphify__`, etc.
+- Model mapping for this project: `models.planner` opus → `gpt-5`, `models.executor` sonnet → `gpt-4o`, `models.scanner` haiku → `gpt-4o-mini` (or project-configured equivalent). Check `.claude/vg.config.md` `models` section for actual values and adapt.
+- Timeout: wrap in `timeout 600s codex exec ...` to prevent hung subagents.
+- Return schema: if skill expects structured JSON back, prompt subagent with "Return ONLY a single JSON object with keys: {...}". Parse with `jq` or `python -c "import json,sys; ..."`.
+
+### Playwright MCP — orchestrator-only rule
+
+Playwright MCP tools (`mcp__playwright1__browser_navigate`, `_snapshot`, `_click`, etc.) ARE available to the main Codex orchestrator (same MCP servers as Claude Code). **BUT subagents spawned via `codex exec` do NOT inherit MCP access** — they are fresh CLI instances.
+
+Implication for skills using Haiku scanner pattern (scanner spawns → uses Playwright):
+- **Claude model:** spawn haiku agent with prompt → agent calls `mcp__playwright__` tools directly
+- **Codex model:** TWO options:
+  1. **Orchestrator-driven:** main orchestrator calls Playwright tools + passes snapshots/results to subagent as text → subagent returns instructions/analysis only (no tool calls). Slower but preserves parallelism benefit.
+  2. **Single-agent:** orchestrator runs scanner workflow inline (no spawn). Simpler but no parallelism; suitable for 1-2 view scans but slow for 14+ views.
+
+Default: **single-agent inline** unless skill explicitly documents the orchestrator-driven pattern for that step.
+
+### Persistence probe (Layer 4) — execution model
+
+For review/test skills that verify mutation persistence:
+- Main orchestrator holds Playwright session (claimed via lock manager)
+- Pre-snapshot + submit + refresh + re-read all run in orchestrator Playwright calls (not spawned)
+- If skill delegates analysis to subagent, orchestrator must capture snapshots + pass text to subagent; subagent returns verdict JSON `{persisted: bool, pre: ..., post: ...}`
+
+### Lock manager (Playwright)
+
+Same as Claude:
+```bash
+SESSION_ID="codex-${skill}-${phase}-$$"
+PLAYWRIGHT_SERVER=$(bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
+trap "bash '${HOME}/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
+```
+
+Pool name in Codex: `codex` (separate from Claude's `claude` pool). Lock manager handles both without collision.
 
 ## Invocation
 
@@ -115,13 +176,75 @@ session_mark_step "1-parse-args"
 Parse `$ARGUMENTS`:
 - First positional token → `PHASE_ARG`
 - Optional `--wave N` → `WAVE_FILTER`
+- Optional `--only 15,16,17` — resume specific tasks only (skip others). Use
+  after partial Wave completion (crash, compact, manual kill) to re-run only
+  the tasks that didn't commit. Reads `.build-progress.json` to verify.
+- Optional `--status` — read-only: print `.build-progress.json` + exit. Safe
+  to call after compact to see where we are. No state changes.
 - Optional `--gaps-only`, `--interactive`, `--auto`
+- Optional `--reset-queue` — wipe `.vg/.build-queue/` + unstage leftover files
+  from a crashed prior run, then proceed. Use after SIGKILL / OS crash where
+  the commit-queue mutex's EXIT trap didn't fire. Safe on clean state (no-op).
 
 Sync chain flag:
 ```bash
 # VG-native: auto-chain not used in VG pipeline
 # (GSD auto-chain is N/A — VG uses explicit /vg:next routing)
+
+# Detect flags
+RESET_QUEUE=false
+STATUS_ONLY=false
+ONLY_TASKS=""
+[[ "${ARGUMENTS:-}" =~ --reset-queue ]] && RESET_QUEUE=true
+[[ "${ARGUMENTS:-}" =~ --status ]] && STATUS_ONLY=true
+if [[ "${ARGUMENTS:-}" =~ --only[[:space:]]*=?[[:space:]]*([0-9,]+) ]]; then
+  ONLY_TASKS="${BASH_REMATCH[1]}"
+fi
+
+# --status is a read-only shortcut — print progress + exit before doing any work
+if [ "$STATUS_ONLY" = "true" ]; then
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/build-progress.sh" 2>/dev/null
+  PHASE_DIR_LOOKUP=$(ls -d ${PLANNING_DIR:-.vg}/phases/${PHASE_ARG}* 2>/dev/null | head -1)
+  if [ -z "$PHASE_DIR_LOOKUP" ]; then
+    echo "⛔ --status: phase ${PHASE_ARG} not found"
+    exit 1
+  fi
+  vg_build_progress_status "$PHASE_DIR_LOOKUP"
+  exit 0
+fi
 ```
+</step>
+
+<step name="1a_build_queue_preflight">
+## Step 1a — Build queue preflight (crash recovery)
+
+Run BEFORE wave-start tagging to detect leftover state from prior crashed
+runs. Catches 4 failure modes:
+
+1. Stale commit-queue lock (mutex EXIT trap didn't fire on SIGKILL/crash)
+2. Active commit-queue lock (another /vg:build running on same repo)
+3. Staged-but-uncommitted files (would leak into wave-start baseline → every
+   subsequent wave commit looks like it's over-claiming those files →
+   attribution audit would flag the whole wave)
+4. Unresolved merge conflicts (cannot build on conflicted tree)
+
+```bash
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/build-queue-preflight.sh"
+
+if ! vg_build_queue_preflight "$RESET_QUEUE" "$PHASE_ARG"; then
+  echo ""
+  echo "   Preflight gate blocks until state is clean."
+  echo "   Quick fix: /vg:build ${PHASE_ARG} --reset-queue"
+  exit 1
+fi
+```
+
+The preflight helper:
+- With `--reset-queue=true`: wipes `.vg/.build-queue/` + `git reset HEAD -- .`
+  (working tree untouched — only unstages)
+- Auto-breaks stale locks older than `VG_COMMIT_LOCK_STALE_SECONDS` (default 600s)
+- Blocks on active lock < threshold, staged files, or merge conflicts
+- Prints concrete fix options for each blocker
 </step>
 
 <step name="1b_recon_gate">
@@ -306,24 +429,17 @@ Steps 4c, 4e, 8c read these vars. No duplicate parsing here.
 
 ```bash
 if [ "$GRAPHIFY_ACTIVE" = "true" ]; then
-  # Check commits since last graph build
+  # Source graphify-safe helper (verifies mtime advances post-rebuild, retries once on stuck)
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+
   GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
   COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
-  STALE_THRESHOLD="${GRAPHIFY_STALE_WARN:-50}"
 
   if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
-    echo "Graphify: ${COMMITS_SINCE} commits since last build (threshold: ${STALE_THRESHOLD})"
-
-    if [ "${COMMITS_SINCE:-0}" -gt "$STALE_THRESHOLD" ]; then
-      echo "⚠ Graph stale (${COMMITS_SINCE} > ${STALE_THRESHOLD}). Auto-rebuilding..."
-      ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1
-      echo "Graphify rebuilt."
-    else
-      # Under threshold but still stale — rebuild anyway before build (cheap insurance)
-      echo "Rebuilding graphify for fresh sibling/caller context..."
-      ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1
-      echo "Graphify rebuilt."
-    fi
+    echo "Graphify: ${COMMITS_SINCE} commits since last build — rebuilding for fresh context"
+    vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-step4" || {
+      echo "⚠ Graphify rebuild did not complete successfully; downstream sibling/caller context may be stale"
+    }
   else
     echo "Graphify: up to date (0 commits since last build)"
   fi
@@ -343,18 +459,55 @@ Read `${PHASE_DIR}/API-CONTRACTS.md`. Per plan task, extract only endpoint secti
 DESIGN_OUTPUT_DIR="${config.design_assets.output_dir:-${PLANNING_DIR}/design-normalized}"
 DESIGN_MANIFEST="${DESIGN_OUTPUT_DIR}/manifest.json"
 
-# If any task has <design-ref>, verify manifest + referenced assets exist
-# ⛔ HARD GATE (tightened 2026-04-17): missing manifest = BLOCK, not advisory.
-# Executor without design context builds UI that drifts from spec — must re-extract first.
+# If any task has <design-ref>, classify each as SLUG vs DESCRIPTIVE:
+#   - SLUG: kebab-case filename-like (e.g., "dsp-partners-list", "deal_wizard_step2")
+#     → must resolve in ${DESIGN_OUTPUT_DIR}/refs/${slug}.* + screenshots/${slug}.*
+#     → hard gate (missing = BLOCK, executor can't build without asset)
+#   - DESCRIPTIVE: contains spaces, uppercase, dots, or phrases like "pattern"/"similar to"
+#     (e.g., "Phase 7.13 AdvCampaignWizard pattern")
+#     → NOT a slug — this is code-pattern guidance, not a required asset
+#     → injected into executor prompt as narrative hint, no asset check
+#
+# Rationale: Phase 10 PLAN had <design-ref>Phase 7.13 AdvCampaignWizard pattern</design-ref>
+# which was descriptive guidance ("reuse the pattern from existing code") — the prior
+# hard gate treated it as a slug and BLOCK'd build, false-positive.
 if grep -l "<design-ref>" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
   MISSING_DESIGN=""
-  if [ ! -f "$DESIGN_MANIFEST" ]; then
-    MISSING_DESIGN="manifest"
-  else
-    # Also verify each referenced slug has both structural + screenshot
-    MISSING_REFS=""
-    for plan in "${PHASE_DIR}"/PLAN*.md; do
-      for slug in $(grep -oP '<design-ref>[^<]+</design-ref>' "$plan" | sed 's/<[^>]*>//g'); do
+  DESCRIPTIVE_REFS=""
+  SLUG_REFS=""
+
+  # Collect all design-refs, classify each
+  for plan in "${PHASE_DIR}"/PLAN*.md; do
+    # -oP extracts the inner text; sed strips the tags for clean tokens
+    while IFS= read -r ref_text; do
+      [ -z "$ref_text" ] && continue
+      # Slug heuristic: only [a-z0-9_-], no spaces/uppercase/dots, length <= 80
+      # Descriptive heuristic: anything else (spaces, uppercase, dots, phrases)
+      if [[ "$ref_text" =~ ^[a-z0-9][a-z0-9_-]{1,79}$ ]]; then
+        SLUG_REFS="${SLUG_REFS} ${ref_text}"
+      else
+        DESCRIPTIVE_REFS="${DESCRIPTIVE_REFS}|${ref_text}"
+      fi
+    done < <(grep -oP '<design-ref>[^<]+</design-ref>' "$plan" | sed 's/<[^>]*>//g')
+  done
+
+  # Report classification
+  if [ -n "$DESCRIPTIVE_REFS" ]; then
+    echo "ℹ Descriptive design-refs (code-pattern guidance, NOT required assets):"
+    IFS='|' read -ra REFS_ARR <<< "${DESCRIPTIVE_REFS#|}"
+    for r in "${REFS_ARR[@]}"; do
+      [ -n "$r" ] && echo "    \"$r\""
+    done
+    echo "    → will be injected into executor prompt as narrative hint"
+  fi
+
+  # Only enforce manifest + asset check for SLUG-type refs
+  if [ -n "$SLUG_REFS" ]; then
+    if [ ! -f "$DESIGN_MANIFEST" ]; then
+      MISSING_DESIGN="manifest (slugs found: ${SLUG_REFS})"
+    else
+      MISSING_REFS=""
+      for slug in $SLUG_REFS; do
         if ! ls "${DESIGN_OUTPUT_DIR}/refs/${slug}".* >/dev/null 2>&1; then
           MISSING_REFS="${MISSING_REFS} ${slug}"
         fi
@@ -362,8 +515,8 @@ if grep -l "<design-ref>" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
           MISSING_REFS="${MISSING_REFS} ${slug}(screenshot)"
         fi
       done
-    done
-    [ -n "$MISSING_REFS" ] && MISSING_DESIGN="refs:${MISSING_REFS}"
+      [ -n "$MISSING_REFS" ] && MISSING_DESIGN="refs:${MISSING_REFS}"
+    fi
   fi
 
   if [ -n "$MISSING_DESIGN" ]; then
@@ -615,10 +768,49 @@ fi
 Executors append their task summary sections to this file (per vg-executor-rules.md "Task summary output").
 After all waves, step 9 verifies every task has a section.
 
-### 8b: Tag wave start (for rollback)
+### 8b: Tag wave start (for rollback) + init progress file
 
 ```bash
 git tag "vg-build-${PHASE}-wave-${N}-start" HEAD
+WAVE_TAG="vg-build-${PHASE}-wave-${N}-start"
+
+# Init compact-safe progress file — survives context compacts + crashes.
+# Orchestrator (or user via --status) can read .vg/phases/{phase}/.build-progress.json
+# anytime to see "committed [15,19], in-flight [16], failed [18]".
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/build-progress.sh"
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/typecheck-light.sh"
+
+# Bootstrap typecheck cache once per build session (cold 3-5 min, but makes
+# subsequent per-task + wave-gate checks fast 10-30s). Skipped if .tsbuildinfo
+# already exists for the packages this wave touches.
+#
+# Heuristic: get distinct app names from PLAN file-paths, bootstrap each.
+BOOTSTRAP_PKGS=$(grep -hoE '<file-path>apps/[^/]+' "${PHASE_DIR}"/PLAN*.md 2>/dev/null \
+  | sed 's|<file-path>apps/||' | sort -u)
+for pkg in $BOOTSTRAP_PKGS; do
+  if vg_typecheck_should_bootstrap "$pkg"; then
+    echo "▸ Bootstrapping typecheck cache for $pkg (1-shot, ~3-5 min)..."
+    vg_typecheck_bootstrap "$pkg"
+  fi
+done
+
+# Apply --only filter if set (resume subset of wave tasks)
+WAVE_TASK_LIST="${WAVE_TASKS[@]}"   # from PLAN parser in step 7
+if [ -n "${ONLY_TASKS:-}" ]; then
+  FILTERED=""
+  for t in $WAVE_TASK_LIST; do
+    if echo "$ONLY_TASKS" | tr ',' '\n' | grep -qx "$t"; then
+      FILTERED="${FILTERED} $t"
+    fi
+  done
+  WAVE_TASK_LIST="${FILTERED# }"
+  echo "▸ --only filter — running tasks: $WAVE_TASK_LIST (skipping others)"
+fi
+
+vg_build_progress_init "$PHASE_DIR" "$N" "$WAVE_TAG" $WAVE_TASK_LIST
+
+# Export vars so build-commit-queue mutex auto-hooks progress on acquire
+export VG_BUILD_PHASE_DIR="$PHASE_DIR"
 ```
 
 ### 8c: Spawn executor per task in wave
@@ -684,6 +876,14 @@ Detection prevents this class of bugs by forcing conflicting tasks to run sequen
 DO NOT SKIP THIS. If scripts are missing or fail, inject:
   <sibling_context>UNAVAILABLE — scripts not found. Review peer modules manually.</sibling_context>
   <downstream_callers>UNAVAILABLE — caller graph not built. Check imports manually.</downstream_callers>
+```
+
+**Record task as in-flight BEFORE Agent() spawn (compact-safe):**
+```bash
+# Progress file → tasks_in_flight[] so --status reflects reality even
+# after a context compact. Agent ID isn't known at spawn; fill "pending".
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/build-progress.sh"
+vg_build_progress_start_task "$PHASE_DIR" "$TASK_NUM" "pending-agent"
 ```
 
 **Fill context variables via pre-executor-check.py (deterministic, not pseudocode):**
@@ -828,6 +1028,25 @@ WAVE_TAG="vg-build-${PHASE_NUMBER}-wave-${N}-start"
 EXPECTED_COMMITS=${#WAVE_TASKS[@]}
 ACTUAL_COMMITS=$(git log --oneline "${WAVE_TAG}..HEAD" | wc -l | tr -d ' ')
 
+# Sync progress file with actual git log (compact-safe). For each commit in
+# wave range, parse task number from subject and record in tasks_committed.
+# Missing tasks (in expected but not in git log) get marked as failed.
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/build-progress.sh"
+while IFS= read -r line; do
+  sha="${line%% *}"
+  subject="${line#* }"
+  if [[ "$subject" =~ ^[a-z]+\([0-9]+(\.[0-9]+)*-([0-9]+)\): ]]; then
+    tnum="${BASH_REMATCH[2]}"
+    vg_build_progress_commit_task "$PHASE_DIR" "$tnum" "$sha"
+  fi
+done < <(git log --format='%H %s' "${WAVE_TAG}..HEAD" 2>/dev/null)
+# Mark expected-but-missing tasks as failed
+for task_num in "${WAVE_TASKS[@]}"; do
+  if ! git log --oneline "${WAVE_TAG}..HEAD" | grep -q "${PHASE_NUMBER}-$(printf '%02d' $task_num)"; then
+    vg_build_progress_fail_task "$PHASE_DIR" "$task_num" "no-commit-found"
+  fi
+done
+
 if [ "$ACTUAL_COMMITS" -lt "$EXPECTED_COMMITS" ]; then
   echo "⛔ COMMIT MISMATCH: wave ${N} expected ${EXPECTED_COMMITS} commits, got ${ACTUAL_COMMITS}"
   echo "  Missing tasks:"
@@ -894,6 +1113,114 @@ fi
 hits an error but doesn't commit. Without this count check, orchestrator proceeds to next wave
 on broken state. Commit count verification catches all silent agent failures deterministically.
 
+**Step 0b — Commit attribution audit (MANDATORY, run after count check):**
+
+Commit count gate passes if N tasks → N commits. But parallel executors can race
+on `.git/index`: agent A's `git add fileA.ts` lands before agent B's `git commit`,
+so agent B absorbs fileA.ts silently. Count = N, but attribution is corrupted.
+
+Run the attribution verifier to catch this class of race:
+
+```bash
+# Source override-debt helper once — every override site below calls log_override_debt
+# so the debt register stays in sync with build-state.log (was previously OUT of sync —
+# build-state.log had overrides, OVERRIDE-DEBT.md never saw them).
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || \
+  echo "⚠ override-debt.sh missing — overrides will log to build-state.log only"
+
+ATTR_SCRIPT=".claude/scripts/verify-commit-attribution.py"
+if [ -f "$ATTR_SCRIPT" ]; then
+  # Default strict mode — flags files not matching any task's <file-path>
+  # (orchestration allowlist exempts SUMMARY.md, PIPELINE-STATE.json, step-markers)
+  if ! ${PYTHON_BIN:-python} "$ATTR_SCRIPT" \
+       --phase-dir "${PHASE_DIR}" \
+       --wave-tag "${WAVE_TAG}" \
+       --wave-number "${N}" \
+       --strict; then
+    echo ""
+    echo "⛔ Commit attribution violations detected in wave ${N}."
+    echo "   Root cause: executor agent(s) bypassed build-commit-queue mutex."
+    echo "   See: .claude/commands/vg/_shared/vg-executor-rules.md § Parallel-wave commit safety"
+    echo ""
+    echo "   Fix paths:"
+    echo "     (a) git reset --hard ${WAVE_TAG}  # roll back corrupted wave"
+    echo "     (b) /vg:build ${PHASE_NUMBER} --wave ${N}  # re-run wave (agents will use mutex)"
+    echo "     (c) --override-reason=<issue-id>  # accept + log for acceptance review"
+    echo ""
+
+    OVERRIDE_REASON=""
+    if [[ "${ARGUMENTS:-}" =~ --override-reason=([^[:space:]]+) ]]; then
+      OVERRIDE_REASON="${BASH_REMATCH[1]}"
+    fi
+    if [ -n "$OVERRIDE_REASON" ] && [ ${#OVERRIDE_REASON} -ge 4 ]; then
+      echo "⚠ Attribution gate OVERRIDDEN (reason: $OVERRIDE_REASON)"
+      echo "attribution-violations: wave-${N} override=${OVERRIDE_REASON} ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+      type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+        "--override-reason" "$PHASE_NUMBER" "build.attribution.wave-${N}" "$OVERRIDE_REASON" "build-attribution-wave-${N}"
+    else
+      exit 1
+    fi
+  fi
+else
+  echo "⚠ verify-commit-attribution.py missing — skipping attribution audit (older install)"
+fi
+```
+
+The attribution verifier:
+1. Parses each wave commit's `type(phase-task):` to infer which task produced it
+2. Reads `.wave-tasks/task-{N}.md` for that task's `<file-path>` expectation
+3. Classifies each changed file: `own-main`, `own-test`, `own-dir`, `orchestration`, `other-task:M`, or `unrelated`
+4. Fails (exit 2) if any file is `other-task:M` (cross-attribution) or `unrelated` in strict mode
+
+This is the safety net. The PRIMARY fix is that executors hold the commit-queue
+mutex, preventing the race at the source. See vg-executor-rules.md.
+
+**Step 0c — Wave integrity reconciliation (MANDATORY, survives crashes):**
+
+Runs `verify-wave-integrity.py` against the progress file + git log + filesystem.
+Catches crash scenarios where agent work exists on disk but progress file never
+recorded it (SIGKILL during work, context compact mid-wave, power failure).
+
+Phase 10 Wave 5 reality check: apps/web tsc OOM killed 3 agents; their ~1500
+LOC was still on disk but orphaned. Integrity verifier rescued the work. Without
+this running automatically, user had to know to invoke it manually. Now auto.
+
+```bash
+INTEGRITY_SCRIPT=".claude/scripts/verify-wave-integrity.py"
+if [ -f "$INTEGRITY_SCRIPT" ]; then
+  echo ""
+  echo "━━━ Step 0c: Wave ${N} integrity reconciliation ━━━"
+  ${PYTHON_BIN:-python3} "$INTEGRITY_SCRIPT" \
+    --phase-dir "${PHASE_DIR}" --wave "${N}" --repo-root "${REPO_ROOT:-.}"
+  INTEG_EXIT=$?
+
+  case "$INTEG_EXIT" in
+    0) echo "✓ Integrity verdict: clean" ;;
+    *)
+      echo "⛔ Integrity verdict: corruption detected (exit ${INTEG_EXIT})."
+      echo "   Next wave BLOCKED until reconciled. Options:"
+      echo "     (a) Follow the script's Recovery suggestions above"
+      echo "     (b) /vg:build ${PHASE_NUMBER} --wave ${N} --reset-queue  # re-run wave"
+      echo "     (c) --override-reason=<issue-id>  # accept current state with debt"
+      OVERRIDE_REASON=""
+      if [[ "${ARGUMENTS:-}" =~ --override-reason=([^[:space:]]+) ]]; then
+        OVERRIDE_REASON="${BASH_REMATCH[1]}"
+      fi
+      if [ -n "$OVERRIDE_REASON" ] && [ ${#OVERRIDE_REASON} -ge 4 ]; then
+        echo "⚠ Integrity gate OVERRIDDEN (reason: $OVERRIDE_REASON)"
+        echo "integrity-corruption: wave-${N} override=${OVERRIDE_REASON} ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+        type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+          "--override-reason" "$PHASE_NUMBER" "build.integrity.wave-${N}" "$OVERRIDE_REASON" "build-integrity-wave-${N}"
+      else
+        exit 1
+      fi
+      ;;
+  esac
+else
+  echo "⚠ verify-wave-integrity.py missing — skipping integrity check (older install)"
+fi
+```
+
 **Step 1 — Commit format + SUMMARY verification:**
 Verify commits match pattern `^(feat|fix|refactor|test|chore)\([\d.]+-\d+\): `.
 Verify SUMMARY.md sections exist for each task in wave.
@@ -904,9 +1231,26 @@ Verify SUMMARY.md sections exist for each task in wave.
 WAVE_TAG="vg-build-${PHASE_NUMBER}-wave-${N}-start"
 FAILED_GATE=""
 
-# Gate 1: Typecheck (mandatory)
-if [ -n "${config.build_gates.typecheck_cmd}" ]; then
-  echo "Gate 1/4: Running ${config.build_gates.typecheck_cmd}..."
+# Gate 1: Typecheck (mandatory) — adaptive strategy
+# v1.14.3: auto-select full vs narrow based on project size + OOM history.
+# Rationale: apps with ≥1200 weighted files (TSX counts 3x) or prior OOM
+# events get narrow check (only files changed since wave tag). Small/medium
+# apps get full incremental. Config override: VG_TYPECHECK_STRATEGY env.
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/typecheck-light.sh" 2>/dev/null || true
+
+if type -t vg_typecheck_adaptive >/dev/null 2>&1; then
+  echo "Gate 1/4: Adaptive typecheck (per-package auto-selection)..."
+  # Derive package list from wave's changed files
+  WAVE_PKGS=$(git diff --name-only "${WAVE_TAG}" HEAD -- 'apps/*/src/**' 'packages/*/src/**' 2>/dev/null \
+    | sed -E 's|^(apps\|packages)/([^/]+)/.*|\2|' | sort -u)
+  GATE1_FAIL=0
+  for pkg in $WAVE_PKGS; do
+    vg_typecheck_adaptive "$pkg" "${WAVE_TAG}" || GATE1_FAIL=$((GATE1_FAIL + 1))
+  done
+  [ "$GATE1_FAIL" -gt 0 ] && FAILED_GATE="typecheck"
+elif [ -n "${config.build_gates.typecheck_cmd}" ]; then
+  # Fallback when lib unavailable (older install)
+  echo "Gate 1/4: Running ${config.build_gates.typecheck_cmd} (non-adaptive)..."
   if ! eval "${config.build_gates.typecheck_cmd}"; then
     FAILED_GATE="typecheck"
   fi
@@ -1015,6 +1359,29 @@ if [ -z "$FAILED_GATE" ]; then
     fi
   else
     echo "Gate 5/10: skipped (goal_test_binding=off)"
+  fi
+fi
+
+# Gate U: Utility duplication (wave-scope AST scan)
+# Post-wave check — did this wave introduce a helper that now has ≥3 copies repo-wide?
+# Root cause of tsc OOM + graphify noise (e.g., formatCurrency declared in 16 files).
+if [ -z "$FAILED_GATE" ] && [ -f ".claude/scripts/verify-utility-duplication.py" ]; then
+  DUP_PROJECT_MD="${PLANNING_DIR}/PROJECT.md"
+  if [ -f "$DUP_PROJECT_MD" ]; then
+    echo "Gate U: Utility duplication check (wave ${N})..."
+    ${PYTHON_BIN} .claude/scripts/verify-utility-duplication.py \
+      --since-tag "${WAVE_TAG}" \
+      --project "$DUP_PROJECT_MD" \
+      --repo-root "${REPO_ROOT:-.}" \
+      --threshold-block 3 --threshold-warn 2
+    DUP_EXIT=$?
+    case "$DUP_EXIT" in
+      0) ;;
+      2) echo "⚠ Utility duplication WARNs logged — non-blocking, review in accept phase" ;;
+      1) FAILED_GATE="utility_duplication" ;;
+    esac
+  else
+    echo "⚠ Gate U skipped — PROJECT.md missing (no utility contract defined)"
   fi
 fi
 
@@ -1313,6 +1680,8 @@ if [ -n "$FAILED_GATE" ]; then
       exit 1
     fi
     echo "⚠ OVERRIDE accepted for gate ${FAILED_GATE}"
+    type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+      "--override-reason" "$PHASE_NUMBER" "build.hard-gate.wave-${N}" "$OVERRIDE_REASON" "build-${FAILED_GATE}-wave-${N}"
     echo "   Reason: $OVERRIDE_REASON"
     echo "   Recorded to build-state.log — acceptance gate MUST review."
     echo "override: wave=${N} gate=${FAILED_GATE} reason=${OVERRIDE_REASON} ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
@@ -1403,6 +1772,8 @@ if [ -n "$UNIT_CMD" ]; then
       if [ -n "$OVERRIDE_REASON" ] && [ ${#OVERRIDE_REASON} -ge 4 ]; then
         echo "⚠ Final unit suite failed — override accepted (reason: $OVERRIDE_REASON)"
         echo "override: gate=final_unit_suite reason=${OVERRIDE_REASON} ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+        type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+          "--override-reason" "$PHASE_NUMBER" "build.final-unit-suite" "$OVERRIDE_REASON" "build-final-unit-suite"
       else
         echo "⛔ Final unit suite failed (test_unit_required=true)"
         echo "   To override: /vg:build ${PHASE_NUMBER} --override-reason=<issue-id-or-url>"
@@ -1493,6 +1864,8 @@ else: print('block')
           fi
           if [ -n "$OVERRIDE_REASON" ] && [ ${#OVERRIDE_REASON} -ge 4 ]; then
             echo "⚠ Regression gate OVERRIDDEN (reason: $OVERRIDE_REASON)"
+            type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+              "--override-reason" "$PHASE_NUMBER" "build.regression.wave-${N}" "$OVERRIDE_REASON" "build-regression-wave-${N}"
             echo "regression-guard: wave-final OVERRIDE count=${REG_COUNT} reason=${OVERRIDE_REASON} ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
             # Mark phase as needing accept-gate review
             echo "${REG_COUNT}" > "${PHASE_DIR}/.regressions-overridden.count"
@@ -1555,6 +1928,8 @@ if [ -n "$MISSING_SUMMARIES" ]; then
   if [ -n "$OVERRIDE_REASON" ] && [ ${#OVERRIDE_REASON} -ge 4 ]; then
     echo "⚠ Missing SUMMARIES overridden (reason: $OVERRIDE_REASON) — plans:${MISSING_SUMMARIES}"
     echo "missing-summaries:${MISSING_SUMMARIES} override=${OVERRIDE_REASON} ts=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+    type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+      "--override-reason" "$PHASE_NUMBER" "build.missing-summaries" "$OVERRIDE_REASON" "build-missing-summaries"
   else
     echo "⛔ Missing SUMMARY for plans:${MISSING_SUMMARIES}"
     echo "   Each PLAN needs matching SUMMARY — executor must document what was built."
@@ -1565,14 +1940,26 @@ if [ -n "$MISSING_SUMMARIES" ]; then
 fi
 
 # 2. Update PIPELINE-STATE.json — mark phase execution complete (no GSD dependency)
+#    IMPORTANT: must also append a structured ``steps.build`` entry so
+#    vg-progress.py state-driven path recognises build as done. Prior
+#    versions only wrote top-level fields (status/plans_*), which caused
+#    /vg:progress to keep showing build=⬜ even though SUMMARY.md existed.
 PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
 ${PYTHON_BIN} -c "
-import json; from pathlib import Path
+import json; from datetime import datetime; from pathlib import Path
 p = Path('${PIPELINE_STATE}')
 s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
 s['status'] = 'executed'; s['pipeline_step'] = 'build-complete'
 s['plans_completed'] = '${COMPLETED_COUNT}'; s['plans_total'] = '${PLAN_COUNT}'
-s['updated_at'] = __import__('datetime').datetime.now().isoformat()
+now = datetime.now().isoformat()
+s['updated_at'] = now
+s.setdefault('steps', {})['build'] = {
+    'status': 'done',
+    'finished_at': now,
+    'plans_completed': '${COMPLETED_COUNT}',
+    'plans_total': '${PLAN_COUNT}',
+    'summary': 'SUMMARY.md (atomic build artifact)',
+}
 p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 
@@ -1595,6 +1982,76 @@ Commit summaries:
 ```bash
 git add ${PHASE_DIR}/SUMMARY*.md ${PLANNING_DIR}/STATE.md ${PLANNING_DIR}/ROADMAP.md
 git commit -m "build({phase}): {completed}/{total} plans executed"
+```
+</step>
+
+<step name="10_postmortem_sanity">
+**Final sanity gate — catches recovery-mode bypass + silent gate failures.**
+
+Historical: Phase 10 audit (2026-04-19) found build completed with 0 telemetry
+events + 0 graphify rebuild events + `(recovered)` commits — gates were bypassed
+via manual recovery path. This step ensures future bypasses are visible.
+
+```bash
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/build-postmortem.sh"
+
+# Full post-mortem: telemetry + wave tags + recovery commits + step markers
+vg_build_postmortem_check "${PHASE_NUMBER}" "${PHASE_DIR}" ".vg/telemetry.jsonl"
+POSTMORTEM_RC=$?
+
+# Phase-level goal coverage audit (complements per-task binding check)
+echo ""
+echo "━━━ Phase goal coverage audit ━━━"
+${PYTHON_BIN} .claude/scripts/verify-goal-coverage-phase.py \
+  --phase-dir "${PHASE_DIR}" \
+  --repo-root "${REPO_ROOT}" \
+  --advisory  # warn-only at build end; /vg:review enforces
+GOAL_COVERAGE_RC=$?
+
+# Signal to user but don't block (review is the enforcement point)
+if [ "$POSTMORTEM_RC" -ne 0 ] || [ "$GOAL_COVERAGE_RC" -ne 0 ]; then
+  echo ""
+  echo "⚠ Post-mortem flagged issues — review will enforce. Run: /vg:review ${PHASE_NUMBER}"
+fi
+
+# UI structure drift check (chỉ chạy nếu UI-MAP.md tồn tại)
+if [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
+  echo ""
+  echo "━━━ UI structure drift (lệch cấu trúc UI) ━━━"
+
+  UI_MAP_SRC=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /src:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+  UI_MAP_ENTRY=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /entry:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+
+  if [ -n "$UI_MAP_SRC" ] && [ -n "$UI_MAP_ENTRY" ]; then
+    # Sinh cây thực tế từ code vừa build
+    node .claude/scripts/generate-ui-map.mjs \
+      --src "$UI_MAP_SRC" \
+      --entry "$UI_MAP_ENTRY" \
+      --format json \
+      --output "${PHASE_DIR}/.ui-map-actual.json" 2>&1 | tail -3
+
+    # So sánh với UI-MAP.md (kế hoạch đích)
+    MAX_MISSING=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /max_missing:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "0")
+    MAX_UNEXPECTED=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /max_unexpected:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "3")
+
+    ${PYTHON_BIN} .claude/scripts/verify-ui-structure.py \
+      --expected "${PHASE_DIR}/UI-MAP.md" \
+      --actual "${PHASE_DIR}/.ui-map-actual.json" \
+      --max-missing "$MAX_MISSING" \
+      --max-unexpected "$MAX_UNEXPECTED" \
+      --layout-advisory
+    UI_DRIFT_RC=$?
+
+    if [ "$UI_DRIFT_RC" -eq 2 ]; then
+      echo ""
+      echo "⚠ UI structure drift vượt ngưỡng — /vg:review sẽ BLOCK nếu không khắc phục"
+    fi
+  else
+    echo "⚠ ui_map.src/entry chưa cấu hình — bỏ qua UI drift check"
+  fi
+fi
+
+touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
 ```
 </step>
 

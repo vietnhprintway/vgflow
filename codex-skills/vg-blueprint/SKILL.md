@@ -8,15 +8,76 @@ metadata:
 <codex_skill_adapter>
 ## Codex ⇆ Claude Code tool mapping
 
-This skill was originally designed for Claude Code. When running in Codex CLI:
+This skill was originally designed for Claude Code. When running in Codex CLI, translate tool calls using the table + patterns below.
 
-| Claude tool | Codex equivalent |
-|------|------------------|
-| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) |
-| Task (agent spawn) | Use `codex exec --model <model>` subprocess with isolated prompt |
-| TaskCreate/TaskUpdate | N/A — use inline markdown headers and status narration |
-| WebFetch | `curl -sfL` or `gh api` for GitHub URLs |
-| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively |
+### Tool mapping table
+
+| Claude tool | Codex equivalent | Notes |
+|---|---|---|
+| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) | For multi-select, format as "1. Option / 2. Option" and parse reply |
+| Task (agent spawn) | `codex exec --model <model> "<prompt>"` subprocess | Foreground: `codex exec ... > /tmp/out.txt`. Parallel: launch N subprocesses + `wait`. See "Agent spawn" below |
+| TaskCreate/TaskUpdate/TodoWrite | N/A — use inline markdown headers + status narration | Codex does not have a persistent task tail UI. Write `## ━━━ Phase X: step ━━━` in stdout instead |
+| Monitor | Bash loop with `echo` + `sleep 3` polling | Codex streams stdout directly, no separate monitor channel |
+| ScheduleWakeup | N/A — Codex is one-shot; user must re-invoke | Skill must tolerate single-execution model; no sleeping |
+| WebFetch | `curl -sfL <url>` or `gh api <path>` | For GitHub URLs prefer `gh` for auth handling |
+| mcp__playwright{1-5}__* | See "Playwright MCP" below | Playwright MCP tools ARE available in Codex's main orchestrator |
+| mcp__graphify__* | `python -c "from graphify import ..."` inline | Graphify CLI/module works identically in Codex |
+| mcp__context7__*, mcp__exa__*, mcp__firecrawl__* | Skip or fall back to WebFetch | Only available via SDK; not bundled in Codex CLI |
+| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively | No adapter needed |
+
+### Agent spawn (Task → codex exec)
+
+Claude Code spawns isolated agents via `Task(subagent_type=..., prompt=...)`. Codex equivalent:
+
+```bash
+# Single agent, foreground (wait for completion + read output)
+codex exec --model gpt-5 "<full isolated prompt>" > /tmp/agent-result.txt 2>&1
+RESULT=$(cat /tmp/agent-result.txt)
+
+# Multiple agents, parallel (Claude's pattern of 1 message with N Task calls)
+codex exec --model gpt-5 "<prompt 1>" > /tmp/agent-1.txt 2>&1 &
+PID1=$!
+codex exec --model gpt-5 "<prompt 2>" > /tmp/agent-2.txt 2>&1 &
+PID2=$!
+wait $PID1 $PID2
+R1=$(cat /tmp/agent-1.txt); R2=$(cat /tmp/agent-2.txt)
+```
+
+**Critical constraints when spawning:**
+- Subagent inherits working directory + env vars, but **no MCP server access** (Codex exec spawns fresh CLI instance without `--mcp` wired). Subagent CANNOT call `mcp__playwright*__`, `mcp__graphify__`, etc.
+- Model mapping for this project: `models.planner` opus → `gpt-5`, `models.executor` sonnet → `gpt-4o`, `models.scanner` haiku → `gpt-4o-mini` (or project-configured equivalent). Check `.claude/vg.config.md` `models` section for actual values and adapt.
+- Timeout: wrap in `timeout 600s codex exec ...` to prevent hung subagents.
+- Return schema: if skill expects structured JSON back, prompt subagent with "Return ONLY a single JSON object with keys: {...}". Parse with `jq` or `python -c "import json,sys; ..."`.
+
+### Playwright MCP — orchestrator-only rule
+
+Playwright MCP tools (`mcp__playwright1__browser_navigate`, `_snapshot`, `_click`, etc.) ARE available to the main Codex orchestrator (same MCP servers as Claude Code). **BUT subagents spawned via `codex exec` do NOT inherit MCP access** — they are fresh CLI instances.
+
+Implication for skills using Haiku scanner pattern (scanner spawns → uses Playwright):
+- **Claude model:** spawn haiku agent with prompt → agent calls `mcp__playwright__` tools directly
+- **Codex model:** TWO options:
+  1. **Orchestrator-driven:** main orchestrator calls Playwright tools + passes snapshots/results to subagent as text → subagent returns instructions/analysis only (no tool calls). Slower but preserves parallelism benefit.
+  2. **Single-agent:** orchestrator runs scanner workflow inline (no spawn). Simpler but no parallelism; suitable for 1-2 view scans but slow for 14+ views.
+
+Default: **single-agent inline** unless skill explicitly documents the orchestrator-driven pattern for that step.
+
+### Persistence probe (Layer 4) — execution model
+
+For review/test skills that verify mutation persistence:
+- Main orchestrator holds Playwright session (claimed via lock manager)
+- Pre-snapshot + submit + refresh + re-read all run in orchestrator Playwright calls (not spawned)
+- If skill delegates analysis to subagent, orchestrator must capture snapshots + pass text to subagent; subagent returns verdict JSON `{persisted: bool, pre: ..., post: ...}`
+
+### Lock manager (Playwright)
+
+Same as Claude:
+```bash
+SESSION_ID="codex-${skill}-${phase}-$$"
+PLAYWRIGHT_SERVER=$(bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
+trap "bash '${HOME}/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
+```
+
+Pool name in Codex: `codex` (separate from Claude's `claude` pool). Lock manager handles both without collision.
 
 ## Invocation
 
@@ -54,6 +115,50 @@ Sub-steps:
 <process>
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first.
+
+<step name="0_amendment_preflight">
+## Step 0: Scope Amendment Preflight (v1.14.1+ NEW)
+
+Before planning, enforce any `config_amendments_needed` locked during /vg:scope (e.g. new surfaces proposed in Round 2 via surface-gap detector). Running blueprint with stale config → tasks spawn against wrong surface paths → silent failure downstream.
+
+```bash
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/amendment-preflight.sh"
+
+# Mode from flag
+AMEND_MODE="block"   # default
+if [[ "$ARGUMENTS" =~ --apply-amendments ]]; then
+  AMEND_MODE="apply"
+elif [[ "$ARGUMENTS" =~ --skip-amendment-check ]]; then
+  AMEND_MODE="warn"
+fi
+
+amendment_block_if_pending "${PHASE_DIR}" ".claude/vg.config.md" "$AMEND_MODE"
+preflight_rc=$?
+
+if [ $preflight_rc -ne 0 ]; then
+  echo ""
+  echo "Retry options:"
+  echo "  /vg:blueprint ${PHASE_NUMBER} --apply-amendments     # auto-apply to config"
+  echo "  /vg:blueprint ${PHASE_NUMBER} --skip-amendment-check # debt mode"
+  exit 1
+fi
+
+# If amendments were applied, commit the config change before proceeding
+if [ "$AMEND_MODE" = "apply" ]; then
+  if ! git diff --quiet .claude/vg.config.md 2>/dev/null; then
+    git add .claude/vg.config.md
+    git commit -m "config(${PHASE_NUMBER}): apply scope amendments
+
+Auto-applied via /vg:blueprint ${PHASE_NUMBER} --apply-amendments.
+See PHASE_DIR/CONTEXT.md scope decisions for rationale."
+  fi
+fi
+```
+
+Scanner is authoritative: reads `PIPELINE-STATE.steps.scope.config_amendments_needed[]` array (populated by `/vg:scope` step 5). Enrichment pulls surface name + paths + stack from decision YAML snippet in CONTEXT.md. Generic (non-surface) amendments require manual edit — preflight blocks, user edits, re-runs.
+
+**Rationale:** surfaces config drives multi-surface gate, design-system lookup, multi-platform E2E routing. Missing surface → silent workflow misalignment. Forcing apply before tasks spawn ensures planner + executor see correct config.
+</step>
 
 <step name="1_parse_args">
 Extract from `$ARGUMENTS`: phase_number (required), plus optional flags:
@@ -218,13 +323,245 @@ echo "CONTEXT.md: ${DECISION_COUNT} decisions, ${HAS_ENDPOINTS} with endpoints, 
 
 Create execution plans using VG-native planner (self-contained, no GSD delegation).
 
-Spawn planner agent with VG-specific rules:
+**⛔ BUG #2 fix (2026-04-18): Auto-rebuild graphify BEFORE planner spawn.**
+
+Mirrors `vg:build` step 4 auto-rebuild logic. Without this, planner plans against
+stale graph (we observed 46h / 140 commits stale at audit) → planner references
+symbols that no longer exist → tasks fabricated → executor fails or produces wrong code.
+
+```bash
+if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+  # Use graphify-safe wrapper — verifies mtime advances + retries on stuck rebuild
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+
+  GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
+  COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+
+  echo "Blueprint: graphify ${COMMITS_SINCE} commits since last build"
+
+  if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
+    vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "blueprint-phase-${PHASE_NUMBER}" || {
+      echo "⚠ Planner will see stale graph — expect weaker task/sibling suggestions"
+    }
+  else
+    echo "Graphify: up to date (0 commits since last build)"
+  fi
+fi
+```
+
+**Pre-spawn graphify context build (MANDATORY when `$GRAPHIFY_ACTIVE=true`):**
+
+Before spawning the planner, extract structural context from graphify so the planner can
+plan with blast-radius awareness instead of grep-only guesses. Without this, planners
+produce `<edits-*>` annotations missing 60-90% of true downstream impact.
+
+```bash
+GRAPHIFY_BRIEF="${PHASE_DIR}/.graphify-brief.md"
+
+if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+  # 1. God nodes (orchestrator MUST query via mcp__graphify__god_nodes — Claude tool call):
+  #    Save top-20 god nodes ordered by community_size + edge_count. These are
+  #    "touch with care" sentinels — planner MUST flag any task editing them.
+
+  # 2. Communities relevant to phase:
+  #    Grep CONTEXT.md endpoints + file paths → for each, query
+  #    mcp__graphify__get_node + get_neighbors → collect community_id set.
+  #    Save community summaries.
+
+  # 3. Existing-symbol map for endpoints in CONTEXT (avoid re-introducing names):
+  #    Grep CONTEXT.md "GET /api/..." patterns → query mcp__graphify__query_graph
+  #    {"node_type":"route","path":"/api/v1/auth/login"} → emit "EXISTS at file:line"
+  #    so planner annotates as REUSED, not NEW.
+
+  # 4. Brief format (markdown, ≤150 lines, planner reads as injected context):
+  cat > "$GRAPHIFY_BRIEF" <<EOF
+# Graphify brief — Phase ${PHASE_NUMBER} structural context
+
+Generated from graphify-out/graph.json (${GRAPH_NODE_COUNT} nodes, ${GRAPH_EDGE_COUNT} edges, mtime ${GRAPH_MTIME_HUMAN}).
+
+## God nodes (touch with care)
+$GOD_NODES_TABLE
+
+## Phase-relevant communities
+$COMMUNITY_TABLE
+
+## Existing endpoints/symbols (REUSE, don't re-create)
+$EXISTING_SYMBOLS_TABLE
+
+## Sibling files (likely co-edited)
+$SIBLINGS_TABLE
+EOF
+else
+  # Fallback: emit a stub brief explaining graphify unavailable
+  cat > "$GRAPHIFY_BRIEF" <<EOF
+# Graphify brief — UNAVAILABLE
+Graph not built or stale. Planner falls back to grep-only structural awareness.
+Run: cd \$REPO_ROOT && \${PYTHON_BIN} -m graphify update .
+EOF
+fi
+```
+
+**Orchestrator note:** mcp__graphify__god_nodes / get_node / get_neighbors / query_graph
+are Claude TOOL CALLS, not bash commands. Invoke directly via tool use after the
+bash block computes the variable inputs (CONTEXT endpoint list, CONTEXT file path list).
+DO NOT shell-out to graphify CLI — MCP tool round-trip is the supported path.
+
+**v1.14.0+ C.5 — deploy_lessons injection** (silent, NO AskUserQuestion):
+
+Trước khi spawn planner, extract lessons + env vars liên quan services mà phase này tác động, tiêm vào prompt planner dưới `<deploy_lessons>` block. Planner MUST reference khi đề cập ORG dimensions 3 (Deploy) + 4 (Smoke) + 6 (Rollback).
+
+```bash
+DEPLOY_LESSONS_BRIEF="${PHASE_DIR}/.deploy-lessons-brief.md"
+DEPLOY_LESSONS_FILE=".vg/DEPLOY-LESSONS.md"
+ENV_CATALOG_FILE=".vg/ENV-CATALOG.md"
+
+if [ -f "$DEPLOY_LESSONS_FILE" ] || [ -f "$ENV_CATALOG_FILE" ]; then
+  PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "$PHASE_DIR" "$DEPLOY_LESSONS_FILE" "$ENV_CATALOG_FILE" "$DEPLOY_LESSONS_BRIEF" <<'PY'
+import re, sys
+from pathlib import Path
+
+phase_dir = Path(sys.argv[1])
+lessons_file = Path(sys.argv[2])
+env_file = Path(sys.argv[3])
+brief_out = Path(sys.argv[4])
+
+# 1. Infer services phase này touches (same heuristic aggregator)
+service_hints = [
+    ("apps/api",        [r"\bapi\b", r"fastify", r"modules?/", r"REST\s+API"]),
+    ("apps/web",        [r"\bweb\b", r"\bdashboard\b", r"\bpage\b", r"\bReact\b", r"\bFE\b", r"\badvertiser\b", r"\bpublisher\b", r"\badmin\b"]),
+    ("apps/rtb-engine", [r"\brtb[_-]?engine\b", r"\baxum\b", r"\bbid\s+request\b", r"\bauction\b"]),
+    ("apps/workers",    [r"\bworkers?\b", r"\bconsumer\b", r"\bkafka\s+consumer\b", r"\bcron\b"]),
+    ("apps/pixel",      [r"\bpixel\b", r"\bpostback\b", r"\btracking\b"]),
+    ("infra/clickhouse",[r"\bclickhouse\b", r"\bOLAP\b", r"\banalytic\b"]),
+    ("infra/mongodb",   [r"\bmongo(?:db)?\b", r"\bcollection\b"]),
+    ("infra/kafka",     [r"\bkafka\b", r"\btopic\b", r"\bpartition\b"]),
+    ("infra/redis",     [r"\bredis\b", r"\bcache\b"]),
+]
+services_touched = set()
+for fname in ("SPECS.md", "CONTEXT.md"):
+    f = phase_dir / fname
+    if not f.exists():
+        continue
+    text = f.read_text(encoding="utf-8", errors="ignore").lower()
+    for svc, pats in service_hints:
+        for pat in pats:
+            if re.search(pat, text, re.I):
+                services_touched.add(svc)
+                break
+
+# Also infer from phase name
+name_lower = phase_dir.name.lower()
+for svc, pats in service_hints:
+    for pat in pats:
+        if re.search(pat, name_lower, re.I):
+            services_touched.add(svc)
+            break
+
+# 2. Extract relevant lessons from DEPLOY-LESSONS View A (by service)
+lessons_by_service = {}
+if lessons_file.exists():
+    text = lessons_file.read_text(encoding="utf-8", errors="ignore")
+    # Parse View A: `### {service}` followed by `- **Phase X:** lesson`
+    current_svc = None
+    for line in text.splitlines():
+        svc_m = re.match(r"^### ((?:apps|infra)/\S+)\s*$", line)
+        if svc_m:
+            current_svc = svc_m.group(1)
+            lessons_by_service.setdefault(current_svc, [])
+            continue
+        # Stop at View B
+        if line.startswith("## View B"):
+            break
+        if current_svc:
+            bullet = re.match(r"^-\s+\*\*Phase ([\d.]+):\*\*\s+(.+)$", line)
+            if bullet:
+                lessons_by_service[current_svc].append((bullet.group(1), bullet.group(2)))
+
+# 3. Extract env vars touched services from ENV-CATALOG
+relevant_env = []
+if env_file.exists():
+    text = env_file.read_text(encoding="utf-8", errors="ignore")
+    for line in text.splitlines():
+        m = re.match(r"^\|\s*`(\w+)`\s*\|\s*([\d.]+)\s*\|\s*([^|]+)\s*\|", line)
+        if not m:
+            continue
+        name, phase_added, service_list = m.groups()
+        service_list = service_list.strip()
+        # Match any service token trong cột Service với services_touched
+        svc_tokens = re.split(r",\s*", service_list)
+        if any(t.strip() in services_touched for t in svc_tokens):
+            relevant_env.append((name, phase_added, service_list))
+
+# 4. Write brief
+out = ["# Deploy Lessons Brief — Phase-specific context cho planner", ""]
+out.append(f"**Services touched:** {', '.join(sorted(services_touched)) or '(chưa xác định)'}")
+out.append("")
+
+if lessons_by_service:
+    out.append("## Lessons từ phases trước (service-filtered)")
+    out.append("")
+    printed = 0
+    for svc in sorted(services_touched):
+        items = lessons_by_service.get(svc, [])
+        if not items:
+            continue
+        out.append(f"### {svc}")
+        for pid, lesson in items:
+            out.append(f"- **Phase {pid}:** {lesson}")
+            printed += 1
+        out.append("")
+    if printed == 0:
+        out.append("_(Không có lesson nào liên quan service này.)_")
+        out.append("")
+else:
+    out.append("_(DEPLOY-LESSONS.md chưa có lesson nào — phase đầu của v1.14.0+ flow.)_")
+    out.append("")
+
+if relevant_env:
+    out.append("## Env vars liên quan (từ ENV-CATALOG)")
+    out.append("")
+    out.append("| Name | Added Phase | Service |")
+    out.append("|---|---|---|")
+    for name, pid, svc in relevant_env[:20]:  # limit 20 để prompt gọn
+        out.append(f"| `{name}` | {pid} | {svc} |")
+    if len(relevant_env) > 20:
+        out.append(f"| _... và {len(relevant_env) - 20} env var nữa — xem ENV-CATALOG đầy đủ_ | | |")
+    out.append("")
+else:
+    out.append("_(ENV-CATALOG trống hoặc không có env var nào map tới services của phase này.)_")
+    out.append("")
+
+out.append("## Hướng dẫn cho planner")
+out.append("")
+out.append("- ORG dimension 3 (Deploy): reference lessons về build/restart timing + pitfalls nếu có.")
+out.append("- ORG dimension 4 (Smoke): include smoke check commands (xem SMOKE-PACK.md) cho services touched.")
+out.append("- ORG dimension 6 (Rollback): nếu phase trước đã document rollback steps cùng service → reuse pattern.")
+out.append("- Env vars liệt kê ở trên: nếu phase cần thêm var mới, tuân format reload/rotation/storage đã established.")
+out.append("")
+
+brief_out.write_text("\n".join(out), encoding="utf-8")
+print(f"✓ deploy_lessons brief: {brief_out} (services={len(services_touched)}, lessons={sum(len(v) for v in lessons_by_service.values())}, env_vars={len(relevant_env)})")
+PY
+else
+  echo "ℹ DEPLOY-LESSONS.md / ENV-CATALOG.md chưa tồn tại — skip deploy_lessons brief."
+fi
+```
+
+Spawn planner agent với VG-specific rules + graphify brief + deploy_lessons brief:
 ```
 Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
   prompt: |
     <vg_planner_rules>
     @.claude/commands/vg/_shared/vg-planner-rules.md
     </vg_planner_rules>
+
+    <graphify_brief>
+    @${PHASE_DIR}/.graphify-brief.md
+    </graphify_brief>
+
+    <deploy_lessons>
+    @${PHASE_DIR}/.deploy-lessons-brief.md (if exists — v1.14.0+ C.5)
+    </deploy_lessons>
 
     <specs>
     @${PHASE_DIR}/SPECS.md
@@ -248,9 +585,30 @@ Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
     contract_format: ${config.contract_format.type}
     phase: ${PHASE_NUMBER}
     phase_dir: ${PHASE_DIR}
+    graphify_active: ${GRAPHIFY_ACTIVE}
     </config>
 
     Create PLAN.md for phase ${PHASE_NUMBER}. Follow vg-planner-rules exactly.
+
+    GRAPHIFY USAGE (when graphify_active=true):
+    - graphify_brief lists god nodes + existing symbols + sibling files
+    - For EVERY task touching code, set <edits-*> attributes (REQUIRED, not optional)
+      so the post-plan caller-graph script (step 2a5) can compute blast radius
+    - When task touches a god node listed in brief, prefix description with
+      "BLAST-RADIUS: god node — ripple to N callers expected" and include
+      mitigation note (gradual rollout / feature flag / regression suite)
+    - When task lists an endpoint in <edits-endpoint>, check brief's existing
+      symbols table — if found, mark as REUSED-MODIFY not NEW-CREATE
+
+    DEPLOY_LESSONS USAGE (v1.14.0+ C.5, when brief exists):
+    - Nếu deploy_lessons có service-specific lessons → reference TRỰC TIẾP trong task
+      description của ORG dimensions 3/4/6. VD: "Rebuild incremental tsc (Phase 7.12
+      lesson: force --skip-lib-check if node_modules freshly cleared)".
+    - Nếu deploy_lessons có env vars liên quan → tasks add new env var PHẢI tuân
+      format reload/rotation/storage đã establish trong ENV-CATALOG (90-day vault
+      cho secrets, config-stable cho URLs, tuning-knob cho TTL/cache).
+    - Không có lessons liên quan → OK, ignore block.
+
     Output: ${PHASE_DIR}/PLAN.md with waves, task attributes, goal coverage.
 ```
 
@@ -406,19 +764,39 @@ Build `.callers.json` — maps each PLAN task's `<edits-*>` symbols to all downs
 
 ```bash
 if [ "${config.semantic_regression.enabled:-true}" = "true" ]; then
+  # ⛔ BUG #1 fix (2026-04-18): MUST pass --graphify-graph when active.
+  # Without flag, script falls back to grep-only (misses path-alias imports
+  # like `@/hooks/X`, misses cross-monorepo symbol callers).
+  GRAPHIFY_FLAG=""
+  if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+    GRAPHIFY_FLAG="--graphify-graph $GRAPHIFY_GRAPH_PATH"
+  fi
+
   ${PYTHON_BIN} .claude/scripts/build-caller-graph.py \
     --phase-dir "${PHASE_DIR}" \
     --config .claude/vg.config.md \
+    $GRAPHIFY_FLAG \
     --output "${PHASE_DIR}/.callers.json"
 
   # Inject per-task warnings into PLAN.md listing downstream callers
   # Planner should ensure tasks updating shared symbols know their blast radius
   CALLER_COUNT=$(jq '.affected_callers | length' "${PHASE_DIR}/.callers.json")
-  echo "Semantic regression: tracked ${CALLER_COUNT} downstream callers across ${PHASE_DIR}/.callers.json"
+  TOOLS_USED=$(jq -r '.tools_used | join(",")' "${PHASE_DIR}/.callers.json")
+  echo "Semantic regression: tracked ${CALLER_COUNT} downstream callers (tools: ${TOOLS_USED})"
+
+  # Sanity check: if graphify active but tools_used doesn't include 'graphify',
+  # something went wrong — graph file unreadable or schema mismatch.
+  if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ] && ! echo "$TOOLS_USED" | grep -q graphify; then
+    echo "⚠ GRAPHIFY ENRICHMENT FAILED — graph active but caller-graph used grep-only."
+    echo "  Inspect: ${PHASE_DIR}/.callers.json + check graphify-out/graph.json validity"
+    echo "  Run: ${PYTHON_BIN} -c 'import json; json.load(open(\"$GRAPHIFY_GRAPH_PATH\"))'"
+  fi
 fi
 ```
 
 Planner should convert each warning into task annotations: `<edits-schema>X</edits-schema>` so the graph can track changes reliably.
+
+**⚠ Recurring problem (Phase 13 retro):** when planner produces 22 tasks but only 3 have `<edits-*>` annotations, the caller script can only compute blast-radius for those 3. The other 19 silently get zero callers — appearing safe when they may have many. See `vg-planner-rules.md` for the rule that EVERY code-touching task MUST have at least one `<edits-*>` attribute.
 </step>
 
 <step name="2b_contracts">
@@ -574,6 +952,17 @@ RULES:
 1. Every decision MUST have at least 1 goal
 2. Goals describe WHAT to verify, not HOW (no selectors, no exact clicks)
 3. Mutation evidence must be specific: "POST returns 201 AND row count +1" not "data changes"
+3b. **Persistence check field (MANDATORY for mutation goals)**: Every goal with non-empty Mutation evidence MUST also have `**Persistence check:**` block describing Layer 4 verify (refresh + re-read + diff):
+    ```
+    **Persistence check:**
+    - Pre-submit: read <field/row/state> value (e.g., role="editor")
+    - Action: <what user does> (fill dropdown role="admin", click Save)
+    - Post-submit wait: API 2xx + toast
+    - Refresh: page.reload() OR navigate away + back
+    - Re-read: <where to re-read> (re-open edit modal)
+    - Assert: <field> = <new value> AND != <pre value> (role="admin", not "editor")
+    ```
+    Why mandatory: "ghost save" bug pattern — toast + API 200 + console clean NHƯNG refresh hiện data cũ. Only refresh-then-read detects backend silent skip / client optimistic rollback. Read-only goals (GET only) KHÔNG cần field này.
 4. Dependencies must reference goal IDs (G-XX)
 5. Priority assignment (deterministic rules, evaluate in order):
    a. Endpoints matching config `routing.critical_goal_domains` (auth, billing, auction, payout, compliance) → priority: critical
@@ -617,6 +1006,13 @@ Total: {N} goals ({critical} critical, {important} important, {nice} nice-to-hav
 **Mutation evidence:**
 - [Create: POST /api/X returns 201, table row +1]
 - [Update: PUT /api/X/:id returns 200, row reflects change]
+**Persistence check:**
+- Pre-submit: read <field/row/state> (e.g., status="draft" in detail panel)
+- Action: <what user does> (change status dropdown, click Save)
+- Post-submit wait: API 2xx + toast "Updated"
+- Refresh: page.reload()
+- Re-read: re-open same record / navigate back to list
+- Assert: <field> = <new value> AND != <pre value> (status="published", not "draft")
 **Dependencies:** G-00
 
 ## Decision Coverage
@@ -771,6 +1167,97 @@ UI-SPEC:
   Tokens: {N} | Components: {N} | Pages: {N}
   Conflicts flagged: {N}
 ```
+</step>
+
+<step name="2b6b_ui_map" profile="web-fullstack,web-frontend-only">
+## Sub-step 2b6b: UI-MAP (bản vẽ đích cây component)
+
+**Mục tiêu:** Tạo `UI-MAP.md` chứa cây component kế hoạch đích (to-be blueprint) cho các
+view mới/sửa trong phase này. Executor sẽ bám vào cây này khi viết code, verify-ui-structure.py
+sẽ so sánh post-wave để phát hiện lệch hướng (drift).
+
+**Khác biệt với 2b6_ui_spec:**
+- `UI-SPEC.md` = spec cấp cao (design tokens, typography, interactions) — thường áp dụng toàn phase.
+- `UI-MAP.md` = cây component cụ thể cho từng view — thứ executor bám theo từng dòng.
+
+**Skip khi:**
+- Phase không có task UI (profile backend-only)
+- Config `ui_map.enabled: false`
+
+```bash
+# Đọc config ui_map
+UI_MAP_ENABLED=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /enabled:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "true")
+
+if [ "$UI_MAP_ENABLED" != "true" ]; then
+  echo "ℹ ui_map disabled in config — skipping UI-MAP generation"
+  touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+else
+  # Kiểm tra phase có touch FE không
+  FE_TASKS=$(grep -cE "(\.tsx|\.jsx|\.vue|\.svelte)" "${PHASE_DIR}"/PLAN*.md 2>/dev/null || echo "0")
+
+  if [ "${FE_TASKS:-0}" -eq 0 ]; then
+    echo "ℹ Phase không có task FE — skip UI-MAP"
+    touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+  else
+    echo "Phase có ${FE_TASKS} dòng task FE. Chuẩn bị UI-MAP.md..."
+
+    # ─── Bước 1: Sinh as-is map nếu phase sửa view cũ ───
+    # Detect: task có edit file UI đã tồn tại
+    EXISTING_UI_FILES=$(grep -hE "^\s*-\s*(Edit|Modify):" "${PHASE_DIR}"/PLAN*.md 2>/dev/null | \
+                        grep -oE "[a-z_-]+\.(tsx|jsx|vue|svelte)" | sort -u)
+
+    if [ -n "$EXISTING_UI_FILES" ]; then
+      echo "Phát hiện task sửa view cũ — sinh UI-MAP-AS-IS.md để planner hiểu cấu trúc hiện tại"
+
+      UI_MAP_SRC=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /src:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+      UI_MAP_ENTRY=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /entry:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"')
+
+      if [ -n "$UI_MAP_SRC" ] && [ -n "$UI_MAP_ENTRY" ]; then
+        node .claude/scripts/generate-ui-map.mjs \
+          --src "$UI_MAP_SRC" \
+          --entry "$UI_MAP_ENTRY" \
+          --format both \
+          --output "${PHASE_DIR}/UI-MAP-AS-IS.md" 2>&1 | tail -3
+      else
+        echo "⚠ ui_map.src / ui_map.entry chưa cấu hình — bỏ qua as-is scan"
+      fi
+    fi
+
+    # ─── Bước 2: Planner viết UI-MAP.md (to-be blueprint) ───
+    # Orchestrator spawn planner agent với:
+    # - CONTEXT.md (decisions)
+    # - PLAN*.md (tasks)
+    # - UI-SPEC.md (component inventory nếu có)
+    # - UI-MAP-AS-IS.md (cây hiện trạng nếu phase sửa view cũ)
+    # - Design refs từ design-normalized/ (nếu có)
+    #
+    # Output: ${PHASE_DIR}/UI-MAP.md với:
+    #   - Cây ASCII cho mỗi view mới/sửa
+    #   - JSON tree (machine-readable, cho verify-ui-structure.py diff)
+    #   - Layout notes (class layout + style keys mong muốn)
+    #
+    # Template ở ${REPO_ROOT}/.claude/commands/vg/_shared/templates/UI-MAP-template.md
+
+    if [ ! -f "${PHASE_DIR}/UI-MAP.md" ]; then
+      echo "▸ Orchestrator cần spawn planner agent (model=${MODEL_PLANNER:-opus}) để viết UI-MAP.md"
+      echo "   Input: CONTEXT.md + PLAN*.md + UI-SPEC.md + UI-MAP-AS-IS.md (nếu có)"
+      echo "   Output: ${PHASE_DIR}/UI-MAP.md"
+      echo ""
+      echo "   Planner prompt (tóm tắt):"
+      echo "   'Với mỗi view tạo mới hoặc cải tạo trong phase này, vẽ cây component"
+      echo "    dạng ASCII + JSON. Mỗi node component ghi: tên, file path đích, class"
+      echo "    layout mong muốn, state/props gì quan trọng. Cây phải khả thi (executor"
+      echo "    build theo được). Nếu sửa view cũ: điều chỉnh UI-MAP-AS-IS.md.'"
+    else
+      echo "ℹ UI-MAP.md đã có — skip regeneration. Xoá file này để regenerate."
+    fi
+
+    touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+  fi
+fi
+```
+
+**Gate (chưa block, chỉ warn):** nếu phase có task FE nhưng UI-MAP.md không có, in warning — step 2d validation sẽ escalate.
 </step>
 
 <step name="2b7_flow_detect" profile="web-fullstack,web-frontend-only">
@@ -983,6 +1470,112 @@ Display:
 Verify 1 (grep): {N} endpoints checked, {M} field comparisons
 Result: {PASS|WARNING|BLOCK} — {N} mismatches
 ```
+</step>
+
+<step name="2c_verify_plan_paths">
+## Sub-step 2c1b: PLAN PATH VALIDATION (no AI, <5 sec)
+
+Catches stale `<file-path>` tags in PLAN — the class of bug seen in Phase 10:
+- Task 2 PLAN said `apps/api/src/infrastructure/clickhouse/migrations/0017_add_deal_columns.sql`
+  but that directory doesn't exist (real CH schemas in apps/workers/src/consumer/clickhouse/schemas.js)
+- Task 12 PLAN said `apps/rtb-engine/src/auction/pipeline.rs`
+  but that directory doesn't exist (real auction entry at apps/rtb-engine/src/handlers/bid.rs)
+
+Both were only caught when the executor agent opened the file. This step runs
+at blueprint time — catches them before /vg:build spawns executors.
+
+```bash
+PATH_CHECKER=".claude/scripts/verify-plan-paths.py"
+if [ -f "$PATH_CHECKER" ]; then
+  echo ""
+  echo "━━━ Sub-step 2c1b: PLAN path validation ━━━"
+  ${PYTHON_BIN:-python} "$PATH_CHECKER" \
+    --phase-dir "${PHASE_DIR}" \
+    --repo-root "${REPO_ROOT:-.}"
+  PATH_EXIT=$?
+
+  case "$PATH_EXIT" in
+    0)
+      echo "✓ All PLAN paths valid"
+      ;;
+    2)
+      echo "⚠ PLAN has path warnings — review output above."
+      echo "  If paths are intentional new subsystems, proceed (non-blocking)."
+      echo "  If paths are stale, fix PLAN now before /vg:build spawns executors against wrong paths."
+      # Non-blocking — planner may be creating new subsystems. User inspects.
+      ;;
+    1)
+      echo "⛔ PLAN has malformed paths — fix PLAN.md before proceeding."
+      exit 1
+      ;;
+  esac
+else
+  echo "⚠ verify-plan-paths.py missing — skipping PLAN path validation (older install)"
+fi
+```
+
+Classifications:
+- `VALID` — file exists (editing) OR parent dir exists (new file in existing dir) OR parent dir will be created by another task
+- `WARN` — parent dir doesn't exist and no other task creates it (likely stale, but could be intentional new subsystem)
+- `FAIL` — malformed path (absolute / escapes repo via `..` / has `+` separator / empty)
+
+WARN → non-blocking report. User can `<also-edits>foo/bar/` on an upstream task to declare the new dir is intentional.
+FAIL → hard exit 1. PLAN author must fix.
+</step>
+
+<step name="2c1c_verify_utility_reuse">
+## Sub-step 2c1c: UTILITY REUSE CHECK (no AI, <5 sec)
+
+Catches PLAN tasks that redeclare helper functions already exported from the shared utility contract in `PROJECT.md` → `## Shared Utility Contract`. Root cause of ~1500-2500 LOC duplicate seen in Phase 10 audit (16 files declaring own `formatCurrency`, 52 occurrences of `Intl.NumberFormat currency` pattern).
+
+```bash
+UTILITY_CHECKER=".claude/scripts/verify-utility-reuse.py"
+PROJECT_MD="${PLANNING_DIR}/PROJECT.md"
+
+if [ -f "$UTILITY_CHECKER" ] && [ -f "$PROJECT_MD" ]; then
+  echo ""
+  echo "━━━ Sub-step 2c1c: Utility reuse check (prevent duplicate helpers) ━━━"
+  ${PYTHON_BIN:-python} "$UTILITY_CHECKER" \
+    --project "$PROJECT_MD" \
+    --phase-dir "${PHASE_DIR}"
+  UTIL_EXIT=$?
+
+  case "$UTIL_EXIT" in
+    0)
+      echo "✓ No utility-reuse violations"
+      ;;
+    2)
+      echo "⚠ Utility-reuse warnings — consider consolidating into @vollxssp/utils"
+      echo "  Non-blocking. If phase legitimately needs new helper, add Task 0 (extend utils) in PLAN."
+      ;;
+    1)
+      echo "⛔ PLAN redeclares helpers already in shared utility contract."
+      echo "   Fix: replace re-declaration with import from @vollxssp/utils, OR"
+      echo "        if PLAN needs an extended variant, add Task 0 (extend utils) + reuse across tasks."
+      echo "   Rationale: every duplicate helper adds AST nodes (tsc slowdown) + graphify noise."
+      echo ""
+      echo "Override (NOT recommended): /vg:blueprint ${PHASE_NUMBER} --override-reason=<issue-id>"
+      if [[ ! "${ARGUMENTS:-}" =~ --override-reason= ]]; then
+        exit 1
+      fi
+      echo "⚠ --override-reason set — proceeding with utility duplication debt"
+      echo "utility-reuse: $(date -u +%FT%TZ) phase=${PHASE_NUMBER} override=yes" >> "${PHASE_DIR}/build-state.log"
+      ;;
+  esac
+else
+  [ ! -f "$UTILITY_CHECKER" ] && echo "⚠ verify-utility-reuse.py missing — skipping utility-reuse check (older install)"
+  [ ! -f "$PROJECT_MD" ] && echo "⚠ PROJECT.md missing — skipping utility-reuse check (run /vg:project first)"
+fi
+```
+
+BLOCK conditions:
+- Task declares a function name (via `function X`, `const X =`, `export function X`, "add helper X", etc.) AND that name exists in the contract table.
+- EXCEPTION: task's `<file-path>` is inside `packages/utils/` — that IS the canonical place.
+
+WARN conditions:
+- Task declares NEW helper (not in contract) AND spans ≥2 non-utils file paths — suggests reuse that should start in utils.
+
+**Override:** `--override-reason=<issue-id>` on `/vg:blueprint` allows passing with debt logged. Use only when the new helper is genuinely phase-local (e.g., deal-specific formatter only used in 1 file forever).
 </step>
 
 <step name="2c2_compile_check">

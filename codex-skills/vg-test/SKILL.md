@@ -8,15 +8,76 @@ metadata:
 <codex_skill_adapter>
 ## Codex ⇆ Claude Code tool mapping
 
-This skill was originally designed for Claude Code. When running in Codex CLI:
+This skill was originally designed for Claude Code. When running in Codex CLI, translate tool calls using the table + patterns below.
 
-| Claude tool | Codex equivalent |
-|------|------------------|
-| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) |
-| Task (agent spawn) | Use `codex exec --model <model>` subprocess with isolated prompt |
-| TaskCreate/TaskUpdate | N/A — use inline markdown headers and status narration |
-| WebFetch | `curl -sfL` or `gh api` for GitHub URLs |
-| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively |
+### Tool mapping table
+
+| Claude tool | Codex equivalent | Notes |
+|---|---|---|
+| AskUserQuestion | request_user_input (free-form text, or number-prefix choices) | For multi-select, format as "1. Option / 2. Option" and parse reply |
+| Task (agent spawn) | `codex exec --model <model> "<prompt>"` subprocess | Foreground: `codex exec ... > /tmp/out.txt`. Parallel: launch N subprocesses + `wait`. See "Agent spawn" below |
+| TaskCreate/TaskUpdate/TodoWrite | N/A — use inline markdown headers + status narration | Codex does not have a persistent task tail UI. Write `## ━━━ Phase X: step ━━━` in stdout instead |
+| Monitor | Bash loop with `echo` + `sleep 3` polling | Codex streams stdout directly, no separate monitor channel |
+| ScheduleWakeup | N/A — Codex is one-shot; user must re-invoke | Skill must tolerate single-execution model; no sleeping |
+| WebFetch | `curl -sfL <url>` or `gh api <path>` | For GitHub URLs prefer `gh` for auth handling |
+| mcp__playwright{1-5}__* | See "Playwright MCP" below | Playwright MCP tools ARE available in Codex's main orchestrator |
+| mcp__graphify__* | `python -c "from graphify import ..."` inline | Graphify CLI/module works identically in Codex |
+| mcp__context7__*, mcp__exa__*, mcp__firecrawl__* | Skip or fall back to WebFetch | Only available via SDK; not bundled in Codex CLI |
+| Bash/Read/Write/Edit/Glob/Grep | Same — Codex supports these natively | No adapter needed |
+
+### Agent spawn (Task → codex exec)
+
+Claude Code spawns isolated agents via `Task(subagent_type=..., prompt=...)`. Codex equivalent:
+
+```bash
+# Single agent, foreground (wait for completion + read output)
+codex exec --model gpt-5 "<full isolated prompt>" > /tmp/agent-result.txt 2>&1
+RESULT=$(cat /tmp/agent-result.txt)
+
+# Multiple agents, parallel (Claude's pattern of 1 message with N Task calls)
+codex exec --model gpt-5 "<prompt 1>" > /tmp/agent-1.txt 2>&1 &
+PID1=$!
+codex exec --model gpt-5 "<prompt 2>" > /tmp/agent-2.txt 2>&1 &
+PID2=$!
+wait $PID1 $PID2
+R1=$(cat /tmp/agent-1.txt); R2=$(cat /tmp/agent-2.txt)
+```
+
+**Critical constraints when spawning:**
+- Subagent inherits working directory + env vars, but **no MCP server access** (Codex exec spawns fresh CLI instance without `--mcp` wired). Subagent CANNOT call `mcp__playwright*__`, `mcp__graphify__`, etc.
+- Model mapping for this project: `models.planner` opus → `gpt-5`, `models.executor` sonnet → `gpt-4o`, `models.scanner` haiku → `gpt-4o-mini` (or project-configured equivalent). Check `.claude/vg.config.md` `models` section for actual values and adapt.
+- Timeout: wrap in `timeout 600s codex exec ...` to prevent hung subagents.
+- Return schema: if skill expects structured JSON back, prompt subagent with "Return ONLY a single JSON object with keys: {...}". Parse with `jq` or `python -c "import json,sys; ..."`.
+
+### Playwright MCP — orchestrator-only rule
+
+Playwright MCP tools (`mcp__playwright1__browser_navigate`, `_snapshot`, `_click`, etc.) ARE available to the main Codex orchestrator (same MCP servers as Claude Code). **BUT subagents spawned via `codex exec` do NOT inherit MCP access** — they are fresh CLI instances.
+
+Implication for skills using Haiku scanner pattern (scanner spawns → uses Playwright):
+- **Claude model:** spawn haiku agent with prompt → agent calls `mcp__playwright__` tools directly
+- **Codex model:** TWO options:
+  1. **Orchestrator-driven:** main orchestrator calls Playwright tools + passes snapshots/results to subagent as text → subagent returns instructions/analysis only (no tool calls). Slower but preserves parallelism benefit.
+  2. **Single-agent:** orchestrator runs scanner workflow inline (no spawn). Simpler but no parallelism; suitable for 1-2 view scans but slow for 14+ views.
+
+Default: **single-agent inline** unless skill explicitly documents the orchestrator-driven pattern for that step.
+
+### Persistence probe (Layer 4) — execution model
+
+For review/test skills that verify mutation persistence:
+- Main orchestrator holds Playwright session (claimed via lock manager)
+- Pre-snapshot + submit + refresh + re-read all run in orchestrator Playwright calls (not spawned)
+- If skill delegates analysis to subagent, orchestrator must capture snapshots + pass text to subagent; subagent returns verdict JSON `{persisted: bool, pre: ..., post: ...}`
+
+### Lock manager (Playwright)
+
+Same as Claude:
+```bash
+SESSION_ID="codex-${skill}-${phase}-$$"
+PLAYWRIGHT_SERVER=$(bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
+trap "bash '${HOME}/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
+```
+
+Pool name in Codex: `codex` (separate from Claude's `claude` pool). Lock manager handles both without collision.
 
 ## Invocation
 
@@ -497,6 +558,45 @@ Display:
 
 <step name="5c_goal_verification">
 ## 5c-goal: GOAL VERIFICATION (surface-aware — Playwright for ui, runners for others)
+
+**v1.14.0+ B.1 — TRUST REVIEW, KHÔNG re-verify goals READY:**
+
+Theo spec v1.14.0+, review 100% gate đã verify mọi goal. Test KHÔNG re-verify functional — chỉ:
+- **Codegen** (step 13 — B.2): sinh Playwright spec cho goal READY (regression harness).
+- **Deep-probe** (step 14 — B.3): sinh 3 edge-case variants per goal.
+- **MANUAL goals**: codegen sinh skeleton `.skip()` — UAT điền human check.
+- **DEFERRED goals**: skip codegen (phase target chưa deploy).
+- **BLOCKED/UNREACHABLE**: review 100% gate đã chặn → không đến đây.
+
+```bash
+# Gate trust-review check (v1.14.0+ B.1 — bỏ qua re-verify loop nếu config enabled)
+SKIP_REVERIFY=$(${PYTHON_BIN} -c "
+import re
+try:
+    with open('.claude/vg.config.md', encoding='utf-8') as f:
+        c = f.read()
+    m = re.search(r'skip_ready_reverify\s*:\s*(true|false)', c)
+    print(m.group(1) if m else 'true')  # default true cho v1.14.0+
+except Exception:
+    print('true')
+")
+
+if [ "$SKIP_REVERIFY" = "true" ]; then
+  echo ""
+  echo "━━━ v1.14.0+ B.1: TRUST REVIEW ━━━"
+  echo "Review 100% gate đã verify goals — /vg:test bỏ qua re-verify loop."
+  echo "Chỉ chạy codegen (B.2) + deep-probe (B.3) cho goals READY."
+  echo ""
+  # Jump thẳng sang codegen/deep-probe (step sẽ wire ở step 13+14)
+  # Legacy replay loop dưới là fallback khi --legacy-mode hoặc skip_ready_reverify=false.
+  export TRUST_REVIEW=true
+else
+  echo "ℹ skip_ready_reverify=false — chạy legacy re-verify loop (pre-v1.14 behavior)."
+  export TRUST_REVIEW=false
+fi
+```
+
+**Legacy path (pre-v1.14.0, chỉ chạy nếu TRUST_REVIEW=false):**
 
 **INPUT:**
 - TEST-GOALS.md (goals with success criteria + mutation evidence + dependencies + **Surface:**)
@@ -1198,7 +1298,92 @@ if [ -n "$DYN_FOUND" ]; then
 fi
 ```
 
-**Codegen rules:**
+**v1.14.0+ B.2 — Goal-status-aware codegen (tightened 2026-04-18):**
+
+Trước khi sinh code, đọc `GOAL-COVERAGE-MATRIX.md` để phân nhánh theo trạng thái:
+
+```bash
+# Build status map: gid -> status (READY|DEFERRED|MANUAL|INFRA_PENDING|BLOCKED)
+STATUS_JSON="${VG_TMP:-${PHASE_DIR}/.vg-tmp}/goal-status.json"
+mkdir -p "$(dirname "$STATUS_JSON")"
+PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$STATUS_JSON" <<'PY'
+import json, re, sys
+matrix = open(sys.argv[1], encoding='utf-8').read() if sys.argv[1] else ""
+status_map = {}
+# Parse Goal Details table rows
+m = re.search(r'^## Goal Details\s*\n(.*?)(?=^\s*## |\Z)', matrix, re.M|re.S)
+if m:
+    body = m.group(1)
+    for line in body.splitlines():
+        gm = re.match(r'^\|\s*(G-[\w.-]+)\s*\|[^|]*\|[^|]*\|\s*(\w+)\s*\|', line)
+        if gm:
+            status_map[gm.group(1)] = gm.group(2)
+json.dump(status_map, open(sys.argv[2], 'w', encoding='utf-8'), indent=2)
+print(f"▸ Goal status map: {len(status_map)} goals → {sys.argv[2]}")
+PY
+```
+
+**Branching (per goal, before generate):**
+
+| Status | Action |
+|---|---|
+| `READY` | Sinh full spec happy path (logic existing bên dưới). |
+| `MANUAL` | Sinh **skeleton** với `test.skip(...)` + comment "manual verify in UAT + verification_strategy: {strategy}". Có placeholder để user fill sau. |
+| `DEFERRED` | **Skip entirely** — không tạo file .spec.ts (phase target chưa deploy). Log `[skip-deferred] {gid} depends_on_phase: {X}`. |
+| `INFRA_PENDING` | Sinh skeleton `.skip()` với comment "requires infra {deps} — re-run --sandbox". |
+| `BLOCKED` / `UNREACHABLE` | KHÔNG tới đây — review 100% gate đã chặn. Nếu gặp → log error, skip goal. |
+
+**Skeleton template cho MANUAL / INFRA_PENDING:**
+
+```typescript
+// === AUTO-GENERATED SKELETON (MANUAL goal) — v1.14.0+ B.2 ===
+// Goal: G-XX — {title}
+// Status: MANUAL (verification_strategy: {strategy})
+// Scope đã declare: tag yêu cầu user verify tay ở UAT.
+// Không tự chạy trong regression — mở ở /vg:accept để user tick checklist.
+
+import { test, expect } from '@playwright/test';
+
+test.skip('MANUAL: {goal title}', async ({ page }) => {
+  // USER FILL: Steps user cần thực hiện tay trong UAT.
+  // Nếu sau này tìm được cách auto → update scope tag verification_strategy: automated + re-run codegen.
+  //
+  // Reference:
+  //   - SPECS: {phase}/SPECS.md#{goal-id}
+  //   - Context: {phase}/CONTEXT.md (decision tạo goal này)
+  //   - RUNTIME-MAP.json goal_sequences[{goal-id}] (nếu có sequence đã record)
+});
+```
+
+**Skeleton template cho INFRA_PENDING:**
+
+```typescript
+// === AUTO-GENERATED SKELETON (INFRA_PENDING) — v1.14.0+ B.2 ===
+// Goal: G-XX — {title}
+// Infra deps: {list}
+// Không chạy local được (thiếu infra). Re-run /vg:test --sandbox để verify trên VPS.
+
+import { test, expect } from '@playwright/test';
+
+test.skip('INFRA_PENDING: {goal title} — requires {deps}', async ({ page }) => {
+  // Generated skeleton. Un-skip + complete khi infra deploy xong.
+});
+```
+
+**Skipping DEFERRED (narration only):**
+
+```bash
+if [ -f "$STATUS_JSON" ]; then
+  DEFERRED_COUNT=$(${PYTHON_BIN} -c "
+import json
+d = json.load(open('$STATUS_JSON', encoding='utf-8'))
+print(sum(1 for v in d.values() if v == 'DEFERRED'))
+")
+  [ "$DEFERRED_COUNT" -gt 0 ] && echo "▸ Codegen bỏ qua $DEFERRED_COUNT goal DEFERRED (chờ phase phụ thuộc ship)."
+fi
+```
+
+**Codegen rules (READY goal path):**
 1. **Credentials from env vars** — read from `process.env` (keys derived from config role names). Never hardcode emails/passwords/domains.
 2. **Selectors from goal_sequences** — use exact selectors recorded during review discovery. Prefer role-based locators (getByRole > getByText > locator). Never guess selectors.
    **NEVER use dynamic IDs as selectors** (e.g., `data-id="site_9872"`, `#row-abc123`).
@@ -1425,6 +1610,172 @@ fi
 
 touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
 ```
+</step>
+
+<step name="5d_deep_probe" profile="web-fullstack,web-frontend-only,web-backend-only,cli-tool,library">
+## 5d-deep-probe: EDGE-CASE VARIANTS (v1.14.0+ B.3)
+
+**Mục tiêu:** sinh 3 biến thể edge-case per goal READY, spawn Sonnet primary + Codex/Gemini/Haiku adversarial cross-check, escalate Opus khi disagree >30%.
+
+**Config driver:** `test.deep_probe_enabled`, `test.deep_probe_model_primary`, `test.deep_probe_adversarial_chain`, `test.deep_probe_max_opus_escalations_per_phase`.
+
+**Skip condition:** `test.deep_probe_enabled: false` hoặc không có goal READY → skip step.
+
+### 5d-deep.1: Preflight — detect adversarial CLI
+
+```bash
+DEEP_PROBE_ENABLED=$(${PYTHON_BIN} -c "
+import re
+try:
+    with open('.claude/vg.config.md', encoding='utf-8') as f:
+        c = f.read()
+    m = re.search(r'deep_probe_enabled\s*:\s*(true|false)', c)
+    print(m.group(1) if m else 'true')
+except Exception:
+    print('true')
+")
+
+if [ "$DEEP_PROBE_ENABLED" != "true" ]; then
+  echo "ℹ Deep-probe disabled (config.test.deep_probe_enabled=false) — skip step 5d-deep."
+else
+  # Walk adversarial chain; pick first CLI available
+  ADVERSARIAL_CLI=""
+  for cli in codex gemini claude; do
+    if command -v "$cli" >/dev/null 2>&1; then
+      ADVERSARIAL_CLI="$cli"
+      break
+    fi
+  done
+
+  SKIP_IF_UNAVAIL=$(${PYTHON_BIN} -c "
+import re
+try:
+    with open('.claude/vg.config.md', encoding='utf-8') as f:
+        c = f.read()
+    m = re.search(r'deep_probe_adversarial_skip_if_unavailable\s*:\s*(true|false)', c)
+    print(m.group(1) if m else 'false')
+except Exception:
+    print('false')
+")
+
+  if [ -z "$ADVERSARIAL_CLI" ]; then
+    if [ "$SKIP_IF_UNAVAIL" = "true" ]; then
+      echo "⚠ Không CLI nào trong adversarial chain (codex/gemini/claude) available — chỉ chạy primary."
+      ADVERSARIAL_CLI="(none)"
+    else
+      echo "⛔ Adversarial chain hết CLI — config.skip_if_unavailable=false → BLOCK."
+      echo "   Fix: cài codex/gemini/claude CLI, hoặc set deep_probe_adversarial_skip_if_unavailable: true."
+      exit 1
+    fi
+  fi
+  echo "▸ Deep-probe adversarial CLI chọn: ${ADVERSARIAL_CLI}"
+fi
+```
+
+### 5d-deep.2: Spawn primary agent (Sonnet)
+
+For mỗi goal READY (đọc từ `$STATUS_JSON` step 5d codegen):
+
+```
+Agent(subagent_type="general-purpose", model="sonnet",  # zero parent context, isolated
+      name="deep-probe-{goal-id}"):
+  prompt: |
+    Generate 3 edge-case variants BEYOND happy path cho goal {goal-id}.
+
+    Input:
+    - SPECS.md, CONTEXT.md, API-CONTRACTS.md, GOAL-COVERAGE-MATRIX.md
+    - Happy-path spec: apps/web/e2e/generated/{phase}/goal-{goal-id}.spec.ts
+
+    Categories (auto-select theo surface):
+    - `ui`:          boundary values, auth-negative (sai role), rapid-fire clicks
+    - `api`:         malformed payload, rate-limit, injection (SQL/XSS)
+    - `data`:        concurrent write, schema-drift, partition boundary
+    - `time-driven`: just-before / just-after / exact-boundary timestamp
+
+    Output: apps/web/e2e/generated/{phase}/goal-{goal-id}.deep.spec.ts
+    Mỗi variant annotate:
+    - `.variant('hard')` — MUST pass (real bug nếu fail)
+    - `.variant('advisory')` — MAY fail (edge case uncertain, CI report not block)
+
+    Reuse imports + helpers từ happy-path file khi có.
+```
+
+### 5d-deep.3: Adversarial cross-check
+
+Sau primary generate → spawn adversarial agent (CLI chọn ở 5d-deep.1):
+
+```bash
+# Invoke adversarial CLI với cùng input + primary output + hỏi:
+# 1. Có variant nào test scenario invalid-by-design không? → mark reject
+# 2. Có variant `hard` nào thực ra là edge case không chắc? → demote `advisory`
+# 3. Có category edge case nào primary miss? → suggest add
+```
+
+**Consensus rule:**
+- Primary + adversarial đồng ý 100% → keep as-is.
+- Disagree về 1-2 variants → adversarial's demote/reject applied.
+- Disagree >30% variants → **escalate Opus** (nếu `deep_probe_escalate_to_opus_on_conflict: true` và budget `deep_probe_max_opus_escalations_per_phase` chưa hết).
+
+### 5d-deep.4: Opus escalation (budget-guarded)
+
+```bash
+OPUS_BUDGET=$(${PYTHON_BIN} -c "
+import re
+try:
+    with open('.claude/vg.config.md', encoding='utf-8') as f:
+        c = f.read()
+    m = re.search(r'deep_probe_max_opus_escalations_per_phase\s*:\s*(\d+)', c)
+    print(m.group(1) if m else '2')
+except Exception:
+    print('2')
+")
+
+# Track escalation count trong .vg/phases/{phase}/.deep-probe-opus-count
+OPUS_COUNT_FILE="${PHASE_DIR}/.deep-probe-opus-count"
+OPUS_USED=$(cat "$OPUS_COUNT_FILE" 2>/dev/null || echo 0)
+
+if [ "$OPUS_USED" -lt "$OPUS_BUDGET" ]; then
+  # Spawn Opus với toàn bộ context (primary + adversarial + conflict detail)
+  # Opus decides final verdict — write goal-{id}.deep.spec.ts với variants chuẩn
+  echo "$((OPUS_USED + 1))" > "$OPUS_COUNT_FILE"
+else
+  echo "⚠ Budget Opus escalation hết ($OPUS_BUDGET/phase) — fallback: keep primary output, annotate uncertain variants `advisory`."
+fi
+```
+
+### 5d-deep.5: Variant annotation semantics
+
+Generated file có block format:
+
+```typescript
+// === Deep-probe variants for goal {goal-id} ===
+// Primary: sonnet, Adversarial: ${ADVERSARIAL_CLI}, Escalated: ${opus_escalation_status}
+
+import { test, expect } from '@playwright/test';
+
+test.describe('goal-{goal-id}.deep', () => {
+  test('variant hard: boundary max length', async ({ page }) => {
+    // MUST pass; fail = real bug
+    // ...
+  });
+
+  test('variant advisory: rapid-fire double submit', async ({ page }) => {
+    // MAY fail (UX race); CI warns but does not block
+    test.info().annotations.push({ type: 'variant', description: 'advisory' });
+    // ...
+  });
+});
+```
+
+CI reader (step 18+) xử lý:
+- variant `hard` fail → test exit 1 + gate block.
+- variant `advisory` fail → warn only, vẫn pass phase.
+
+### 5d-deep.6: Fallthrough
+
+Nếu `DEEP_PROBE_ENABLED=false` hoặc goal READY = 0 → step 5d-deep.* bỏ qua, phase tiếp tục sang 5e_regression.
+
+`touch "${PHASE_DIR}/.step-markers/5d_deep_probe.done"` dù skip hay chạy.
 </step>
 
 <step name="5d_mobile_codegen" profile="mobile-*">
