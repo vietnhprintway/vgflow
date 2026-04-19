@@ -257,6 +257,41 @@ p.write_text(json.dumps(s, indent=2))
 ```
 </step>
 
+<step name="0b_goal_coverage_gate">
+**MANDATORY GATE — every automated goal must have TS-XX binding in at least one test file.**
+
+Prevents Phase 10 scenario: goals declared but tests never reference them, review marks "NOT_SCANNED" without root cause visible. Build post-mortem already runs this advisory; review enforces.
+
+```bash
+echo ""
+echo "━━━ Goal coverage gate ━━━"
+${PYTHON_BIN} .claude/scripts/verify-goal-coverage-phase.py \
+  --phase-dir "${PHASE_DIR}" \
+  --repo-root "${REPO_ROOT}"
+GOAL_RC=$?
+
+if [ "$GOAL_RC" -eq 2 ]; then
+  echo ""
+  echo "⛔ Review BLOCKED by goal coverage gate."
+  echo "   Every automated goal in TEST-GOALS.md must have a test case with matching TS-XX marker."
+  echo "   Either: add test referencing TS-XX, OR mark goal verification: deferred|manual."
+  echo ""
+  echo "Override (NOT recommended, logs to OVERRIDE-DEBT register):"
+  echo "  /vg:review ${PHASE_NUMBER} --skip-goal-coverage"
+  if [[ ! "${ARGUMENTS}" =~ --skip-goal-coverage ]]; then
+    exit 1
+  fi
+  # Override path: log as debt
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  if type -t log_override_debt >/dev/null 2>&1; then
+    log_override_debt "review-goal-coverage" "${PHASE_NUMBER}" "unbound automated goals" "${PHASE_DIR}"
+  fi
+fi
+
+touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || true
+```
+</step>
+
 <step name="create_task_tracker">
 Create tasks for progress tracking — granular sub-steps so user sees exactly what's happening:
 ```
@@ -826,16 +861,15 @@ if [ "$GRAPHIFY_ACTIVE" = "true" ]; then
   COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
   STALE_THRESHOLD="${GRAPHIFY_STALE_WARN:-50}"
 
-  echo "Review Phase 1.5: graphify ${COMMITS_SINCE} commits since last build (threshold: ${STALE_THRESHOLD})"
+  echo "Review Phase 1.5: graphify ${COMMITS_SINCE} commits since last build"
 
   # Always rebuild before ripple — review is the SAFETY NET, must be accurate
   if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
-    echo "Rebuilding graphify for accurate ripple analysis..."
-    ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1 | tail -3
-    if type -t telemetry_emit >/dev/null 2>&1; then
-      telemetry_emit "graphify_auto_rebuild" "{\"trigger\":\"review-phase1_5\",\"commits_since\":${COMMITS_SINCE},\"phase\":\"${PHASE_NUMBER}\"}"
-    fi
-    echo "Graphify rebuilt — proceeding with ripple analysis."
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+    vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "review-phase1_5-${PHASE_NUMBER}" || {
+      echo "⛔ Review cannot trust ripple analysis with stale graph"
+      echo "   Fix manually: ${PYTHON_BIN} -m graphify update ."
+    }
   fi
 fi
 ```

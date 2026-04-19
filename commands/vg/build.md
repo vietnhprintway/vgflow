@@ -361,24 +361,17 @@ Steps 4c, 4e, 8c read these vars. No duplicate parsing here.
 
 ```bash
 if [ "$GRAPHIFY_ACTIVE" = "true" ]; then
-  # Check commits since last graph build
+  # Source graphify-safe helper (verifies mtime advances post-rebuild, retries once on stuck)
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+
   GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
   COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
-  STALE_THRESHOLD="${GRAPHIFY_STALE_WARN:-50}"
 
   if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
-    echo "Graphify: ${COMMITS_SINCE} commits since last build (threshold: ${STALE_THRESHOLD})"
-
-    if [ "${COMMITS_SINCE:-0}" -gt "$STALE_THRESHOLD" ]; then
-      echo "⚠ Graph stale (${COMMITS_SINCE} > ${STALE_THRESHOLD}). Auto-rebuilding..."
-      ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1
-      echo "Graphify rebuilt."
-    else
-      # Under threshold but still stale — rebuild anyway before build (cheap insurance)
-      echo "Rebuilding graphify for fresh sibling/caller context..."
-      ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1
-      echo "Graphify rebuilt."
-    fi
+    echo "Graphify: ${COMMITS_SINCE} commits since last build — rebuilding for fresh context"
+    vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-step4" || {
+      echo "⚠ Graphify rebuild did not complete successfully; downstream sibling/caller context may be stale"
+    }
   else
     echo "Graphify: up to date (0 commits since last build)"
   fi
@@ -1909,6 +1902,39 @@ Commit summaries:
 ```bash
 git add ${PHASE_DIR}/SUMMARY*.md ${PLANNING_DIR}/STATE.md ${PLANNING_DIR}/ROADMAP.md
 git commit -m "build({phase}): {completed}/{total} plans executed"
+```
+</step>
+
+<step name="10_postmortem_sanity">
+**Final sanity gate — catches recovery-mode bypass + silent gate failures.**
+
+Historical: Phase 10 audit (2026-04-19) found build completed with 0 telemetry
+events + 0 graphify rebuild events + `(recovered)` commits — gates were bypassed
+via manual recovery path. This step ensures future bypasses are visible.
+
+```bash
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/build-postmortem.sh"
+
+# Full post-mortem: telemetry + wave tags + recovery commits + step markers
+vg_build_postmortem_check "${PHASE_NUMBER}" "${PHASE_DIR}" ".vg/telemetry.jsonl"
+POSTMORTEM_RC=$?
+
+# Phase-level goal coverage audit (complements per-task binding check)
+echo ""
+echo "━━━ Phase goal coverage audit ━━━"
+${PYTHON_BIN} .claude/scripts/verify-goal-coverage-phase.py \
+  --phase-dir "${PHASE_DIR}" \
+  --repo-root "${REPO_ROOT}" \
+  --advisory  # warn-only at build end; /vg:review enforces
+GOAL_COVERAGE_RC=$?
+
+# Signal to user but don't block (review is the enforcement point)
+if [ "$POSTMORTEM_RC" -ne 0 ] || [ "$GOAL_COVERAGE_RC" -ne 0 ]; then
+  echo ""
+  echo "⚠ Post-mortem flagged issues — review will enforce. Run: /vg:review ${PHASE_NUMBER}"
+fi
+
+touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
 ```
 </step>
 

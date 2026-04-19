@@ -260,20 +260,18 @@ symbols that no longer exist → tasks fabricated → executor fails or produces
 
 ```bash
 if [ "${GRAPHIFY_ACTIVE:-false}" = "true" ]; then
+  # Use graphify-safe wrapper — verifies mtime advances + retries on stuck rebuild
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+
   GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
   COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
-  STALE_THRESHOLD="${GRAPHIFY_STALE_WARN:-50}"
 
-  echo "Blueprint: graphify ${COMMITS_SINCE} commits since last build (threshold: ${STALE_THRESHOLD})"
+  echo "Blueprint: graphify ${COMMITS_SINCE} commits since last build"
 
   if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
-    echo "Rebuilding graphify for fresh planner context..."
-    ${PYTHON_BIN} -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('${REPO_ROOT}'))" 2>&1 | tail -3
-    # Telemetry — emit graphify_auto_rebuild event
-    if type -t telemetry_emit >/dev/null 2>&1; then
-      telemetry_emit "graphify_auto_rebuild" "{\"trigger\":\"blueprint\",\"commits_since\":${COMMITS_SINCE},\"phase\":\"${PHASE_NUMBER}\"}"
-    fi
-    echo "Graphify rebuilt — fresh structural context for planner."
+    vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "blueprint-phase-${PHASE_NUMBER}" || {
+      echo "⚠ Planner will see stale graph — expect weaker task/sibling suggestions"
+    }
   else
     echo "Graphify: up to date (0 commits since last build)"
   fi

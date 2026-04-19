@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.13.1] - 2026-04-19
+
+Post-Phase-10 adversarial audit fixes. User feedback: "code chưa gọn, không dùng graphify, sinh duplicate, sai goals". Audit confirmed graphify stale 10h during Phase 10 build + 0 telemetry events + goals declared without test traceability. Root cause: `(recovered)` commits from manual recovery bypassed skill framework entirely.
+
+### Added (observability + enforcement)
+
+- **`commands/vg/_shared/lib/graphify-safe.sh`** — hardened graphify rebuild wrapper. `vg_graphify_rebuild_safe()` records mtime before rebuild, verifies mtime advanced after, retries once on stuck. Previous silent failures (audit observed graph.json unchanged despite rebuild call) now emit LOUD warnings + `graphify_rebuild_failed` telemetry. `vg_graphify_assert_rebuilt_since()` checkpoint helper for call sites that expect rebuild to have occurred.
+
+- **`commands/vg/_shared/lib/build-postmortem.sh`** — end-of-build sanity gate. `vg_build_postmortem_check()` verifies: (a) telemetry events exist for phase, (b) wave-start tags present, (c) no `(recovered)` commits bypassing gates, (d) step markers written. Emits `build_postmortem_ok` or `build_postmortem_issues` event. Warns, doesn't block (review is enforcement point).
+
+- **`scripts/verify-goal-coverage-phase.py`** — phase-level goal→test binding audit. Complements existing per-task `verify-goal-test-binding.py` by scanning ALL test files (not just per-commit diff) for `TS-XX` markers and cross-referencing TEST-GOALS.md. Catches: goals declared but never tested, orphan TS markers (tests for removed goals), deferred goal handling via `verification: deferred|manual` annotation.
+
+### Wired into existing commands
+
+- **`commands/vg/build.md`** step 4 — replaces direct `_rebuild_code` call with `vg_graphify_rebuild_safe`. Step 4 rebuild silent-fail bug closed.
+- **`commands/vg/build.md`** new step 10 (`10_postmortem_sanity`) — runs post-mortem + phase-level goal coverage audit. Advisory at build end, flags for review.
+- **`commands/vg/blueprint.md`** step 2a — same safe wrapper replaces direct rebuild call.
+- **`commands/vg/review.md`** step 0b (`0b_goal_coverage_gate`) — enforces goal coverage gate. BLOCK unless `--skip-goal-coverage` override (which logs to OVERRIDE-DEBT register).
+- **`commands/vg/review.md`** Phase 1.5 — safe wrapper before ripple analysis.
+
+### Deployed into RTB, verified against Phase 10
+
+Ran `verify-goal-coverage-phase.py --phase-dir .vg/phases/10-deal-management-dsp-partners`:
+- 14/15 goals bound to `apps/api/src/modules/deals/__tests__/deal-integration.test.ts`
+- 1 unbound: `G-00` (typically inherited/milestone-level, should be `verification: deferred`)
+- 3 orphan: `TS-15`, `TS-16`, `TS-17` (tests for non-declared goals)
+
+Confirms audit findings: Phase 10 had real goal-test traceability gaps that would've been caught if gates weren't bypassed via recovery.
+
 ## [1.13.0] - 2026-04-19
 
 Major workflow upgrade: adaptive typecheck + generic cache bootstrap + tsgo integration + Utility Contract Layer 2+3 + agent resilience. Hardened via real-run test on RTB apps/web (1157-file TS project) that exposed 807 pre-existing errors previously invisible due to tsc OOM.
