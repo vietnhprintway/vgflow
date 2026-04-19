@@ -14,7 +14,10 @@
 #   ./sync.sh --no-global  # skip ~/.codex/ deploy
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# REPO_ROOT resolution:
+#   1. DEV_ROOT env override (sibling layout: vgflow-repo ≠ inside project)
+#   2. Fallback: parent of SCRIPT_DIR (nested layout: vgflow-repo/ inside project)
+REPO_ROOT="${DEV_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 MODE_CHECK=false
 SKIP_SOURCE=false
@@ -82,7 +85,7 @@ if [ "$SKIP_SOURCE" = "false" ] && [ -d "$REPO_ROOT/.claude/commands/vg" ]; then
   sync_dir "$REPO_ROOT/.claude/commands/vg/_shared/lib/test-runners" "$SCRIPT_DIR/commands/vg/_shared/lib/test-runners" "*.sh" "test-runners"
 
   # Shared Claude skills that VG workflow depends on
-  for skill in api-contract vg-design-scanner vg-design-gap-hunter vg-haiku-scanner vg-crossai; do
+  for skill in api-contract vg-design-scanner vg-design-gap-hunter vg-haiku-scanner vg-crossai vg-reflector; do
     sync_dir "$REPO_ROOT/.claude/skills/$skill" "$SCRIPT_DIR/skills/$skill" "*" "skill:$skill"
   done
 

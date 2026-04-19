@@ -3674,6 +3674,132 @@ git commit -m "review({phase}): RUNTIME-MAP — {views} views, {actions} actions
 ```
 </step>
 
+<step name="bootstrap_reflection">
+## End-of-Step Reflection (v1.15.0 Bootstrap Overlay)
+
+Before closing review, spawn the **reflector** subagent to analyze this step's
+artifacts + user messages + telemetry and draft learning candidates for user
+review. Primary path for project self-adaptation.
+
+**Skip conditions** (reflection does nothing, exit 0):
+- `.vg/bootstrap/` directory absent (project hasn't opted in)
+- `config.bootstrap.reflection_enabled == false` (user disabled)
+- Review verdict = `FAIL` with fatal errors (reflect when next review succeeds)
+
+### Run
+
+```bash
+BOOTSTRAP_DIR=".vg/bootstrap"
+if [ ! -d "$BOOTSTRAP_DIR" ]; then
+  # Bootstrap not opted in — skip silently
+  :
+else
+  REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  REFLECT_OUT="${PHASE_DIR}/reflection-review-${REFLECT_TS}.yaml"
+  USER_MSG_FILE="${VG_TMP}/reflect-user-msgs-${REFLECT_TS}.txt"
+
+  # Extract user messages sent during this step from Claude transcript (if accessible).
+  # If no transcript API, reflector uses artifacts + telemetry + git log only.
+  # Orchestrator may populate USER_MSG_FILE from session context.
+  : > "$USER_MSG_FILE"
+
+  # Filter telemetry entries to this phase+step within last 4 hours
+  TELEMETRY_SLICE="${VG_TMP}/reflect-telemetry-${REFLECT_TS}.jsonl"
+  grep -E "\"phase\":\"${PHASE}\".*\"command\":\"vg:review\"" "${PLANNING_DIR}/telemetry.jsonl" 2>/dev/null \
+    | tail -200 > "$TELEMETRY_SLICE" || true
+
+  # Collect override-debt entries created in this step
+  OVERRIDE_SLICE="${VG_TMP}/reflect-overrides-${REFLECT_TS}.md"
+  grep -E "\"step\":\"review\"" "${PLANNING_DIR}/OVERRIDE-DEBT.md" 2>/dev/null > "$OVERRIDE_SLICE" || true
+
+  echo "📝 Running end-of-step reflection (Haiku, isolated context)..."
+fi
+```
+
+### Spawn reflector agent (isolated Haiku)
+
+Use Agent tool with skill `vg-reflector`, model `haiku`, fresh context:
+
+```
+Agent(
+  description="End-of-step reflection for review phase {PHASE}",
+  subagent_type="general-purpose",
+  prompt="""
+Use skill: vg-reflector
+
+Arguments:
+  STEP           = "review"
+  PHASE          = "{PHASE}"
+  PHASE_DIR      = "{PHASE_DIR absolute path}"
+  USER_MSG_FILE  = "{USER_MSG_FILE}"
+  TELEMETRY_FILE = "{TELEMETRY_SLICE}"
+  OVERRIDE_FILE  = "{OVERRIDE_SLICE}"
+  ACCEPTED_MD    = ".vg/bootstrap/ACCEPTED.md"
+  REJECTED_MD    = ".vg/bootstrap/REJECTED.md"
+  OUT_FILE       = "{REFLECT_OUT}"
+
+Read .claude/skills/vg-reflector/SKILL.md and follow workflow exactly.
+Do NOT read parent conversation transcript — echo chamber forbidden.
+Output max 3 candidates with evidence to OUT_FILE.
+"""
+)
+```
+
+### Interactive promote flow (user gates)
+
+After reflector exits, parse OUT_FILE. If candidates found, show to user:
+
+```
+📝 Reflection — review phase {PHASE} found {N} learning(s):
+
+[1] {title}
+    Type: {type}
+    Scope: {scope}
+    Evidence: {count} items — {sample}
+    Confidence: {confidence}
+
+    → Proposed: {target summary}
+
+    [y] ghi sổ tay  [n] reject  [e] edit inline  [s] skip lần này
+
+[2] ...
+
+User gõ: y/n/e/s cho từng item, hoặc "all-defer" để bỏ qua toàn bộ.
+```
+
+For `y` → delegate to `/vg:learn --promote L-{id}` internally (validates schema,
+dry-run preview, git commit).
+
+For `n` → append to REJECTED.md with user reason.
+
+For `e` → interactive field-by-field edit loop (not external editor):
+```
+Editing [1]:
+  (1) title: "{current}"
+  (2) scope: {current}
+  (3) prose: "{current}"
+  (4) target_step: {current}
+  Field to edit? [1-4/done]: _
+```
+
+For `s` → leave candidate in `.vg/bootstrap/CANDIDATES.md`, user reviews later via `/vg:learn --review`.
+
+### Emit telemetry
+
+```bash
+emit_telemetry "bootstrap.reflection_ran" PASS \
+  "{\"step\":\"review\",\"phase\":\"${PHASE}\",\"candidates\":${CANDIDATE_COUNT:-0}}"
+```
+
+### Failure mode
+
+Reflector crash or timeout → log warning, continue to `complete` step. Never block review completion.
+
+```
+⚠ Reflection failed — review completes normally. Check .vg/bootstrap/logs/
+```
+</step>
+
 <step name="complete">
 **Update PIPELINE-STATE.json:**
 ```bash

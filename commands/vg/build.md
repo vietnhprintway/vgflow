@@ -1912,6 +1912,30 @@ echo "wave-${N}: ${FAILED_GATE:-passed} (retries: ${RETRY_COUNT})" >> "${PHASE_D
 Only proceed to next wave if `$FAILED_GATE` empty.
 </step>
 
+<step name="8_5_bootstrap_reflection_per_wave">
+## Step 8.5: End-of-Wave Reflection (v1.15.0 Bootstrap Overlay)
+
+Unlike scope/blueprint/review (reflect once per step), `/vg:build` reflects
+**after each wave completes** — build is long-running and multiple learnings
+may emerge mid-step (typecheck OOM, test flakiness, commit discipline).
+
+**Skip silently if `.vg/bootstrap/` absent.** Per wave:
+
+```bash
+if [ -d ".vg/bootstrap" ]; then
+  REFLECT_STEP="wave-${WAVE_NUMBER}"
+  REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  REFLECT_OUT="${PHASE_DIR}/reflection-${REFLECT_STEP}-${REFLECT_TS}.yaml"
+  echo "📝 End-of-wave ${WAVE_NUMBER} reflection..."
+  # Spawn vg-reflector per .claude/commands/vg/_shared/reflection-trigger.md
+  # Inputs: wave commits + SUMMARY-WAVE-N.md + telemetry for this wave
+  # Interactive y/n/e/s prompt after reflector completes
+fi
+```
+
+**Rate limit:** max 1 reflection per wave. If 0 candidates → silent.
+</step>
+
 <step name="9_post_execution">
 Aggregate results:
 - Count completed plans, failed plans

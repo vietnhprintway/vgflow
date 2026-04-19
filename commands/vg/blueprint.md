@@ -2422,6 +2422,27 @@ touch "${PHASE_DIR}/.step-markers/2d_validation_gate.done"
 ```
 </step>
 
+<step name="2e_bootstrap_reflection">
+## Sub-step 2e: End-of-Step Reflection (v1.15.0 Bootstrap Overlay)
+
+Before final commit, spawn reflector to analyze PLAN*.md + API-CONTRACTS.md +
+TEST-GOALS.md + user messages for learnings about the planning step.
+
+**Skip silently if `.vg/bootstrap/` absent.** Follow protocol in
+`.claude/commands/vg/_shared/reflection-trigger.md`:
+
+```bash
+if [ -d ".vg/bootstrap" ]; then
+  REFLECT_STEP="blueprint"
+  REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  REFLECT_OUT="${PHASE_DIR}/reflection-${REFLECT_STEP}-${REFLECT_TS}.yaml"
+  echo "📝 Running end-of-blueprint reflection..."
+  # Spawn Agent with vg-reflector skill (see reflection-trigger.md)
+  # Interactive y/n/e/s prompt for each candidate, delegate to /vg:learn --promote
+fi
+```
+</step>
+
 <step name="3_complete">
 
 ### R7 step markers verify gate (v1.14.4+)

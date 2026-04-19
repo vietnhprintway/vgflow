@@ -306,6 +306,123 @@ function get_services(env):
   # Returns: [{ name, check, required }]
 ```
 
+## Bootstrap Overlay Load (v1.15.0 — Self-Learning Module)
+
+After static config is loaded, every vg/ command MUST also load the per-project
+Bootstrap Zone at `.vg/bootstrap/`. This is how project-specific learnings
+(config overrides + prose rules + anchor patches) get injected into the pipeline.
+
+**Hard rule:** VG Core stays read-only. All project-specific adaptations live
+in `.vg/bootstrap/` and enter the pipeline through this loader step — never by
+modifying `.claude/commands/vg/**`.
+
+```bash
+# --- Bootstrap zone detection (safe no-op if absent) ---
+BOOTSTRAP_DIR=".vg/bootstrap"
+BOOTSTRAP_ACTIVE="false"
+if [ -d "$BOOTSTRAP_DIR" ]; then
+  BOOTSTRAP_ACTIVE="true"
+fi
+
+# --- Load + merge overlay.yml onto config (if present) ---
+# bootstrap-loader.py handles: schema validate, deep-merge, scope filter.
+# Fail-safe: on any error → log to stderr, continue with vanilla config.
+BOOTSTRAP_OUT="${VG_TMP:-/tmp}/vg-bootstrap-$$.json"
+if [ "$BOOTSTRAP_ACTIVE" = "true" ]; then
+  # Phase context is passed in by the caller command (vg:scope/build/review/etc).
+  # If caller hasn't set these yet, bootstrap runs with empty context (still safe —
+  # rules with scope won't match unknown metadata, per fail-closed policy).
+  PYTHONIOENCODING=utf-8 "${PYTHON_BIN}" .claude/scripts/bootstrap-loader.py \
+    --command "${VG_COMMAND:-unknown}" \
+    --phase "${PHASE:-}" \
+    --step "${STEP:-}" \
+    --surfaces "${PHASE_SURFACES:-}" \
+    --touched-paths "${PHASE_TOUCHED_PATHS:-}" \
+    --has-mutation "${PHASE_HAS_MUTATION:-false}" \
+    --ui-audit-required "${PHASE_UI_AUDIT_REQUIRED:-false}" \
+    --emit all > "$BOOTSTRAP_OUT" 2>/dev/null || {
+      echo "⚠ bootstrap-loader failed; proceeding with vanilla config" >&2
+      echo '{}' > "$BOOTSTRAP_OUT"
+    }
+
+  # Count applied rules + rejected overlay keys for visibility
+  BS_RULES_COUNT=$("${PYTHON_BIN}" -c "import json; print(len(json.load(open('$BOOTSTRAP_OUT')).get('rules',[])))" 2>/dev/null || echo 0)
+  BS_OVERLAY_KEYS=$("${PYTHON_BIN}" -c "import json; d=json.load(open('$BOOTSTRAP_OUT')); print(sum(1 for _ in [1 for k in (d.get('overlay') or {})]))" 2>/dev/null || echo 0)
+  BS_REJECTED=$("${PYTHON_BIN}" -c "import json; print(len(json.load(open('$BOOTSTRAP_OUT')).get('overlay_rejected',[])))" 2>/dev/null || echo 0)
+
+  if [ "${BS_RULES_COUNT:-0}" -gt 0 ] || [ "${BS_OVERLAY_KEYS:-0}" -gt 0 ]; then
+    echo "Bootstrap loaded: ${BS_OVERLAY_KEYS} overlay keys, ${BS_RULES_COUNT} rules matching scope"
+  fi
+  if [ "${BS_REJECTED:-0}" -gt 0 ]; then
+    echo "⚠ ${BS_REJECTED} overlay keys REJECTED by schema (see $BOOTSTRAP_OUT)"
+  fi
+fi
+
+# --- Export bootstrap payload for downstream agent prompts ---
+# Agent spawns inside commands can inject matched rules as system prompt context
+# via: jq -r '.rules[] | "### \(.title)\n\(.prose)\n"' "$BOOTSTRAP_OUT"
+export BOOTSTRAP_PAYLOAD_FILE="$BOOTSTRAP_OUT"
+
+# --- Override Re-validation (Phase C — Scenario 1 fix) ---
+# Every active OVERRIDE-DEBT entry MUST be re-evaluated against current phase.
+# Overrides whose scope no longer matches → EXPIRED (gate reactivates).
+# Fail-closed polarity: unknown var → expire (safe default).
+OVERRIDE_REVAL_OUT="${VG_TMP:-/tmp}/vg-override-reval-$$.json"
+if [ -f "${PLANNING_DIR:-.vg}/OVERRIDE-DEBT.md" ]; then
+  PYTHONIOENCODING=utf-8 "${PYTHON_BIN}" .claude/scripts/override-revalidate.py \
+    --planning "${PLANNING_DIR:-.vg}" \
+    --phase "${PHASE:-}" \
+    --step "${STEP:-}" \
+    --surfaces "${PHASE_SURFACES:-}" \
+    --touched-paths "${PHASE_TOUCHED_PATHS:-}" \
+    --has-mutation "${PHASE_HAS_MUTATION:-false}" \
+    --ui-audit-required "${PHASE_UI_AUDIT_REQUIRED:-false}" \
+    --emit report > "$OVERRIDE_REVAL_OUT" 2>/dev/null || echo '{}' > "$OVERRIDE_REVAL_OUT"
+
+  OVR_EXPIRED=$("${PYTHON_BIN}" -c "import json; print(len(json.load(open('$OVERRIDE_REVAL_OUT')).get('expired',[])))" 2>/dev/null || echo 0)
+  if [ "${OVR_EXPIRED:-0}" -gt 0 ]; then
+    echo "⚠ ${OVR_EXPIRED} override(s) EXPIRED — gates reactivated for this phase"
+    "${PYTHON_BIN}" -c "
+import json
+d = json.load(open('$OVERRIDE_REVAL_OUT'))
+for e in d.get('expired', []):
+    print(f'  - {e[\"id\"]} ({e.get(\"flag\",\"?\")}) — {e[\"reason_for_expire\"]}')
+"
+    if type -t emit_telemetry >/dev/null 2>&1; then
+      "${PYTHON_BIN}" -c "
+import json
+d = json.load(open('$OVERRIDE_REVAL_OUT'))
+for e in d.get('expired', []):
+    print(f'{e[\"id\"]}|{e.get(\"gate_id\",\"?\")}')
+" | while IFS='|' read -r oid gid; do
+        emit_telemetry "override.expired" "INFO" "{\"id\":\"$oid\",\"gate_id\":\"$gid\"}" 2>/dev/null || true
+      done
+    fi
+  fi
+fi
+export OVERRIDE_REVAL_FILE="$OVERRIDE_REVAL_OUT"
+```
+
+**When a command spawns an Agent** that benefits from project rules
+(executor, reviewer, planner, etc.), it MUST inject matched rules into the
+system prompt. Pattern:
+
+```bash
+RULES_BLOCK=""
+if [ -s "$BOOTSTRAP_PAYLOAD_FILE" ]; then
+  RULES_BLOCK=$("${PYTHON_BIN}" -c "
+import json
+d = json.load(open('$BOOTSTRAP_PAYLOAD_FILE'))
+out = []
+for r in d.get('rules', []):
+    if r.get('target_step') in ('${STEP}', 'global'):
+        out.append(f'### PROJECT RULE: {r[\"title\"]}\n{r[\"prose\"]}\n')
+print('\n'.join(out))
+")
+fi
+# Prepend RULES_BLOCK to agent prompt
+```
+
 ## Variables Available After Loading
 
 After config-loader, every vg/ command has access to:
@@ -341,6 +458,11 @@ After config-loader, every vg/ command has access to:
 | `$MODEL_DEBUGGER` | config.models.debugger (default: opus) |
 | `$MODEL_SCANNER` | config.models.scanner (default: haiku) |
 | `$MODEL_TEST_CODEGEN` | config.models.test_codegen (default: sonnet) |
+| `$BOOTSTRAP_ACTIVE` | "true"/"false" — whether `.vg/bootstrap/` exists |
+| `$BOOTSTRAP_PAYLOAD_FILE` | JSON file with matched rules + effective overlay (fed into agent prompts) |
+| `$BS_RULES_COUNT` | int — rules matching current phase/step scope |
+| `$BS_OVERLAY_KEYS` | int — overlay keys applied on top of vanilla config |
+| `$BS_REJECTED` | int — overlay keys rejected by schema (surfaced for visibility) |
 
 ## How to Update Pipeline State
 

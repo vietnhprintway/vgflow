@@ -51,6 +51,36 @@ debt:
       - "--allow-deferred"
 ```
 
+## v1.15.0 — Scope + Revalidation (Bootstrap Overlay)
+
+**Scenario 1 fix (playwright laziness):** prior to v1.15.0 an override created
+in Phase Y (e.g., `--skip-playwright` because Y has no UI) could silently
+propagate to Phase Z even if Z has UI. Overrides now MUST declare a `scope`
+predicate and get re-evaluated at the start of every `/vg:*` command.
+
+**New optional fields on each entry (non-breaking; legacy entries still load):**
+
+```yaml
+scope:                           # structured DSL predicate (see scope-evaluator.py)
+  required_all:
+    - "phase.surfaces does_not_contain 'web'"
+    - "phase.has_mutation == false"    # example — compose as needed
+revalidate_on:                   # triggers that FORCE fresh eval
+  - new_phase_starts             # default — every time phase number changes
+  - phase.surfaces_change        # if surface topology shifts mid-phase
+```
+
+**Fail-closed polarity for overrides (opposite of rules):**
+- scope evaluates to `true` → override carried forward (gate stays SKIPPED)
+- scope evaluates to `false` → override **EXPIRED** (gate goes ACTIVE)
+- scope missing or malformed (legacy) → treated as `legacy` + carried but FLAGGED for triage
+- unknown variable → predicate false → override expires (safe default)
+
+**Hook point:** `.claude/commands/vg/_shared/config-loader.md` runs
+`override-revalidate.py` after bootstrap load at every command start.
+Expired overrides emit telemetry `override.expired` and are excluded from
+gate-bypass logic until user re-authorizes with a fresh override+scope.
+
 ## Entry schema (v1.8.0)
 
 Each row in `${PLANNING_DIR}/OVERRIDE-DEBT.md` carries:
