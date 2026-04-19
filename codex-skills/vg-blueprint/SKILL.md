@@ -171,7 +171,11 @@ Extract from `$ARGUMENTS`: phase_number (required), plus optional flags:
 - `--skip-research`, `--gaps`, `--reviews`, `--text` — pass through to GSD planner
 - `--crossai-only` — skip 2a/2b/2c, run only 2d (CrossAI review). Requires PLAN*.md + API-CONTRACTS.md to exist.
 - `--skip-crossai` — run full blueprint but skip CrossAI review in 2d-6 (deterministic gate only). Faster + cheaper. Use when phase is small/iterative and CrossAI third-opinion adds little.
-- `--from=2b` / `--from=2c` / `--from=2d` — resume from specific sub-step. Skip prior sub-steps (require their artifacts to exist).
+- `--from=2b` / `--from=2c` / `--from=2d` — resume from specific sub-step. Skip prior sub-steps (require their artifacts to exist via R2 assertion).
+- `--override-reason="<text>"` — bypass R2/R5/R7 gates, log to override-debt register.
+- `--allow-missing-persistence` — bypass Rule 3b persistence check gate (2b5). Log debt.
+- `--allow-missing-org` — bypass Rule 6 ORG 6-dim critical gate (2a5). Log debt.
+- `--allow-crossai-inconclusive` — treat CrossAI timeout/crash as non-blocking (2d-6). Log debt.
 
 Validate: phase exists. Determine `$PHASE_DIR`.
 
@@ -180,6 +184,64 @@ Validate: phase exists. Determine `$PHASE_DIR`.
 - `--from=2b` → skip 2a, start at 2b_contracts (PLAN*.md must exist)
 - `--from=2c` → skip 2a+2b, start at 2c_verify (PLAN*.md + API-CONTRACTS.md must exist)
 - `--from=2d` → same as `--crossai-only`
+
+### R2 skip prerequisite assertion (v1.14.4+)
+
+Rule 2 khai "4 sub-steps in order". `--from=X` là resume feature, nhưng phải verify prior steps thực sự đã complete — không cho silent skip.
+
+```bash
+FROM_STEP=""
+if [[ "$ARGUMENTS" =~ --from=(2b|2c|2d|2b5|2b6|2b7) ]]; then
+  FROM_STEP="${BASH_REMATCH[1]}"
+fi
+
+if [ -n "$FROM_STEP" ] || [[ "$ARGUMENTS" =~ --crossai-only ]]; then
+  [[ "$ARGUMENTS" =~ --crossai-only ]] && FROM_STEP="2d"
+
+  MISSING_PREREQ=""
+  case "$FROM_STEP" in
+    2b|2b5|2b6|2b7)
+      # Needs 2a done → PLAN*.md exists + marker
+      ls "${PHASE_DIR}"/PLAN*.md >/dev/null 2>&1 || MISSING_PREREQ="${MISSING_PREREQ} PLAN*.md(step 2a)"
+      [ -f "${PHASE_DIR}/.step-markers/2a_plan.done" ] || MISSING_PREREQ="${MISSING_PREREQ} marker:2a_plan"
+      ;;
+    2c)
+      # Needs 2a + 2b + 2b5 done
+      ls "${PHASE_DIR}"/PLAN*.md >/dev/null 2>&1 || MISSING_PREREQ="${MISSING_PREREQ} PLAN*.md(step 2a)"
+      [ -f "${PHASE_DIR}/API-CONTRACTS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} API-CONTRACTS.md(step 2b)"
+      [ -f "${PHASE_DIR}/TEST-GOALS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} TEST-GOALS.md(step 2b5)"
+      ;;
+    2d)
+      # Needs all above + 2c verify marker
+      ls "${PHASE_DIR}"/PLAN*.md >/dev/null 2>&1 || MISSING_PREREQ="${MISSING_PREREQ} PLAN*.md(step 2a)"
+      [ -f "${PHASE_DIR}/API-CONTRACTS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} API-CONTRACTS.md(step 2b)"
+      [ -f "${PHASE_DIR}/TEST-GOALS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} TEST-GOALS.md(step 2b5)"
+      [ -f "${PHASE_DIR}/.step-markers/2c_verify.done" ] || MISSING_PREREQ="${MISSING_PREREQ} marker:2c_verify"
+      ;;
+  esac
+
+  if [ -n "$MISSING_PREREQ" ]; then
+    echo "⛔ R2 skip prerequisite missing for --from=${FROM_STEP}:"
+    for p in $MISSING_PREREQ; do echo "   - ${p}"; done
+    echo ""
+    echo "Rule 2 khai: 4 sub-steps must run IN ORDER. --from=${FROM_STEP} bypass prior steps"
+    echo "nhưng prior artifacts chưa tồn tại → có nghĩa 2a/2b/2c chưa thực sự complete."
+    echo ""
+    echo "Fix: chạy full /vg:blueprint ${PHASE_NUMBER} (bỏ --from) để build đủ artifacts."
+    echo "Override (NOT recommended): --override-reason='<reason>' (log debt)"
+    if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
+      exit 1
+    else
+      if type -t log_override_debt >/dev/null 2>&1; then
+        log_override_debt "blueprint-r2-skip-missing" "${PHASE_NUMBER}" "--from=${FROM_STEP} with missing: ${MISSING_PREREQ}" "$PHASE_DIR"
+      fi
+      echo "⚠ --override-reason set — proceeding despite R2 breach, logged to debt"
+    fi
+  else
+    echo "✓ R2 skip OK: all prerequisites present for --from=${FROM_STEP}"
+  fi
+fi
+```
 
 ```bash
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
@@ -687,19 +749,163 @@ Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
 
 Wait for completion. Verify `PLAN.md` exists in `${PHASE_DIR}`.
 
-**Post-plan ORG check** (mandatory):
-Read all PLAN*.md files. Check that the 6 ORG dimensions are addressed:
+**Post-plan ORG check (v1.14.4+ — executable gate, Rule 6 enforcement):**
 
-| # | Dimension | How to check |
-|---|-----------|-------------|
-| 1 | Infra | Any task mentions installing/configuring services? |
-| 2 | Env | Any task mentions new env vars, configs, secrets? |
-| 3 | Deploy | Is there a task for deploying to target? |
-| 4 | Smoke | Is there a task for verifying it's alive? |
-| 5 | Integration | Is there a task for testing with existing services? |
-| 6 | Rollback | Is there a recovery path documented? |
+Read all PLAN*.md files. Deterministic parse qua keyword matching per dimension. Missing CRITICAL dimension (Deploy/Rollback) → BLOCK. Missing NON-CRITICAL dimension (Infra/Env/Smoke/Integration) → WARN + log.
 
-Missing dimension → add note to plan (auto-fix for minor, ask user for major).
+```bash
+PLAN_GLOB="${PHASE_DIR}/PLAN*.md"
+ORG_CHECK_FILE="${PHASE_DIR}/.org-check-result.json"
+
+PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "${PHASE_DIR}" "${ORG_CHECK_FILE}" <<'PY'
+import re, json, sys, glob
+from pathlib import Path
+
+phase_dir = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+
+plan_files = sorted(glob.glob(str(phase_dir / "PLAN*.md")))
+if not plan_files:
+    print("⚠ ORG check: no PLAN*.md files — skip gate")
+    sys.exit(0)
+
+# Merge all plan content
+plan_text = "\n".join(Path(p).read_text(encoding='utf-8', errors='ignore') for p in plan_files)
+plan_lower = plan_text.lower()
+
+# ORG 6 dimensions — keyword patterns (each dim needs ≥1 hit to be "addressed")
+DIMENSIONS = {
+    1: {
+        "name": "Infra",
+        "critical": False,
+        "patterns": [
+            r"\binstall\s+(clickhouse|redis|kafka|mongodb|postgres|nginx|haproxy)",
+            r"\bansible\b.*\b(playbook|role)\b",
+            r"\bprovision\b",
+            r"\bn/a\s*[—-].*no\s+new\s+(infra|service)",
+            r"\b(infra|service)\s+(existing|already|unchanged)",
+        ],
+    },
+    2: {
+        "name": "Env",
+        "critical": False,
+        "patterns": [
+            r"\b(env|environment)\s+(var|variable|vars)",
+            r"\.env\b",
+            r"\bsecret(s)?\b.*\b(add|new|rotate)",
+            r"\bvault\b",
+            r"\benv\.j2\b",
+            r"\bn/a\s*[—-].*no\s+new\s+env",
+        ],
+    },
+    3: {
+        "name": "Deploy",
+        "critical": True,
+        "patterns": [
+            r"\bdeploy\s+(to|on)\b",
+            r"\brsync\b",
+            r"\bpm2\s+(reload|restart|start)",
+            r"\bsystemctl\s+(restart|start)",
+            r"\bbuild\s+(and|then)\s+(deploy|restart)",
+            r"\brun\s+on\s+(target|vps|sandbox)",
+        ],
+    },
+    4: {
+        "name": "Smoke",
+        "critical": False,
+        "patterns": [
+            r"\bsmoke\s+(test|check)",
+            r"\bhealth\s+check",
+            r"\b/health\b",
+            r"\bcurl\b.*\b(health|status|ping)",
+            r"\bverif(y|ying)\s+(alive|running|up)",
+        ],
+    },
+    5: {
+        "name": "Integration",
+        "critical": False,
+        "patterns": [
+            r"\bintegration\s+(test|with)",
+            r"\bE2E\b",
+            r"\bconsumer\s+receives\b",
+            r"\bend[-\s]to[-\s]end\b",
+            r"\b(works|working)\s+with\s+(existing|phase)",
+        ],
+    },
+    6: {
+        "name": "Rollback",
+        "critical": True,
+        "patterns": [
+            r"\brollback\b",
+            r"\brecover(y|y path)?\b",
+            r"\bgit\s+(revert|reset)",
+            r"\brestore\s+(from|backup|previous)",
+            r"\brollback\s+plan",
+            r"\bn/a\s*[—-].*(additive|backward|no\s+rollback\s+needed)",
+        ],
+    },
+}
+
+results = {"dimensions": {}, "missing_critical": [], "missing_non_critical": []}
+for num, dim in DIMENSIONS.items():
+    hit_patterns = []
+    for pat in dim["patterns"]:
+        if re.search(pat, plan_lower, re.IGNORECASE):
+            hit_patterns.append(pat)
+    addressed = len(hit_patterns) > 0
+    results["dimensions"][str(num)] = {
+        "name": dim["name"],
+        "critical": dim["critical"],
+        "addressed": addressed,
+        "hit_count": len(hit_patterns),
+    }
+    if not addressed:
+        if dim["critical"]:
+            results["missing_critical"].append(f"{num}.{dim['name']}")
+        else:
+            results["missing_non_critical"].append(f"{num}.{dim['name']}")
+
+out_path.write_text(json.dumps(results, indent=2), encoding='utf-8')
+
+# Report
+total = len(DIMENSIONS)
+addressed_count = sum(1 for d in results["dimensions"].values() if d["addressed"])
+print(f"ORG check: {addressed_count}/{total} dimensions addressed")
+for num, d in sorted(results["dimensions"].items()):
+    marker = "✓" if d["addressed"] else "✗"
+    crit = " [CRITICAL]" if d["critical"] else ""
+    print(f"   {marker} {num}. {d['name']}{crit} (hits: {d['hit_count']})")
+
+if results["missing_critical"]:
+    print(f"\n⛔ Rule 6 violation: missing CRITICAL dimensions: {', '.join(results['missing_critical'])}")
+    print("   Deploy + Rollback are MANDATORY cho mọi phase có code change.")
+    print("   Fix: thêm task explicit vào PLAN với keywords:")
+    print("     - Deploy: rsync/pm2/systemctl/deploy to target/build and deploy")
+    print("     - Rollback: git revert/rollback plan/recovery path/N/A — additive")
+    sys.exit(2)
+elif results["missing_non_critical"]:
+    print(f"\n⚠ ORG warn: missing non-critical dimensions: {', '.join(results['missing_non_critical'])}")
+    print("   Add N/A note nếu không applicable, hoặc task explicit nếu cần.")
+    sys.exit(0)
+else:
+    print("✓ Rule 6: all 6 ORG dimensions addressed")
+    sys.exit(0)
+PY
+
+ORG_RC=$?
+if [ "$ORG_RC" = "2" ]; then
+  echo "blueprint-r6-org-missing phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/blueprint-state.log"
+  if [[ "$ARGUMENTS" =~ --allow-missing-org ]]; then
+    if type -t log_override_debt >/dev/null 2>&1; then
+      log_override_debt "blueprint-missing-org-critical" "${PHASE_NUMBER}" "missing critical ORG dims (Deploy/Rollback)" "$PHASE_DIR"
+    fi
+    echo "⚠ --allow-missing-org set — proceeding despite R6 breach, logged to debt"
+  else
+    echo "   Override (NOT recommended): /vg:blueprint ${PHASE_NUMBER} --from=2a5 --allow-missing-org"
+    exit 1
+  fi
+fi
+```
 
 **Post-plan granularity check** (mandatory — execute sát blueprint):
 
@@ -2136,7 +2342,71 @@ Gate passed deterministic validation. CrossAI reviews qualitative:
 Set `$CONTEXT_FILE`, `$OUTPUT_DIR="${PHASE_DIR}/crossai"`, `$LABEL="blueprint-review"`.
 Read and follow `.claude/commands/vg/_shared/crossai-invoke.md`.
 
-**Handle findings:**
+### CrossAI verdict explicit handling (v1.14.4+)
+
+crossai-invoke.md set `$CROSSAI_VERDICT` ∈ {pass, flag, block, inconclusive}. Blueprint MUST branch explicit — không assume PASS khi CLI timeout/crash.
+
+```bash
+# crossai-invoke.md populated these vars:
+#   CROSSAI_VERDICT: pass|flag|block|inconclusive
+#   OK_COUNT + TOTAL_CLIS: số CLIs responded cleanly
+#   CLI_STATUS[]: per-CLI status (ok|timeout|malformed|crash)
+
+case "${CROSSAI_VERDICT:-unknown}" in
+  pass)
+    echo "✓ CrossAI: PASS (${OK_COUNT:-?}/${TOTAL_CLIS:-?} CLIs agreed)"
+    ;;
+
+  flag)
+    echo "⚠ CrossAI: FLAG — minor concerns raised"
+    echo "   Review ${PHASE_DIR}/crossai/result-*.xml for findings"
+    echo "   Auto-fix path: apply Minor fixes inline, proceed to build"
+    # Non-blocking — orchestrator applies minor fixes + continues
+    ;;
+
+  block)
+    echo "⛔ CrossAI: BLOCK — major/critical concerns"
+    echo "   ${PHASE_DIR}/crossai/result-*.xml chứa findings cần resolve"
+    echo ""
+    echo "Orchestrator MUST:"
+    echo "  1. Parse findings XML → surface to user via AskUserQuestion (recommended option first)"
+    echo "  2. User accept fix → apply, re-invoke crossai until PASS/FLAG"
+    echo "  3. User reject → block_resolve_l4_stuck + exit"
+    # Do NOT auto-proceed. Orchestrator handles via AskUserQuestion pattern below.
+    exit 2
+    ;;
+
+  inconclusive)
+    echo "⛔ CrossAI: INCONCLUSIVE (${OK_COUNT:-0}/${TOTAL_CLIS:-?} CLIs responded cleanly)"
+    echo "   Timeout/crash/malformed → không thể treat silence = agreement."
+    echo ""
+    if [[ "$ARGUMENTS" =~ --allow-crossai-inconclusive ]]; then
+      if type -t log_override_debt >/dev/null 2>&1; then
+        log_override_debt "blueprint-crossai-inconclusive" "${PHASE_NUMBER}" "${OK_COUNT:-0}/${TOTAL_CLIS:-?} CLIs inconclusive" "$PHASE_DIR"
+      fi
+      echo "⚠ --allow-crossai-inconclusive set — proceeding, logged to debt"
+    else
+      echo "Fix options:"
+      echo "  1. Retry (có thể CLI tạm thời down): /vg:blueprint ${PHASE_NUMBER} --from=2d"
+      echo "  2. Skip CrossAI tầng 3-opinion: /vg:blueprint ${PHASE_NUMBER} --from=2d --skip-crossai"
+      echo "  3. Accept inconclusive (log debt): /vg:blueprint ${PHASE_NUMBER} --from=2d --allow-crossai-inconclusive"
+      exit 1
+    fi
+    ;;
+
+  unknown|"")
+    echo "⚠ CrossAI: verdict chưa set — có thể crossai-invoke.md skip logic (empty config.crossai_clis) hoặc --skip-crossai flag"
+    # This is OK — orchestrator chose to skip, không block
+    ;;
+
+  *)
+    echo "⛔ CrossAI: unexpected verdict '${CROSSAI_VERDICT}' — check crossai-invoke.md output"
+    exit 1
+    ;;
+esac
+```
+
+**Handle findings (when verdict=flag, auto-fix minors):**
 - Minor → auto-fix (update contracts or plan)
 - Major/Critical → present to user via AskUserQuestion, re-verify if fixed
 
