@@ -31,7 +31,7 @@ Why: those tools persist items in Claude Code's status tail across sessions. If 
 1. **RUNTIME-MAP.json + GOAL-COVERAGE-MATRIX.md required** — review must have completed. Missing = BLOCK.
 2. **TEST-GOALS.md required** — goals must exist (from blueprint or review).
 3. **No discovery in test** — review already explored. Test VERIFIES known paths.
-4. **MINOR-only fix** — test fixes MINOR issues only. MODERATE/MAJOR → REVIEW-FEEDBACK.md, kick back to review.
+4. **MINOR-only fix (auto-gated v1.14.4+)** — AI MUST emit `fix-plans.json` before attempting fix. Pre-flight script `severity-classify.py` auto-classifies dựa trên: file count ≥3 → MODERATE, touches `apps/api/**/routes|schemas|contracts` → MODERATE, touches `packages/**|apps/web/**/lib|apps/web/**/hooks` → MODERATE, `change_type=new_feature|contract` → MAJOR. Auto-escalate MODERATE/MAJOR → REVIEW-FEEDBACK.md, kick back to review. AI không được tự classify MINOR bypass gate.
 5. **Independent smoke first** — spot-check RUNTIME-MAP accuracy before trusting it.
 6. **Navigate via UI clicks** — browser_navigate BANNED except for initial login/domain switch.
 7. **Console monitoring** — check browser_console_messages after EVERY action.
@@ -781,15 +781,148 @@ Goal {id} ({priority}): {description}
 </step>
 
 <step name="5c_fix">
-## 5c-fix: MINOR FIX ONLY (max 2 iterations)
+## 5c-fix: MINOR FIX ONLY (max 2 iterations — auto-gated severity v1.14.4+)
 
 **If all goals PASSED → skip to 5d.**
 
-After goal verification, classify each FAILED goal:
+### Pre-flight: AI MUST emit fix-plans.json BEFORE editing code
+
+Trước khi attempt fix, AI viết `${PHASE_DIR}/.test-fix-plans.json`:
+
+```json
+[
+  {
+    "goal_id": "G-04",
+    "failure_symptom": "Toast text tiếng Việt thay vì English",
+    "files_to_edit": ["apps/web/src/i18n/vi.ts"],
+    "change_type": "ui_cosmetic",
+    "claimed_severity": "MINOR"
+  }
+]
+```
+
+`change_type` phải là một trong: `ui_cosmetic | logic | contract | shared | new_feature`.
+
+### Auto-severity gate (deterministic — R4 enforcement)
+
+```bash
+FIX_PLAN="${PHASE_DIR}/.test-fix-plans.json"
+if [ ! -f "$FIX_PLAN" ]; then
+  echo "⛔ R4 gate: AI chưa emit .test-fix-plans.json trước khi fix."
+  echo "   Format required: [{goal_id, files_to_edit[], change_type, claimed_severity}]"
+  exit 1
+fi
+
+PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "$FIX_PLAN" "${PHASE_DIR}" <<'PY'
+import json, sys
+from pathlib import Path
+
+plans = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+phase_dir = Path(sys.argv[2])
+
+if isinstance(plans, dict):
+    plans = [plans]
+
+# Deterministic rules
+CONTRACT_PATHS = ('apps/api/src/modules/', 'apps/api/src/routes/', 'apps/api/src/schemas/', 'apps/api/src/contracts/')
+SHARED_PATHS = ('packages/', 'apps/web/src/lib/', 'apps/web/src/hooks/', 'apps/web/src/stores/')
+
+auto_escalations = []
+minor_plans = []
+for plan in plans:
+    gid = plan.get('goal_id', '?')
+    files = plan.get('files_to_edit', []) or []
+    ctype = plan.get('change_type', 'logic')
+    claimed = plan.get('claimed_severity', 'MINOR')
+
+    severity = 'MINOR'
+    reasons = []
+
+    if len(files) >= 3:
+        severity = 'MODERATE'
+        reasons.append(f"{len(files)} files ≥ 3 (scope lớn)")
+
+    if any(any(f.startswith(p) for p in CONTRACT_PATHS) for f in files):
+        severity = 'MODERATE'
+        reasons.append("touches API contract path (ảnh hưởng BE↔FE alignment)")
+
+    if any(any(f.startswith(p) for p in SHARED_PATHS) for f in files):
+        if severity != 'MAJOR':
+            severity = 'MODERATE'
+        reasons.append("touches shared path (ripple effect — lan tỏa sang module khác)")
+
+    if ctype == 'new_feature':
+        severity = 'MAJOR'
+        reasons.append("new_feature (không phải test concern)")
+
+    if ctype == 'contract':
+        severity = 'MAJOR'
+        reasons.append("contract change (đụng schema BE↔FE)")
+
+    # AI claim vs computed
+    plan['computed_severity'] = severity
+    plan['gate_reasons'] = reasons
+
+    if severity in ('MODERATE', 'MAJOR'):
+        auto_escalations.append(plan)
+    else:
+        minor_plans.append(plan)
+
+# Write back annotated plan
+Path(sys.argv[1]).write_text(json.dumps(plans, indent=2, ensure_ascii=False), encoding='utf-8')
+
+if auto_escalations:
+    # Write REVIEW-FEEDBACK.md
+    feedback = phase_dir / "REVIEW-FEEDBACK.md"
+    md = ["# Review Feedback — Auto-escalated from /vg:test R4 gate", ""]
+    md.append(f"**{len(auto_escalations)} goal(s) auto-classified MODERATE/MAJOR — test KHÔNG được fix, kick back sang review.**")
+    md.append("")
+    md.append("| Goal | AI claimed | Computed | Reasons | Files |")
+    md.append("|---|---|---|---|---|")
+    for e in auto_escalations:
+        files_str = ', '.join(e['files_to_edit'][:3])
+        if len(e['files_to_edit']) > 3:
+            files_str += f" (+{len(e['files_to_edit'])-3} more)"
+        md.append(f"| {e['goal_id']} | {e.get('claimed_severity','?')} | **{e['computed_severity']}** | {'; '.join(e['gate_reasons'])} | {files_str} |")
+    md.append("")
+    md.append("## Next step")
+    md.append("```bash")
+    md.append(f"/vg:review {phase_dir.name.split('-')[0]} --retry-failed")
+    md.append("```")
+    md.append("Review sẽ re-scan failing goals với full fix context + bật lại scanner để phát hiện root cause đúng layer.")
+    feedback.write_text("\n".join(md), encoding='utf-8')
+
+    print(f"⛔ R4 gate: {len(auto_escalations)} goal(s) auto-escalated → REVIEW-FEEDBACK.md")
+    print(f"   MINOR remaining: {len(minor_plans)} (test fix được)")
+    print("")
+    print("Test WILL NOT fix escalated goals. Proceed với MINOR only + re-run /vg:review --retry-failed cho MODERATE/MAJOR.")
+    sys.exit(2)
+else:
+    print(f"✓ R4 pre-flight: {len(minor_plans)} plan(s) in MINOR scope — test fix tiếp được.")
+PY
+
+SEV_RC=$?
+if [ "$SEV_RC" = "2" ]; then
+  # At least 1 goal escalated. Remove escalated plans từ fix-plans.json, continue với MINOR only
+  # (Python already annotated fix-plans.json with computed_severity)
+  PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "$FIX_PLAN" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+plans = json.loads(path.read_text(encoding='utf-8'))
+if isinstance(plans, dict):
+    plans = [plans]
+minor = [p for p in plans if p.get('computed_severity') == 'MINOR']
+path.write_text(json.dumps(minor, indent=2, ensure_ascii=False), encoding='utf-8')
+PY
+fi
+```
+
+### Severity reference (cho AI tự check trước khi emit plan)
 
 ```
 For each FAILED goal:
-  CLASSIFY failure severity:
+  CLASSIFY failure severity (pre-flight sẽ re-verify deterministic):
   
   MINOR (test fixes directly):
     - Wrong text/label (typo, translation key)
@@ -799,21 +932,17 @@ For each FAILED goal:
     → FIX immediately, commit: "fix({phase}): {description}"
     → Re-verify THIS goal only
   
-  MODERATE (escalate to review):
-    - API returns wrong status code
-    - Form validation missing
-    - Data not refreshing after mutation
-    - Toast shows wrong message
-    → DO NOT FIX in test
-    → Write to REVIEW-FEEDBACK.md
+  MODERATE (auto-escalate to review):
+    - API returns wrong status code (touches contract path)
+    - Form validation missing (touches shared hooks/lib)
+    - Data not refreshing after mutation (touches multiple files)
+    - Touches ≥3 files — ripple ngoài scope test
   
-  MAJOR (escalate to review):
-    - Feature completely missing (button/page doesn't exist)
-    - Navigation path broken (can't reach the view)
-    - Auth/permissions wrong (unexpected error on expected action)
-    - Data model mismatch (API schema ≠ UI expectations)
-    → DO NOT FIX in test
-    → Write to REVIEW-FEEDBACK.md
+  MAJOR (auto-escalate to review):
+    - Feature completely missing (change_type=new_feature)
+    - Contract schema change (change_type=contract)
+    - Navigation path broken
+    - Auth/permissions wrong
 ```
 
 **Fix iteration (max 2 — MINOR only):**

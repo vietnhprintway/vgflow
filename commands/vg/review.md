@@ -1,7 +1,7 @@
 ---
 name: vg:review
 description: Post-build review — code scan + browser discovery + fix loop + goal comparison → RUNTIME-MAP
-argument-hint: "<phase> [--resume] [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--full-scan]"
+argument-hint: "<phase> [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--full-scan]"
 allowed-tools:
   - Read
   - Write
@@ -43,13 +43,13 @@ This is a HARD rule — TodoWrite is the wrong abstraction for a 30-min orchestr
 5. **Fix in review, verify in test** — review handles discovery + fix. Test handles clean goal verification only.
 6. **RUNTIME-MAP is ground truth** — produced from actual browser interaction, not code guessing.
 7. **Flexible format** — AI chooses best representation per page (tree, list, flow). No mandated table structure.
-8. **State persistence** — discovery progress saved to discovery-state.json. Resumable after failure.
-9. **Exploration limits** — max 50 actions/view, 200 total, 30 min wall time. Prevents runaway.
-10. **Zero hardcode** — no endpoint, role, page name, or project-specific value in this workflow. All values from config or runtime observation.
-11. **Profile enforcement (UNIVERSAL)** — every `<step>` MUST, as FINAL action:
+8. **Exploration limits (hard-enforced, v1.14.4+)** — max 50 actions/view, 200 total, 30 min wall time. Counted by `phase2_exploration_limits` step after discovery. Threshold breach → WARN + log to PIPELINE-STATE.json metrics (not block; discovery already done, but signals noisy RUNTIME-MAP). Thresholds overridable via `config.review.max_actions_per_view|max_actions_total|max_wall_minutes`.
+9. **Zero hardcode** — no endpoint, role, page name, or project-specific value in this workflow. All values from config or runtime observation.
+10. **Profile enforcement (UNIVERSAL)** — every `<step>` MUST, as FINAL action:
     `touch "${PHASE_DIR}/.step-markers/{STEP_NAME}.done"`.
     `create_task_tracker` preflight runs filter-steps.py to count expected steps for `$PROFILE`.
     Browser-based steps (phase 2 discovery) carry `profile="web-fullstack,web-frontend-only"` — skipped for backend-only/cli/library.
+11. **Resume model (v1.14.4+)** — no mid-phase-2 resume. Step-level idempotency via `.step-markers/*.done` + per-view atomic `scan-*.json` is sufficient. If discovery dies mid-run, re-run `/vg:review {phase}` from scratch OR `/vg:review {phase} --retry-failed` (requires RUNTIME-MAP already written).
 </rules>
 
 <objective>
@@ -130,7 +130,6 @@ session_mark_step "0-parse-args"
 Parse `$ARGUMENTS`: phase_number, flags.
 
 Flags:
-- `--resume` — load discovery-state.json, continue from last position
 - `--skip-scan` — skip Phase 1 (code scan), go directly to browser discovery
 - `--skip-discovery` — skip Phase 2 (browser discovery), use existing RUNTIME-MAP for Phase 4
 - `--fix-only` — skip to Phase 3 (requires RUNTIME-MAP with errors)
@@ -1050,7 +1049,7 @@ narrate_view_done() {
   case "$2" in
     ok)      echo "       ✓ Scan xong — ${3} issues phát hiện (${4}s)" ;;
     partial) echo "       ⚠ Scan 1 phần — ${3} issues (${4}s)" ;;
-    fail)    echo "       ❌ Scan lỗi — xem discovery-state.json" ;;
+    fail)    echo "       ❌ Scan lỗi — xem ${PHASE_DIR}/scan-*.json (per-view atomic artifacts)" ;;
   esac
 }
 
@@ -1141,7 +1140,6 @@ Ví dụ user thấy khi `/vg:review` chạy:
 - Trước Phase 3 fix → `narrate_phase "Phase 3 — Fix loop" "Iteration {i}/3..."`
 
 **If --skip-discovery, skip to Phase 4.**
-**If --resume, load discovery-state.json and continue from queue.**
 **If --evaluate-only, skip to Phase 2b-3 (collect + merge scan results) → Phase 3 → Phase 4.**
   Validate: ${PHASE_DIR}/nav-discovery.json AND at least 1 scan-*.json must exist.
   Missing → BLOCK: "Run discovery first: `$vg-review {phase} --discovery-only` in Codex/Gemini."
@@ -1976,15 +1974,13 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
    - Release server
 
 <CHECKPOINT_RULE>
-**SAVE STATE after EVERY major step (2b-1, 2b-2, 2b-3, step 8, step 9, step 10):**
-  Write ${PHASE_DIR}/discovery-state.json with:
-    - completed_phase: "2b-1" | "2b-2" | "2b-3" | "goals" | "probes" | "investigate"
-    - completed_views[] — views already scanned
-    - completed_goals[] — goals already verified
-    - scan_files[] — list of scan-*.json already written
-  Write ${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md (overwrite with latest)
-  → If token/session dies, `--resume` reads discovery-state.json → skips completed steps.
-  → Scan JSONs + probe JSONs already on disk are NOT re-run.
+**Atomic artifact per major step — no separate state file (v1.14.4+):**
+- Step 2b-1 → writes `${PHASE_DIR}/nav-discovery.json` (atomic)
+- Step 2b-2 → writes `${PHASE_DIR}/scan-{view-slug}.json` per Haiku agent (atomic per view)
+- Step 2b-3 → writes `${PHASE_DIR}/RUNTIME-MAP.json` + `${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md`
+- Steps 8/9/10 → extend RUNTIME-MAP.json + GOAL-COVERAGE-MATRIX.md
+
+If session dies mid-2b-2: re-run `/vg:review {phase}` — nav-discovery.json + partial scan-*.json stay, orchestrator redoes only missing views. Per-view scan is cheap (~30s Haiku call), no need for global state file. Step-level idempotency handled by `.step-markers/*.done`.
 </CHECKPOINT_RULE>
 ```
 
@@ -2087,6 +2083,118 @@ Elements: {N} interactive ({visited}/{total} visited)
 ```
 
 **JSON is the source of truth.** Markdown is derived. Downstream steps (test, codegen) read JSON.
+</step>
+
+<step name="phase2_exploration_limits" profile="web-fullstack,web-frontend-only">
+## Phase 2-limit: EXPLORATION LIMIT CHECK (R8 enforcement — v1.14.4+)
+
+Counts actions + views + wall-time sau Phase 2 để phát hiện runaway discovery (phát hiện quét vô kiểm soát). WARN (cảnh báo) only — không block (không chặn) vì discovery đã xong. Kết quả ghi vào PIPELINE-STATE.json metrics để test/accept biết RUNTIME-MAP có thể noisy (nhiễu).
+
+**Thresholds (ngưỡng):**
+- `config.review.max_actions_per_view` — default 50
+- `config.review.max_actions_total` — default 200
+- `config.review.max_wall_minutes` — default 30
+
+```bash
+RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
+if [ ! -f "$RUNTIME_MAP" ]; then
+  echo "⚠ RUNTIME-MAP.json chưa tồn tại — bỏ qua limit check (Phase 2 có thể skipped hoặc failed)."
+  touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+else
+  MAX_VIEW="${CONFIG_REVIEW_MAX_ACTIONS_PER_VIEW:-50}"
+  MAX_TOTAL="${CONFIG_REVIEW_MAX_ACTIONS_TOTAL:-200}"
+  MAX_WALL="${CONFIG_REVIEW_MAX_WALL_MINUTES:-30}"
+
+  PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "$RUNTIME_MAP" "$MAX_VIEW" "$MAX_TOTAL" "$MAX_WALL" "${PHASE_DIR}" <<'PY'
+import json, sys, time
+from pathlib import Path
+from datetime import datetime
+
+rm_path = Path(sys.argv[1])
+max_view = int(sys.argv[2])
+max_total = int(sys.argv[3])
+max_wall_min = int(sys.argv[4])
+phase_dir = Path(sys.argv[5])
+
+rm = json.loads(rm_path.read_text(encoding="utf-8"))
+views = rm.get("views", {}) or {}
+seqs = rm.get("goal_sequences", {}) or {}
+
+per_view_actions = {}
+total_actions = 0
+
+# Count goal_sequences steps grouped by start_view
+for gid, seq in seqs.items():
+    start = seq.get("start_view") or "<unknown>"
+    n = len(seq.get("steps", []) or [])
+    per_view_actions[start] = per_view_actions.get(start, 0) + n
+    total_actions += n
+
+# Add free_exploration actions if tracked per view
+for v_url, v in views.items():
+    fe = (v.get("free_exploration") or {}).get("actions_count", 0) or 0
+    per_view_actions[v_url] = per_view_actions.get(v_url, 0) + fe
+    total_actions += fe
+
+# Wall time — use session-start marker mtime as proxy for discovery start
+marker = phase_dir / ".step-markers" / "00_session_lifecycle.done"
+wall_min = None
+if marker.exists():
+    wall_min = (time.time() - marker.stat().st_mtime) / 60.0
+
+# Evaluate
+warnings = []
+for v, n in per_view_actions.items():
+    if n > max_view:
+        warnings.append({"type": "view_overflow", "view": v, "count": n, "limit": max_view})
+if total_actions > max_total:
+    warnings.append({"type": "total_overflow", "count": total_actions, "limit": max_total})
+if wall_min is not None and wall_min > max_wall_min:
+    warnings.append({"type": "wall_overflow", "minutes": round(wall_min, 1), "limit": max_wall_min})
+
+# Report
+if warnings:
+    print(f"⚠ R8 exploration limits exceeded ({len(warnings)} signal):")
+    for w in warnings:
+        if w["type"] == "view_overflow":
+            print(f"   - view '{w['view']}' → {w['count']} actions vượt limit {w['limit']}")
+        elif w["type"] == "total_overflow":
+            print(f"   - total → {w['count']} actions vượt limit {w['limit']}")
+        elif w["type"] == "wall_overflow":
+            print(f"   - wall time (thời gian) → {w['minutes']} min vượt limit {w['limit']}")
+    print("")
+    print("Khuyến nghị (recommendation):")
+    print("  - Review RUNTIME-MAP.json: có action lặp/vô ích không")
+    print("  - Giảm views scanned hoặc tắt --full-scan (sidebar suppression giúp giảm action)")
+    print("  - Nếu phase lớn thật, tăng config.review.max_actions_total")
+else:
+    wall_txt = f", {wall_min:.1f} min" if wall_min else ""
+    print(f"✓ Exploration within limits: {total_actions} actions, {len(per_view_actions)} views{wall_txt}")
+
+# Log to PIPELINE-STATE.json regardless
+state_path = phase_dir / "PIPELINE-STATE.json"
+state = {}
+if state_path.exists():
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+state.setdefault("metrics", {})["review_exploration"] = {
+    "total_actions": total_actions,
+    "views_scanned": len(per_view_actions),
+    "wall_minutes": round(wall_min, 1) if wall_min is not None else None,
+    "thresholds": {"per_view": max_view, "total": max_total, "wall_min": max_wall_min},
+    "warnings": warnings,
+    "recorded_at": datetime.utcnow().isoformat() + "Z",
+}
+state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+PY
+
+  touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+fi
+```
+
+**Hành vi downstream:** nếu có warnings, step `crossai_review` cuối pipeline sẽ include "exploration noisy" flag vào context để CrossAI xem xét kỹ goals liên quan views overflow.
 </step>
 
 <step name="phase2_mobile_discovery" profile="mobile-*">
@@ -2767,7 +2875,7 @@ After fix+redeploy, spawn Sonnet agents to re-verify affected views + ripple zon
    - Still broken → keep ❌, increment iteration
    - New errors from fix → add to error list
    - Update RUNTIME-MAP with corrected observations
-   - Update discovery-state.json build_sha
+   - Log current build SHA in PIPELINE-STATE.json `steps.review.last_fix_sha`
 ```
 
 ### 3e: Iterate
@@ -3546,7 +3654,6 @@ Set `$LABEL="review-check"`. Follow crossai-invoke.md.
 **2. `${PHASE_DIR}/RUNTIME-MAP.md`** — derived from JSON (human-readable). Written AFTER JSON.
 **3. `${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md`** — from Phase 4
 **4. `${PHASE_DIR}/element-counts.json`** — from Phase 1b
-**5. `${PHASE_DIR}/discovery-state.json`** — persisted during discovery (kept for --resume)
 
 ### MANDATORY ARTIFACT VALIDATION (do NOT skip)
 
