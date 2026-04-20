@@ -405,6 +405,78 @@ EOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════
+# block_resolve_l3_present — emit AskUserQuestion JSON template (v1.14.4+)
+# ═══════════════════════════════════════════════════════════════════════
+# Called by orchestrator AFTER block_resolve_l2_handoff produces brief.
+# Reads .block-resolver-l2-brief.md, formats as AskUserQuestion JSON template,
+# emits to stdout for orchestrator (Claude) to read + invoke AskUserQuestion tool.
+#
+# Workflow:
+#   1. block_resolve returns L2 → block_resolve_l2_handoff writes brief + exit 2
+#   2. Orchestrator catches exit 2, sees marker BLOCK_RESOLVER_L2_HANDOFF
+#   3. Orchestrator calls block_resolve_l3_present "$gate_id" "$phase_dir"
+#   4. Helper reads brief + emits structured JSON
+#   5. Orchestrator parses JSON + calls AskUserQuestion with options
+#   6. After user choice, orchestrator calls block_resolve_l3_apply for telemetry
+block_resolve_l3_present() {
+  local gate_id="$1"
+  local phase_dir="${2:-${PHASE_DIR:-.}}"
+  local brief="${phase_dir}/.block-resolver-l2-brief.md"
+
+  if [ ! -f "$brief" ]; then
+    echo "⛔ block_resolve_l3_present: brief missing at ${brief}" >&2
+    echo "   Cannot present L3 — call block_resolve_l2_handoff first" >&2
+    return 1
+  fi
+
+  # Extract proposal fields from brief header
+  local p_type=$(grep -E "^\- \*\*Type:\*\*" "$brief" | head -1 | sed 's/.*Type:\*\*\s*//')
+  local p_summary=$(grep -E "^\- \*\*Summary:\*\*" "$brief" | head -1 | sed 's/.*Summary:\*\*\s*//')
+  local p_rationale=$(grep -E "^\- \*\*Rationale:\*\*" "$brief" | head -1 | sed 's/.*Rationale:\*\*\s*//')
+
+  # Extract suggested actions (lines under "## Suggested actions" up to next ##)
+  local p_actions=$(awk '/^## Suggested actions/{flag=1; next} /^## /{flag=0} flag && /^- /' "$brief" | sed 's/^- //')
+
+  # Emit JSON template for orchestrator AskUserQuestion call
+  cat <<JSON
+{
+  "marker": "BLOCK_RESOLVER_L3_PROMPT",
+  "gate_id": "${gate_id}",
+  "brief_path": "${brief}",
+  "ask_user_question_template": {
+    "question": "Gate '${gate_id}' blocked. Architect proposed: ${p_summary}",
+    "header": "Block resolver L3 — apply proposal?",
+    "multiSelect": false,
+    "options": [
+      {
+        "label": "Apply (Recommended) — ${p_type}",
+        "description": "${p_rationale}"
+      },
+      {
+        "label": "Override với reason",
+        "description": "Skip proposal, --override-reason='<text>' (logs override-debt register)"
+      },
+      {
+        "label": "Abort — investigate manually",
+        "description": "Halt workflow, user inspects ${brief} + decides next step"
+      }
+    ]
+  },
+  "suggested_actions": $(echo "$p_actions" | ${PYTHON_BIN:-python3} -c "import sys, json; lines = [l.strip() for l in sys.stdin if l.strip()]; print(json.dumps(lines))" 2>/dev/null || echo '[]')
+}
+JSON
+
+  echo "▸ Orchestrator: parse JSON above, invoke AskUserQuestion với template, then call block_resolve_l3_apply '${gate_id}' '<chosen_option>'" >&2
+
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "block_l3_prompt_emitted" "${VG_CURRENT_PHASE:-unknown}" "${VG_CURRENT_STEP:-unknown}" "$gate_id" "L3_PROMPT" \
+      "{\"brief\":\"${brief//\"/\\\"}\",\"proposal_type\":\"${p_type//\"/\\\"}\"}"
+  fi
+
+  return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════
 # block_resolve_l3_apply — telemetry helper when user accepts proposal
 # ═══════════════════════════════════════════════════════════════════════
 block_resolve_l3_apply() {

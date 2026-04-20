@@ -232,6 +232,9 @@ if [ -n "$FROM_STEP" ] || [[ "$ARGUMENTS" =~ --crossai-only ]]; then
     if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
       exit 1
     else
+            if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+        emit_telemetry_v2 "blueprint_r2_skip_missing" "${PHASE_NUMBER}" "blueprint.1" "blueprint_r2_skip_missing" "FAIL" "{}"
+      fi
       if type -t log_override_debt >/dev/null 2>&1; then
         log_override_debt "blueprint-r2-skip-missing" "${PHASE_NUMBER}" "--from=${FROM_STEP} with missing: ${MISSING_PREREQ}" "$PHASE_DIR"
       fi
@@ -672,6 +675,9 @@ if [ "$R5_TOTAL" -gt "$R5_HARD_MAX" ]; then
   if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
     exit 1
   else
+        if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "blueprint_r5_planner_overflow" "${PHASE_NUMBER}" "blueprint.2a" "blueprint_r5_planner_overflow" "FAIL" "{}"
+    fi
     if type -t log_override_debt >/dev/null 2>&1; then
       log_override_debt "blueprint-r5-planner-overflow" "${PHASE_NUMBER}" "planner prompt ${R5_TOTAL} lines > ${R5_HARD_MAX}" "$PHASE_DIR"
     fi
@@ -895,6 +901,9 @@ PY
 ORG_RC=$?
 if [ "$ORG_RC" = "2" ]; then
   echo "blueprint-r6-org-missing phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/blueprint-state.log"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "blueprint_r6_org_missing" "${PHASE_NUMBER}" "blueprint.2a5" "blueprint_r6_org_missing" "FAIL" "{\"detail\":\"phase=${PHASE_NUMBER}\"}"
+    fi
   if [[ "$ARGUMENTS" =~ --allow-missing-org ]]; then
     if type -t log_override_debt >/dev/null 2>&1; then
       log_override_debt "blueprint-missing-org-critical" "${PHASE_NUMBER}" "missing critical ORG dims (Deploy/Rollback)" "$PHASE_DIR"
@@ -1393,6 +1402,9 @@ PY
   PERSIST_RC=$?
   if [ "$PERSIST_RC" != "0" ]; then
     echo "blueprint-r3b-violation phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/blueprint-state.log"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "blueprint_r3b_persistence_missing" "${PHASE_NUMBER}" "blueprint.2b5" "blueprint_r3b_persistence_missing" "FAIL" "{\"detail\":\"phase=${PHASE_NUMBER}\"}"
+    fi
     # Allow override via explicit flag (debt logged)
     if [[ "$ARGUMENTS" =~ --allow-missing-persistence ]]; then
       if type -t log_override_debt >/dev/null 2>&1; then
@@ -1907,6 +1919,9 @@ else
   if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
     exit 1
   else
+        if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "blueprint_2c_mismatches" "${PHASE_NUMBER}" "blueprint.2c" "blueprint_2c_mismatches" "FAIL" "{}"
+    fi
     if type -t log_override_debt >/dev/null 2>&1; then
       log_override_debt "blueprint-2c-mismatches" "${PHASE_NUMBER}" "${MISMATCHES} endpoint mismatches between contracts and CONTEXT/handlers" "$PHASE_DIR"
     fi
@@ -2490,6 +2505,27 @@ Proceeding to commit.
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2d_validation_gate.done"
+```
+</step>
+
+<step name="2e_bootstrap_reflection">
+## Sub-step 2e: End-of-Step Reflection (v1.15.0 Bootstrap Overlay)
+
+Before final commit, spawn reflector to analyze PLAN*.md + API-CONTRACTS.md +
+TEST-GOALS.md + user messages for learnings about the planning step.
+
+**Skip silently if `.vg/bootstrap/` absent.** Follow protocol in
+`.claude/commands/vg/_shared/reflection-trigger.md`:
+
+```bash
+if [ -d ".vg/bootstrap" ]; then
+  REFLECT_STEP="blueprint"
+  REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  REFLECT_OUT="${PHASE_DIR}/reflection-${REFLECT_STEP}-${REFLECT_TS}.yaml"
+  echo "📝 Running end-of-blueprint reflection..."
+  # Spawn Agent with vg-reflector skill (see reflection-trigger.md)
+  # Interactive y/n/e/s prompt for each candidate, delegate to /vg:learn --promote
+fi
 ```
 </step>
 

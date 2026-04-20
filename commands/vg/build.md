@@ -124,7 +124,7 @@ Sync chain flag:
 # (GSD auto-chain is N/A — VG uses explicit /vg:next routing)
 
 # Flag allowlist (v1.14.4+ — typo guard). Unknown flag = hard BLOCK, not silent skip.
-VALID_FLAGS_PATTERN='^--(wave|only|status|gaps-only|interactive|auto|reset-queue|skip-design-check|skip-context-rebuild|resume|allow-missing-commits|allow-r5-violation|override-reason|force|help)$'
+VALID_FLAGS_PATTERN='^--(wave|only|status|gaps-only|interactive|auto|reset-queue|skip-design-check|skip-context-rebuild|resume|allow-missing-commits|allow-r5-violation|skip-reflection|skip-cross-phase-ripple|skip-ux-gates|allow-ux-violations|override-reason|force|help)$'
 UNKNOWN_FLAGS=""
 for tok in ${ARGUMENTS:-}; do
   case "$tok" in
@@ -1022,6 +1022,9 @@ PY
 R4_RC=$?
 if [ "$R4_RC" != "0" ]; then
   echo "R4-overflow task=${TASK_NUM} phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "build_r4_overflow" "${PHASE_NUMBER}" "build.8c" "build_r4_overflow" "FAIL" "{\"detail\":\"task=${TASK_NUM}\"}"
+    fi
   echo "⛔ Executor spawn blocked — fix context budget or raise config.build.prompt_max_lines, then re-run."
   exit 1
 fi
@@ -1213,6 +1216,9 @@ PY
   R5_RC=$?
   if [ "$R5_RC" != "0" ]; then
     echo "R5-violation wave=${N} phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "build_r5_violation" "${PHASE_NUMBER}" "build.8d" "build_r5_violation" "FAIL" "{\"detail\":\"wave=${N}\"}"
+    fi
     # Log to override-debt if --allow-r5-violation explicitly set, else hard block
     if [[ "$ARGUMENTS" =~ --allow-r5-violation ]]; then
       if type -t log_override_debt >/dev/null 2>&1; then
@@ -1927,13 +1933,26 @@ if [ -d ".vg/bootstrap" ]; then
   REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
   REFLECT_OUT="${PHASE_DIR}/reflection-${REFLECT_STEP}-${REFLECT_TS}.yaml"
   echo "📝 End-of-wave ${WAVE_NUMBER} reflection..."
-  # Spawn vg-reflector per .claude/commands/vg/_shared/reflection-trigger.md
-  # Inputs: wave commits + SUMMARY-WAVE-N.md + telemetry for this wave
-  # Interactive y/n/e/s prompt after reflector completes
+
+  # Explicit marker for orchestrator (v1.14.4+ — was implicit prose-only)
+  echo "▸ REFLECTION_TRIGGER_REQUIRED step=${REFLECT_STEP} out=${REFLECT_OUT}"
+  echo "  Orchestrator MUST: read .claude/commands/vg/_shared/reflection-trigger.md → Agent spawn vg-reflector"
+  echo "  Skip allowed via: --skip-reflection (logs override-debt)"
+
+  # Telemetry — reflection requested (will pair with reflection_completed in step 9 verify)
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "reflection_requested" "${PHASE_NUMBER}" "build.8_5" "wave-${WAVE_NUMBER}" "PENDING" \
+      "{\"wave\":${WAVE_NUMBER},\"out\":\"${REFLECT_OUT}\"}"
+  fi
 fi
 ```
 
 **Rate limit:** max 1 reflection per wave. If 0 candidates → silent.
+
+**Post-wave verify (added in step 9 `9_post_execution`):**
+- If `.vg/bootstrap/` present + wave succeeded → `reflection-wave-N-*.yaml` MUST exist
+- Missing reflection file = WARN (not block) + log telemetry `reflection_skipped` for `/vg:gate-stats` visibility
+- Override: `--skip-reflection` flag bypasses warn, logs override-debt
 </step>
 
 <step name="9_post_execution">
@@ -1941,6 +1960,251 @@ Aggregate results:
 - Count completed plans, failed plans
 - Check all SUMMARY*.md files exist
 - Check build-state.log — all waves passed gate? (no wave should have lingering failure)
+
+### 9-pre-uxgates: i18n + a11y lightweight gates (v1.14.4+)
+
+Static AST scan của FE changed files (`.tsx`/`.jsx`). Catches:
+- **i18n drift**: hardcoded text trong JSX không wrap `t()` / `useTranslation`
+- **a11y gap**: button/img/input thiếu aria-label/alt/label
+
+Lightweight (no browser). Heavy Playwright + axe-core thuộc về `/vg:test`. Skip silently nếu phase không touch FE.
+
+```bash
+if [[ ! "$ARGUMENTS" =~ --skip-ux-gates ]]; then
+  # Get FE files changed in this phase
+  FE_CHANGED=""
+  if [ -n "${first_commit:-}" ]; then
+    FE_CHANGED=$(git diff --name-only "${first_commit}^..HEAD" 2>/dev/null | grep -E '\.(tsx|jsx)$' | grep -E '(apps/web|packages/ui)' || true)
+  fi
+
+  if [ -n "$FE_CHANGED" ]; then
+    PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - <<PY
+import re, sys
+from pathlib import Path
+
+changed = """$FE_CHANGED""".strip().split("\n")
+i18n_violations = []
+a11y_violations = []
+
+# i18n patterns: JSX text nodes hardcoded (not wrapped in t())
+JSX_TEXT_RE = re.compile(r'>\s*([A-Z][A-Za-z0-9 ,.!?\'-]{3,})\s*<')
+T_CALL_RE = re.compile(r'\bt\s*\(')
+
+# a11y patterns
+BTN_NO_LABEL = re.compile(r'<button\b(?![^>]*\baria-label\b)(?![^>]*\baria-labelledby\b)[^>]*>(?:\s*<[^>]*/>)*\s*</button>')
+IMG_NO_ALT = re.compile(r'<img\b(?![^>]*\balt\b)[^>]*/?>')
+INPUT_NO_LABEL = re.compile(r'<input\b(?![^>]*\baria-label\b)(?![^>]*\baria-labelledby\b)(?![^>]*\bid\b)[^>]*/?>')
+
+for fpath in changed:
+    if not fpath:
+        continue
+    p = Path(fpath)
+    if not p.exists():
+        continue
+    try:
+        text = p.read_text(encoding='utf-8', errors='ignore')
+    except Exception:
+        continue
+
+    # Skip files that are pure type declarations / config
+    if '.d.ts' in fpath or fpath.endswith('.config.tsx'):
+        continue
+
+    # i18n: hardcoded JSX text without t() in same file
+    has_t_import = bool(re.search(r'\b(useTranslation|i18n|from\s+[\'\"](react-i18next|next-i18next)[\'\"])', text))
+    jsx_texts = [m.group(1).strip() for m in JSX_TEXT_RE.finditer(text)]
+    # Filter: short single-word likely tags, numbers, dev placeholders
+    real_texts = [t for t in jsx_texts if len(t.split()) >= 2 and not t.isdigit() and 'TODO' not in t]
+    if real_texts and not has_t_import:
+        i18n_violations.append({"file": fpath, "samples": real_texts[:3], "count": len(real_texts)})
+
+    # a11y: button/img/input checks
+    btn_count = len(BTN_NO_LABEL.findall(text))
+    img_count = len(IMG_NO_ALT.findall(text))
+    if btn_count or img_count:
+        a11y_violations.append({"file": fpath, "buttons_no_label": btn_count, "imgs_no_alt": img_count})
+
+# Report
+print(f"UX gate scan: {len([f for f in changed if f])} FE files changed")
+
+if i18n_violations:
+    print(f"⚠ i18n: {len(i18n_violations)} files có hardcoded JSX text không wrap useTranslation/t():")
+    for v in i18n_violations[:5]:
+        print(f"   - {v['file']}: {v['count']} strings, samples: {v['samples'][:2]}")
+    if len(i18n_violations) > 5:
+        print(f"   ... +{len(i18n_violations)-5} more files")
+else:
+    print("✓ i18n: no hardcoded JSX text drift")
+
+if a11y_violations:
+    print(f"⚠ a11y: {len(a11y_violations)} files có button/img missing label/alt:")
+    for v in a11y_violations[:5]:
+        parts = []
+        if v['buttons_no_label']: parts.append(f"{v['buttons_no_label']} button-no-label")
+        if v['imgs_no_alt']: parts.append(f"{v['imgs_no_alt']} img-no-alt")
+        print(f"   - {v['file']}: {', '.join(parts)}")
+    if len(a11y_violations) > 5:
+        print(f"   ... +{len(a11y_violations)-5} more files")
+else:
+    print("✓ a11y: no missing labels detected")
+
+# Threshold for block: >5 i18n files OR >3 a11y files = significant drift
+total_violation_files = len(i18n_violations) + len(a11y_violations)
+if total_violation_files > 8:
+    print(f"\n⛔ UX gate: {total_violation_files} violation files > threshold 8")
+    sys.exit(1)
+PY
+
+    UX_RC=$?
+    if [ "$UX_RC" != "0" ]; then
+      echo "build-ux-gate-violation phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/build-state.log"
+      if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+        emit_telemetry_v2 "ux_gate_violation" "${PHASE_NUMBER}" "build.9" "post-execution" "WARN" "{}"
+      fi
+      if [[ "$ARGUMENTS" =~ --allow-ux-violations ]]; then
+        if type -t log_override_debt >/dev/null 2>&1; then
+          log_override_debt "build-ux-violations" "${PHASE_NUMBER}" "i18n+a11y violations exceeded threshold" "$PHASE_DIR"
+        fi
+        echo "⚠ --allow-ux-violations set — proceeding, logged to debt"
+      else
+        echo "   Override (NOT recommended): /vg:build ${PHASE_NUMBER} --resume --allow-ux-violations"
+        exit 1
+      fi
+    fi
+  fi
+elif [[ "$ARGUMENTS" =~ --skip-ux-gates ]]; then
+  if type -t log_override_debt >/dev/null 2>&1; then
+    log_override_debt "build-skip-ux-gates" "${PHASE_NUMBER}" "user opted out i18n/a11y gates" "$PHASE_DIR"
+  fi
+fi
+```
+
+### 9-pre-ripple: Cross-phase ripple impact gate (v1.14.4+)
+
+Verify build phase X không vô tình break code của phases trước. Sử dụng graphify caller graph để identify upstream callers, group theo phase commit ranges, run quick regression cho affected phases.
+
+```bash
+if [[ ! "$ARGUMENTS" =~ --skip-cross-phase-ripple ]]; then
+  RIPPLE_REPORT="${PHASE_DIR}/.cross-phase-ripple.json"
+
+  PYTHONIOENCODING=utf-8 ${PYTHON_BIN} - "${PHASE_DIR}" "${PHASE_NUMBER}" <<'PY' > "$RIPPLE_REPORT"
+import json, subprocess, sys, re, glob
+from pathlib import Path
+
+phase_dir = Path(sys.argv[1])
+phase_num = sys.argv[2]
+planning_dir = Path(".vg") if Path(".vg").exists() else Path(".planning")
+
+# 1. Get files changed in this phase (git diff vs phase start)
+try:
+    first_commit = subprocess.run(
+        ["git", "log", "--reverse", "--format=%H", "--grep", f"({phase_num}-"],
+        capture_output=True, text=True, check=True
+    ).stdout.strip().split("\n")[0]
+    if not first_commit:
+        print(json.dumps({"skipped": "no_phase_commits"})); sys.exit(0)
+    changed = subprocess.run(
+        ["git", "diff", "--name-only", f"{first_commit}^..HEAD"],
+        capture_output=True, text=True, check=True
+    ).stdout.strip().split("\n")
+    changed = [f for f in changed if f and (f.endswith('.ts') or f.endswith('.tsx') or f.endswith('.js'))]
+except Exception as e:
+    print(json.dumps({"error": str(e)})); sys.exit(0)
+
+if not changed:
+    print(json.dumps({"changed_files": 0, "affected_phases": []})); sys.exit(0)
+
+# 2. Find phases referencing these files (via SUMMARY.md mentions or commit attribution)
+affected_phases = {}
+for summary in glob.glob(str(planning_dir / "phases" / "*" / "SUMMARY*.md")):
+    p = Path(summary)
+    phase_name = p.parent.name
+    # Extract phase num from dir name
+    m = re.match(r'^(\d+(?:\.\d+)*)', phase_name)
+    if not m:
+        continue
+    other_phase = m.group(1)
+    # Skip self + future phases (lexical compare may not be perfect — skip exact match)
+    if other_phase == phase_num:
+        continue
+    try:
+        text = p.read_text(encoding='utf-8', errors='ignore')
+        hits = sum(1 for f in changed if f in text)
+        if hits > 0:
+            affected_phases[other_phase] = hits
+    except Exception:
+        continue
+
+result = {
+    "phase": phase_num,
+    "changed_files_count": len(changed),
+    "affected_phases": affected_phases,
+    "ripple_severity": "high" if len(affected_phases) >= 3 else ("medium" if len(affected_phases) >= 1 else "low"),
+}
+print(json.dumps(result, indent=2))
+PY
+
+  RIPPLE_RESULT=$(cat "$RIPPLE_REPORT" 2>/dev/null)
+  AFFECTED_COUNT=$(echo "$RIPPLE_RESULT" | ${PYTHON_BIN} -c "import sys,json; d=json.loads(sys.stdin.read()); print(len(d.get('affected_phases', {})))" 2>/dev/null || echo 0)
+
+  if [ "${AFFECTED_COUNT:-0}" -gt 0 ]; then
+    echo "⚠ Cross-phase ripple: ${AFFECTED_COUNT} previous phases reference changed files"
+    echo "$RIPPLE_RESULT" | ${PYTHON_BIN} -c "
+import sys, json
+d = json.loads(sys.stdin.read())
+for p, hits in sorted(d.get('affected_phases', {}).items()):
+    print(f'   - Phase {p}: {hits} file mentions in SUMMARY')
+" 2>/dev/null
+
+    echo ""
+    echo "Recommended (manual): /vg:regression --phases=$(echo "$RIPPLE_RESULT" | ${PYTHON_BIN} -c "import sys, json; print(','.join(json.loads(sys.stdin.read()).get('affected_phases', {}).keys()))" 2>/dev/null)"
+    echo ""
+
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "cross_phase_ripple" "${PHASE_NUMBER}" "build.9" "post-execution" "WARN" \
+        "{\"affected_count\":${AFFECTED_COUNT}}"
+    fi
+  else
+    echo "✓ Cross-phase ripple: 0 previous phases impacted"
+  fi
+elif [[ "$ARGUMENTS" =~ --skip-cross-phase-ripple ]]; then
+  if type -t log_override_debt >/dev/null 2>&1; then
+    log_override_debt "build-skip-ripple" "${PHASE_NUMBER}" "user opted out cross-phase ripple analysis" "$PHASE_DIR"
+  fi
+fi
+```
+
+### 9-pre: Reflection coverage verify (v1.14.4+)
+
+If `.vg/bootstrap/` present, verify mỗi wave thành công đã produce reflection file. Missing = WARN + telemetry (không block để không ngăn build merge khi reflector fail nhẹ).
+
+```bash
+if [ -d ".vg/bootstrap" ] && [[ ! "$ARGUMENTS" =~ --skip-reflection ]]; then
+  WAVES_TOTAL=$(ls "${PHASE_DIR}"/SUMMARY-WAVE-*.md 2>/dev/null | wc -l | tr -d ' ')
+  REFLECTIONS_PRESENT=$(ls "${PHASE_DIR}"/reflection-wave-*.yaml 2>/dev/null | wc -l | tr -d ' ')
+  MISSING_COUNT=$((WAVES_TOTAL - REFLECTIONS_PRESENT))
+
+  if [ "$MISSING_COUNT" -gt 0 ]; then
+    echo "⚠ Reflection coverage: ${REFLECTIONS_PRESENT}/${WAVES_TOTAL} waves có reflection file"
+    echo "   Missing reflections sẽ giảm chất lượng bootstrap candidates."
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "reflection_skipped" "${PHASE_NUMBER}" "build.9" "post-execution" "WARN" \
+        "{\"missing\":${MISSING_COUNT},\"total\":${WAVES_TOTAL}}"
+    fi
+  else
+    echo "✓ Reflection coverage: ${REFLECTIONS_PRESENT}/${WAVES_TOTAL} waves complete"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "reflection_complete" "${PHASE_NUMBER}" "build.9" "post-execution" "PASS" \
+        "{\"count\":${REFLECTIONS_PRESENT}}"
+    fi
+  fi
+elif [[ "$ARGUMENTS" =~ --skip-reflection ]]; then
+  if type -t log_override_debt >/dev/null 2>&1; then
+    log_override_debt "build-skip-reflection" "${PHASE_NUMBER}" "user opted out reflection step" "$PHASE_DIR"
+  fi
+  echo "⚠ --skip-reflection set — reflection skipped, logged to debt register"
+fi
+```
 
 **Step filter marker check (deterministic enforcement):**
 

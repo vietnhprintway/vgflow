@@ -1682,6 +1682,9 @@ PY
   R7_RC=$?
   if [ "$R7_RC" != "0" ]; then
     echo "test-r7-console-gap phase=${PHASE_NUMBER} at=$(date -u +%FT%TZ)" >> "${PHASE_DIR}/test-state.log"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "test_r7_console_gap" "${PHASE_NUMBER}" "test.5d-r7" "test_r7_console_gap" "FAIL" "{\"detail\":\"phase=${PHASE_NUMBER}\"}"
+    fi
     if [[ "$ARGUMENTS" =~ --allow-missing-console-check ]]; then
       if type -t log_override_debt >/dev/null 2>&1; then
         log_override_debt "test-r7-console-missing" "${PHASE_NUMBER}" "generated specs missing console assertion" "$PHASE_DIR"
