@@ -107,8 +107,50 @@ end of its step (or after each wave, for build). That step MUST:
   multiple learnings may emerge mid-step)
 - Other commands (`scope`, `blueprint`, `review`) run once at end
 
-## Skip conditions
+## Autonomous-mode accumulation (v1.15.1 — hard rule)
 
-- `.vg/bootstrap/` directory absent (user hasn't opted in)
-- Config `bootstrap.reflection_enabled: false` (user disabled)
-- Step exited with fatal error (reflect when next run succeeds)
+Long multi-wave runs (e.g. `/vg:build` with 5+ waves) cannot stop at every
+wave for interactive y/n/e/s prompts — that breaks unattended execution.
+BUT the reflector itself MUST still fire. Protocol:
+
+1. **Every wave** — reflector runs + writes candidates to
+   `${PHASE_DIR}/reflection-wave-${N}-${TS}.yaml`. **No user prompt yet.**
+   Append each candidate YAML block to `.vg/bootstrap/CANDIDATES.md` as
+   pending. This is the "accumulate silently" mode.
+
+2. **Once per phase, at phase-end** — orchestrator MUST collect every
+   reflection YAML under `${PHASE_DIR}/reflection-*.yaml` produced by the
+   phase's waves, present ALL pending candidates in ONE y/n/e/s review
+   session (not per-wave). This is the single mandatory prompt point.
+
+3. **No escape hatch** — orchestrator MAY NOT skip the phase-end prompt for
+   any reason short of the declared skip conditions below. "Interactive
+   prompt interrupts autonomous run" is NOT a valid skip reason — the
+   prompt fires exactly once, at a natural checkpoint.
+
+4. **Single-step commands** (scope, blueprint, review) — reflector runs at
+   end-of-step, candidates go straight to the single y/n/e/s prompt (no
+   accumulation needed — only one reflection per run).
+
+## Skip conditions (exhaustive — any other reason is a bug)
+
+- `.vg/bootstrap/` directory absent (user hasn't opted in at project init)
+- Config `bootstrap.reflection_enabled: false` (user explicitly disabled)
+- Step exited with fatal error (reflect when next run succeeds — reflector
+  on broken state produces garbage candidates)
+
+Explicitly NOT valid skip reasons:
+- "Autonomous run, don't want to pause for interactive prompt" → use
+  phase-end accumulation above
+- "Context budget concern" → reflector runs in isolated Haiku context, does
+  not consume orchestrator budget
+- "No signals this step" → reflector handles silently (0-candidate output
+  is fine); orchestrator MUST still fire it
+
+## Static verification
+
+`.claude/scripts/verify-reflection-coverage.py` walks host command files
+(build.md, blueprint.md, scope.md, review.md) and verifies each has a
+`<step name="bootstrap_reflection">` OR `<step name="*_reflection_*">`
+block that invokes this skill. Missing reflection step in any host = CI
+fail. Run: `python .claude/scripts/verify-reflection-coverage.py`

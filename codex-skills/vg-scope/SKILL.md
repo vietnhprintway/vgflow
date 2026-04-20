@@ -858,6 +858,29 @@ Read and follow `.claude/commands/vg/_shared/crossai-invoke.md`.
   If "Ignore" -> log in DISCUSSION-LOG.md as "CrossAI finding ignored: {reason}".
 </step>
 
+<step name="4_5_bootstrap_reflection">
+## Step 4.5: End-of-Step Reflection (v1.15.0 Bootstrap Overlay)
+
+Before committing scope artifacts, spawn reflector to analyze this step's
+CONTEXT.md + DISCUSSION-LOG.md + user messages for learnings.
+
+**Skip silently if `.vg/bootstrap/` absent.** Per `.claude/commands/vg/_shared/reflection-trigger.md`:
+
+```bash
+if [ -d ".vg/bootstrap" ]; then
+  REFLECT_STEP="scope"
+  REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  REFLECT_OUT="${PHASE_DIR}/reflection-${REFLECT_STEP}-${REFLECT_TS}.yaml"
+  echo "📝 Running end-of-scope reflection..."
+  # Spawn Agent (Haiku) with vg-reflector skill per reflection-trigger.md protocol
+  # After: if REFLECT_OUT has candidates, show interactive y/n/e/s prompt
+  # User 'y' → delegate to /vg:learn --promote L-{id}
+fi
+```
+
+See `.claude/commands/vg/_shared/reflection-trigger.md` for full spawn template and interactive flow.
+</step>
+
 <step name="5_commit_and_next">
 ## Step 5: Commit + suggest next
 

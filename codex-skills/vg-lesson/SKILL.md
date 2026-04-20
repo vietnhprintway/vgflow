@@ -1,8 +1,8 @@
 ---
 name: "vg-lesson"
-description: "Manual lesson capture — rare backup when reflector missed something"
+description: "Manual lesson capture — rare backup when reflector missed something. Drafts a candidate from user's text for later review."
 metadata:
-  short-description: "Manual lesson capture — rare backup when reflector missed something"
+  short-description: "Manual lesson capture — rare backup when reflector missed something. Drafts a candidate from user's text for later review."
 ---
 
 <codex_skill_adapter>
