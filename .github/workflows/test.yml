@@ -1,0 +1,94 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  orchestrator:
+    name: Orchestrator + validators
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install jsonschema + pyyaml
+        run: pip install jsonschema pyyaml
+
+      - name: Validate JSON schemas
+        run: |
+          for f in schemas/*.json; do
+            python -c "import json; json.loads(open('$f', encoding='utf-8').read()); print('✓ $f')"
+          done
+
+      - name: Validate runtime_contract in skill-MDs
+        run: |
+          # Copy scripts + commands to .claude/ layout so contracts.py finds them
+          mkdir -p .claude/commands/vg .claude/schemas .claude/scripts
+          cp -r commands/vg/* .claude/commands/vg/
+          cp schemas/*.json .claude/schemas/
+          cp -r scripts/* .claude/scripts/
+          python -c "
+          import sys
+          sys.path.insert(0, '.claude/scripts/vg-orchestrator')
+          import contracts
+          fail = False
+          for cmd in ['vg:scope', 'vg:blueprint', 'vg:build', 'vg:review', 'vg:test', 'vg:accept']:
+              c = contracts.parse(cmd)
+              if not c:
+                  print(f'✗ {cmd}: missing runtime_contract')
+                  fail = True
+              else:
+                  print(f'✓ {cmd}: {list(c.keys())}')
+          sys.exit(1 if fail else 0)
+          "
+
+      - name: Validator smoke — each returns valid JSON
+        run: |
+          for v in scripts/validators/*.py; do
+            [ "$(basename $v)" = "_common.py" ] && continue
+            out=$(python "$v" --phase 99 2>&1 || true)
+            echo "$out" | python -c "
+          import json, sys
+          try:
+              d = json.loads(sys.stdin.read())
+              assert 'verdict' in d and 'validator' in d
+              print(f'✓ $(basename $v .py): {d[\"verdict\"]}')
+          except Exception as e:
+              print(f'✗ $(basename $v .py): {e}')
+              sys.exit(1)
+          "
+          done
+
+      - name: Orchestrator binary loads
+        run: |
+          mkdir -p .vg
+          python .claude/scripts/vg-orchestrator/__main__.py run-status
+          python .claude/scripts/vg-orchestrator/__main__.py verify-hash-chain || echo "(no events.db yet — expected)"
+
+      - name: Negative bypass tests (if present)
+        run: |
+          if [ -f scripts/tests/test_bypass_negative.py ]; then
+            cp -r scripts/tests .claude/scripts/
+            python .claude/scripts/tests/test_bypass_negative.py
+          else
+            echo "(no negative tests yet)"
+          fi
+
+      - name: Stack health (if present)
+        run: |
+          if [ -f scripts/vg-stack-health.py ]; then
+            # Expected to WARN (no events.db in fresh checkout) but not BLOCK
+            python .claude/scripts/vg-stack-health.py && echo "(exit 0 — healthy)" || {
+              rc=$?
+              [ $rc -eq 1 ] && echo "(exit 1 — WARN, expected in fresh checkout)" || {
+                echo "✗ stack health BLOCK"
+                exit 1
+              }
+            }
+          fi
