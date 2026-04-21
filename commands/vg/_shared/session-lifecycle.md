@@ -65,6 +65,12 @@ session_start() {
   export VG_SESSION_START_TS="$ts"
   export VG_SESSION_CURRENT_STEP="start"
 
+  # v1.15.2 — register run so Stop hook can verify runtime_contract evidence.
+  # vg_run_start writes .vg/current-run.json + emits {cmd}.started telemetry.
+  # Sourced by config-loader.md via _shared/lib/vg-run.sh.
+  type -t vg_run_start >/dev/null 2>&1 && \
+    vg_run_start "vg:${cmd}" "${phase}" "${ARGUMENTS:-}"
+
   # EXIT trap emits termination marker no matter how command ends
   # (normal exit, error, Ctrl+C, SIGTERM from parent)
   trap 'session_exit_banner' EXIT INT TERM
@@ -90,6 +96,14 @@ session_exit_banner() {
   echo ""
   echo "━━━ /vg:${cmd} Phase ${phase} — ${verdict} at step=${step} ━━━"
   echo ""
+
+  # v1.15.2 — release run ownership so next /vg:* starts clean.
+  # Emits {cmd}.completed telemetry, deletes current-run.json.
+  # Only emit PASS when rc=0; other exits leave current-run.json so /vg:recover can inspect.
+  if [ "$rc" -eq 0 ] && type -t vg_run_complete >/dev/null 2>&1; then
+    vg_run_complete "PASS" 2>/dev/null || true
+  fi
+
   # Clear trap to avoid recursion if something in banner fails
   trap - EXIT INT TERM
   exit $rc

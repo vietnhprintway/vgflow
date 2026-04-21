@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vg.runtime-contract",
+  "description": "Skill-MD frontmatter runtime_contract block. Parsed by orchestrator at run-start, evaluated at run-complete.",
+  "type": "object",
+  "properties": {
+    "must_write": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {"type": "string"},
+              "content_min_bytes": {"type": "integer", "minimum": 1, "default": 1},
+              "content_required_sections": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        ]
+      },
+      "description": "Files that MUST exist + meet content thresholds at run-complete. Path supports ${PHASE_DIR}, ${PHASE_NUMBER}."
+    },
+    "must_touch_markers": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "namespace": {
+                "type": "string",
+                "default": "shared",
+                "description": "Separates markers per-command to avoid conflicts. e.g. 'build/1_parse_args' vs 'blueprint/1_parse_args'"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "must_emit_telemetry": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {"type": "string"},
+          {
+            "type": "object",
+            "required": ["event_type"],
+            "properties": {
+              "event_type": {"type": "string"},
+              "phase": {"type": "string"},
+              "min_count": {"type": "integer", "minimum": 1, "default": 1},
+              "must_pair_with": {"type": "string"}
+            }
+          }
+        ]
+      }
+    },
+    "must_call": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["function"],
+        "properties": {
+          "function": {"type": "string"},
+          "min_calls": {"type": "integer", "minimum": 1, "default": 1}
+        }
+      }
+    },
+    "forbidden_without_override": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^--[a-z0-9-]+(=.*)?$"
+      }
+    },
+    "validators": {
+      "type": "object",
+      "description": "Lifecycle-aware validator dispatch",
+      "properties": {
+        "entry": {"type": "array", "items": {"$ref": "#/$defs/validator-ref"}},
+        "during": {"type": "array", "items": {"$ref": "#/$defs/validator-ref"}},
+        "exit": {"type": "array", "items": {"$ref": "#/$defs/validator-ref"}}
+      }
+    }
+  },
+  "$defs": {
+    "validator-ref": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string"},
+        "path": {"type": "string"},
+        "args": {"type": "array", "items": {"type": "string"}},
+        "trigger": {"type": "string"},
+        "blocks_on": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

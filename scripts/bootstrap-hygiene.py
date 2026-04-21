@@ -39,6 +39,64 @@ BOOTSTRAP_DIR = Path(".vg/bootstrap")
 ACCEPTED_MD = BOOTSTRAP_DIR / "ACCEPTED.md"
 RETRACTED_MD = BOOTSTRAP_DIR / "RETRACTED.md"
 RULES_DIR = BOOTSTRAP_DIR / "rules"
+EVENTS_DB = Path(".vg/events.db")
+EVENTS_JSONL = Path(".vg/telemetry.jsonl")  # legacy fallback
+
+
+def _read_bootstrap_events() -> list[dict]:
+    """Unified event source — prefers events.db (v2.2 authoritative),
+    falls back to legacy telemetry.jsonl for phases that predate orchestrator.
+    Returns normalized events with keys: ts, event_type, phase, command, outcome, payload (dict)."""
+    events: list[dict] = []
+
+    if EVENTS_DB.exists():
+        import sqlite3
+        try:
+            conn = sqlite3.connect(str(EVENTS_DB))
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT ts, event_type, phase, command, outcome, payload_json "
+                "FROM events WHERE event_type LIKE 'bootstrap.%' OR "
+                "event_type LIKE 'user.correction%' "
+                "ORDER BY id ASC"
+            ).fetchall()
+            for r in rows:
+                try:
+                    payload = json.loads(r["payload_json"] or "{}")
+                except Exception:
+                    payload = {}
+                events.append({
+                    "ts": r["ts"],
+                    "event_type": r["event_type"],
+                    "phase": r["phase"],
+                    "command": r["command"],
+                    "outcome": r["outcome"],
+                    "payload": payload,
+                })
+            conn.close()
+        except Exception:
+            pass
+
+    if EVENTS_JSONL.exists():
+        for line in EVENTS_JSONL.read_text(encoding="utf-8",
+                                           errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+                if not ev.get("event_type", "").startswith(
+                        ("bootstrap.", "user.correction")):
+                    continue
+                events.append({
+                    "ts": ev.get("ts", ""),
+                    "event_type": ev.get("event_type", ""),
+                    "phase": ev.get("phase", ""),
+                    "command": ev.get("command", ""),
+                    "outcome": ev.get("outcome", ""),
+                    "payload": ev.get("payload") or ev.get("meta") or {},
+                })
+            except Exception:
+                continue
+
+    return events
 
 
 def _parse_accepted() -> list[dict]:
@@ -84,24 +142,44 @@ def _parse_accepted() -> list[dict]:
 
 
 def _count_phases_since(iso_ts: str) -> int:
-    """Approximate phases elapsed since timestamp — counts distinct phase numbers
-    in telemetry.jsonl after iso_ts."""
-    tel = Path(".vg/telemetry.jsonl")
-    if not tel.exists() or not iso_ts:
+    """Approximate phases elapsed since timestamp — counts distinct phase
+    numbers across events.db + legacy telemetry.jsonl since iso_ts."""
+    if not iso_ts:
         return 0
     try:
         threshold = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
     except Exception:
         return 0
-    phases = set()
-    for line in tel.read_text(encoding="utf-8", errors="replace").splitlines():
+    phases: set[str] = set()
+
+    # Primary source: events.db
+    if EVENTS_DB.exists():
+        import sqlite3
         try:
-            ev = json.loads(line)
-            ets = datetime.fromisoformat(ev.get("ts", "").replace("Z", "+00:00"))
-            if ets > threshold and ev.get("phase"):
-                phases.add(ev["phase"])
+            conn = sqlite3.connect(str(EVENTS_DB))
+            rows = conn.execute(
+                "SELECT DISTINCT phase FROM events WHERE ts > ?",
+                (threshold.strftime("%Y-%m-%dT%H:%M:%SZ"),),
+            ).fetchall()
+            for (p,) in rows:
+                if p:
+                    phases.add(p)
+            conn.close()
         except Exception:
-            continue
+            pass
+
+    # Legacy fallback
+    if EVENTS_JSONL.exists():
+        for line in EVENTS_JSONL.read_text(encoding="utf-8",
+                                           errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+                ets = datetime.fromisoformat(
+                    ev.get("ts", "").replace("Z", "+00:00"))
+                if ets > threshold and ev.get("phase"):
+                    phases.add(ev["phase"])
+            except Exception:
+                continue
     return len(phases)
 
 
@@ -165,59 +243,59 @@ def cmd_health(args) -> int:
 
 def cmd_trace(args) -> int:
     rule_id = args.rule_id
-    tel = Path(".vg/telemetry.jsonl")
-    if not tel.exists():
-        print(f"No telemetry.jsonl yet — rule {rule_id} has no firing history")
+    all_events = _read_bootstrap_events()
+
+    matching = [
+        ev for ev in all_events
+        if ev["payload"].get("rule_id") == rule_id
+    ]
+    if not matching:
+        print(f"Rule {rule_id} — no events in events.db or telemetry.jsonl")
         return 0
 
-    events = []
-    for line in tel.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            ev = json.loads(line)
-            payload = ev.get("payload") or ev.get("meta") or {}
-            if ev.get("event_type", "").startswith("bootstrap.rule_fired") and payload.get("rule_id") == rule_id:
-                events.append(ev)
-            elif payload.get("rule_id") == rule_id:
-                events.append(ev)
-        except Exception:
-            continue
+    fired = [e for e in matching if e["event_type"] == "bootstrap.rule_fired"]
+    recorded = [e for e in matching
+                if e["event_type"] == "bootstrap.outcome_recorded"]
 
-    if not events:
-        print(f"Rule {rule_id} — no firing events in telemetry")
-        return 0
-
-    print(f"Rule {rule_id} — {len(events)} firing event(s)\n")
-    for ev in events[-20:]:
-        payload = ev.get("payload") or ev.get("meta") or {}
-        print(f"  {ev.get('ts', '?')}  {ev.get('command', '?')}  phase={ev.get('phase', '?')}  outcome={ev.get('outcome', '?')}  changed={payload.get('changed', '?')}")
+    print(f"Rule {rule_id} — {len(fired)} fires, {len(recorded)} outcomes recorded\n")
+    for ev in matching[-30:]:
+        pl = ev["payload"]
+        kind = ev["event_type"].split(".", 1)[1]
+        detail = pl.get("outcome") or pl.get("changed") or ""
+        print(f"  {ev['ts']}  {ev['command']:15s} phase={ev['phase']:6s} "
+              f"{kind:20s}  {detail}")
     return 0
 
 
 def cmd_efficacy(args) -> int:
-    """Scan telemetry and update ACCEPTED.md hits/outcomes.
-    Non-destructive read — reports what WOULD be updated. Use --apply to write."""
+    """Derive hits/success_count/fail_count from events.db + legacy jsonl.
+    Non-destructive read — reports what WOULD update.
+    Closes v1 loop where outcome events were never emitted.
+    """
     entries = _parse_accepted()
-    tel = Path(".vg/telemetry.jsonl")
+    events = _read_bootstrap_events()
 
     fires: dict[str, Counter] = {}
-    if tel.exists():
-        for line in tel.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                ev = json.loads(line)
-                if not ev.get("event_type", "").startswith("bootstrap.rule_fired"):
-                    continue
-                payload = ev.get("payload") or ev.get("meta") or {}
-                rid = payload.get("rule_id")
-                if not rid:
-                    continue
-                c = fires.setdefault(rid, Counter())
-                c["hits"] += 1
-                if ev.get("outcome") == "PASS":
-                    c["success"] += 1
-                elif ev.get("outcome") in ("FAIL", "BLOCK"):
-                    c["fail"] += 1
-            except Exception:
-                continue
+    for ev in events:
+        et = ev["event_type"]
+        rid = ev["payload"].get("rule_id")
+        if not rid:
+            continue
+        c = fires.setdefault(rid, Counter())
+        if et == "bootstrap.rule_fired":
+            c["hits"] += 1
+            # Legacy path: if outcome already set on fire event, count it
+            if ev["outcome"] == "PASS":
+                c["success"] += 1
+            elif ev["outcome"] in ("FAIL", "BLOCK"):
+                c["fail"] += 1
+        elif et == "bootstrap.outcome_recorded":
+            # v2.2 authoritative outcome attribution
+            outcome = ev["payload"].get("outcome", "")
+            if outcome == "success":
+                c["success"] += 1
+            elif outcome == "fail":
+                c["fail"] += 1
 
     print("Efficacy snapshot:")
     changes = []

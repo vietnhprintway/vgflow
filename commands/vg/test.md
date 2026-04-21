@@ -102,6 +102,12 @@ fi
 ```
 </step>
 
+```bash
+# v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:test "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 00_gate_integrity_precheck 2>/dev/null || true
+```
+
 <step name="00_session_lifecycle">
 **Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
 
@@ -454,6 +460,13 @@ Display:
   Fields: {matched}/{total}
   Idempotency (critical domains): {CRITICAL_COUNT} checked, {IDEMPOTENCY_FAILS} failures
   Result: {PASS|BLOCK}
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/5b_runtime_contract_verify.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5b_runtime_contract_verify 2>/dev/null || true
 ```
 </step>
 
@@ -1743,6 +1756,7 @@ FLOW_FILES=$(find "${REPO_ROOT}/${FLOWS_DIR}" -type f \( -name "*.maestro.yaml" 
 if [ -z "$FLOW_FILES" ]; then
   echo "⚠ No Maestro flows found under ${FLOWS_DIR}. Run 5d_mobile_codegen first."
   touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_mobile_flow 2>/dev/null || true
   # Don't fail — codegen might be a no-op if goals are all UNREACHABLE
   exit 0
 fi
@@ -1794,6 +1808,8 @@ if [ $FAILED -gt 0 ]; then
 fi
 
 touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_mobile_flow 2>/dev/null || true
 ```
 </step>
 
@@ -1984,6 +2000,7 @@ RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
 if [ ! -f "$RUNTIME_MAP" ]; then
   echo "⚠ RUNTIME-MAP.json missing — codegen needs discovery artifacts from /vg:review"
   touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5d_mobile_codegen 2>/dev/null || true
   exit 0
 fi
 
@@ -2067,6 +2084,8 @@ echo ""
 echo "5d Mobile Codegen: ${GENERATED} flow(s) generated → ${OUT_DIR}/"
 
 touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5d_mobile_codegen 2>/dev/null || true
 ```
 
 **Note on template quality:**
@@ -2407,6 +2426,8 @@ else
 fi
 
 touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5f_mobile_security_audit 2>/dev/null || true
 ```
 
 **Scope limits (V2 deferred):**
@@ -2848,6 +2869,21 @@ Test complete for Phase {N}.
   Security: {verdict}
   Verdict: {PASSED | GAPS_FOUND | FAILED}
   Next: /vg:accept {phase}
+```
+
+```bash
+# v2.2 — terminal emit + run-complete for /vg:test
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test complete 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 0_parse_and_validate 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "test.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ test run-complete BLOCK — review orchestrator output + fix" >&2
+  exit $RUN_RC
+fi
 ```
 </step>
 

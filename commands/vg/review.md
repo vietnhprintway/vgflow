@@ -119,6 +119,12 @@ fi
 ```
 </step>
 
+```bash
+# v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:review "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 00_gate_integrity_precheck 2>/dev/null || true
+```
+
 <step name="00_session_lifecycle">
 **Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
 
@@ -275,13 +281,15 @@ p.write_text(json.dumps(s, indent=2))
 </step>
 
 <step name="0b_goal_coverage_gate">
-**MANDATORY GATE — every automated goal must have TS-XX binding in at least one test file.**
+**ADVISORY GATE (v2.2+) — warn on unbound automated goals, but don't BLOCK at review stage.**
 
-Prevents Phase 10 scenario: goals declared but tests never reference them, review marks "NOT_SCANNED" without root cause visible. Build post-mortem already runs this advisory; review enforces.
+Rationale: tests land in /vg:test (creates .spec.ts with TS-XX markers). Review runs BEFORE /vg:test → first-pass review always fails goal coverage → pipeline deadlock on backend-only phases.
+
+Fix (v2.2+): at review stage = WARN only. At /vg:test + /vg:accept stages = BLOCK (those are the right enforcement points).
 
 ```bash
 echo ""
-echo "━━━ Goal coverage gate ━━━"
+echo "━━━ Goal coverage gate (advisory at review) ━━━"
 ${PYTHON_BIN} .claude/scripts/verify-goal-coverage-phase.py \
   --phase-dir "${PHASE_DIR}" \
   --repo-root "${REPO_ROOT}"
@@ -289,23 +297,25 @@ GOAL_RC=$?
 
 if [ "$GOAL_RC" -eq 2 ]; then
   echo ""
-  echo "⛔ Review BLOCKED by goal coverage gate."
-  echo "   Every automated goal in TEST-GOALS.md must have a test case with matching TS-XX marker."
-  echo "   Either: add test referencing TS-XX, OR mark goal verification: deferred|manual."
+  echo "⚠ Goal coverage gap (advisory at review stage — will enforce at /vg:test):"
+  echo "   Some automated goals have no TS-XX binding. This is expected if /vg:test"
+  echo "   hasn't run yet. Tests will be added there."
   echo ""
-  echo "Override (NOT recommended, logs to OVERRIDE-DEBT register):"
-  echo "  /vg:review ${PHASE_NUMBER} --skip-goal-coverage"
-  if [[ ! "${ARGUMENTS}" =~ --skip-goal-coverage ]]; then
+  echo "To hard-enforce at review: /vg:review ${PHASE_NUMBER} --strict-goal-coverage"
+  if [[ "${ARGUMENTS}" =~ --strict-goal-coverage ]]; then
+    echo "⛔ --strict-goal-coverage set — BLOCK at review (legacy v1.14.4 behavior)."
     exit 1
   fi
-  # Override path: log as debt
+  # Log advisory to debt register for /vg:test + /vg:accept to enforce
   source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
   if type -t log_override_debt >/dev/null 2>&1; then
-    log_override_debt "review-goal-coverage" "${PHASE_NUMBER}" "unbound automated goals" "${PHASE_DIR}"
+    log_override_debt "review-goal-coverage-advisory" "${PHASE_NUMBER}" "unbound goals expected before /vg:test" "${PHASE_DIR}"
   fi
 fi
 
 touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || true
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0b_goal_coverage_gate 2>/dev/null || true
 ```
 </step>
 
@@ -532,6 +542,7 @@ PY
 
   echo "✓ Infra-smoke PASS (${READY_COUNT}/${TOTAL}) — phase provisioned as specified."
   touch "${PHASE_DIR}/.step-markers/phaseP_infra_smoke.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_infra_smoke 2>/dev/null || true
   # Exit review early — subsequent steps (browser, goal comparison) N/A for infra profile.
   exit 0
 fi
@@ -609,6 +620,8 @@ print("✓ GOAL-COVERAGE-MATRIX.md written (hotfix delta)")
 PY
 
   touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
+
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_delta 2>/dev/null || true
   exit 0
 fi
 ```
@@ -651,6 +664,7 @@ open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (bugfix regression stub)")
 PY
   touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_regression 2>/dev/null || true
   exit 0
 fi
 ```
@@ -700,6 +714,7 @@ open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (migration schema-verify)")
 PY
   touch "${PHASE_DIR}/.step-markers/phaseP_schema_verify.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_schema_verify 2>/dev/null || true
   exit 0
 fi
 ```
@@ -745,6 +760,7 @@ open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (docs link-check)")
 PY
   touch "${PHASE_DIR}/.step-markers/phaseP_link_check.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_link_check 2>/dev/null || true
   exit 0
 fi
 ```
@@ -863,6 +879,7 @@ if [ "$GRAPHIFY_ACTIVE" != "true" ]; then
   echo "RIPPLE_SKIPPED=true" > "${PHASE_DIR}/uat-ripples.txt"
   echo "RIPPLE_SKIP_REASON=graphify-inactive" >> "${PHASE_DIR}/uat-ripples.txt"
   touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase1_5_ripple_and_god_node 2>/dev/null || true
   # skip to Phase 2
 fi
 ```
@@ -2115,6 +2132,7 @@ RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
 if [ ! -f "$RUNTIME_MAP" ]; then
   echo "⚠ RUNTIME-MAP.json chưa tồn tại — bỏ qua limit check (Phase 2 có thể skipped hoặc failed)."
   touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2_exploration_limits 2>/dev/null || true
 else
   MAX_VIEW="${CONFIG_REVIEW_MAX_ACTIONS_PER_VIEW:-50}"
   MAX_TOTAL="${CONFIG_REVIEW_MAX_ACTIONS_TOTAL:-200}"
@@ -2206,6 +2224,8 @@ state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding=
 PY
 
   touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2_exploration_limits 2>/dev/null || true
 fi
 ```
 
@@ -3922,6 +3942,22 @@ Next steps (pick the matching path — DO NOT just re-run /vg:review blindly):
 4. **Closing MUST contain "Next:" block** with at least 2 labeled options (A/B/C...) when verdict ≠ PASS.
 5. **If executor cannot run something** (bash broken, no internet, missing creds), say so EXPLICITLY and tell user the manual command to run instead. Don't bury it in middle of output.
 
+
+```bash
+# v2.2 — complete step marker + terminal emit + run-complete
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review complete 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0_parse_and_validate 2>/dev/null || true
+READY_COUNT=$(grep -c "READY" "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>/dev/null || echo 0)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"goals_ready\":${READY_COUNT}}" >/dev/null
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ review run-complete BLOCK — review orchestrator output + fix before /vg:test" >&2
+  exit $RUN_RC
+fi
+```
 </step>
 
 </process>

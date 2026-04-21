@@ -85,6 +85,21 @@ fi
 ```
 
 ```bash
+# --- VG run lifecycle + telemetry (v1.15.2 — fixes ghost enforcement) ---
+# Source once — defeats "type -t emit_telemetry silent no-op" pattern in 6 critical commands.
+# Loads: vg_run_start, vg_run_complete, vg_emit, vg_ensure_override_debt_register
+# Also eagerly sources telemetry.sh so runtime_contract must_emit_telemetry actually fires.
+if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/telemetry.sh" ]; then
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/telemetry.sh" 2>/dev/null
+  type -t telemetry_init >/dev/null 2>&1 && telemetry_init 2>/dev/null
+fi
+if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/vg-run.sh" ]; then
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/vg-run.sh" 2>/dev/null
+  type -t vg_ensure_override_debt_register >/dev/null 2>&1 && vg_ensure_override_debt_register
+fi
+```
+
+```bash
 # --- Model selection (per pipeline role) ---
 # Parse models section from config. Commands use these to set Agent model: parameter.
 MODEL_PLANNER=$(awk '/^models:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /planner:/{print $2; exit}' .claude/vg.config.md 2>/dev/null | tr -d '"' || echo "opus")

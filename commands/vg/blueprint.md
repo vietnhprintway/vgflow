@@ -80,6 +80,15 @@ Sub-steps:
 Before planning, enforce any `config_amendments_needed` locked during /vg:scope (e.g. new surfaces proposed in Round 2 via surface-gap detector). Running blueprint with stale config → tasks spawn against wrong surface paths → silent failure downstream.
 
 ```bash
+# v2.2 — register run with orchestrator (idempotent if UserPromptSubmit hook
+# already fired). Hard-fail if orchestrator unreachable.
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start \
+    vg:blueprint "${PHASE_NUMBER}" "${ARGUMENTS}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+
+
 source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/amendment-preflight.sh"
 
 # Mode from flag
@@ -121,6 +130,7 @@ Scanner is authoritative: reads `PIPELINE-STATE.steps.scope.config_amendments_ne
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/0_amendment_preflight.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 0_amendment_preflight 2>/dev/null || true
 ```
 </step>
 
@@ -148,6 +158,11 @@ Validate: phase exists. Determine `$PHASE_DIR`.
 Rule 2 khai "4 sub-steps in order". `--from=X` là resume feature, nhưng phải verify prior steps thực sự đã complete — không cho silent skip.
 
 ```bash
+# v1.15.2 — register run so Stop hook can verify runtime_contract evidence
+# (blueprint has no session_start; explicit call here.)
+type -t vg_run_start >/dev/null 2>&1 && \
+  vg_run_start "vg:blueprint" "${PHASE_NUMBER:-unknown}" "${ARGUMENTS:-}"
+
 FROM_STEP=""
 if [[ "$ARGUMENTS" =~ --from=(2b|2c|2d|2b5|2b6|2b7) ]]; then
   FROM_STEP="${BASH_REMATCH[1]}"
@@ -208,6 +223,7 @@ fi
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/1_parse_args.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 1_parse_args 2>/dev/null || true
 ```
 </step>
 
@@ -231,6 +247,7 @@ Each sub-step should: `TaskUpdate: status="in_progress"` at start, `status="comp
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/create_task_tracker.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint create_task_tracker 2>/dev/null || true
 ```
 </step>
 
@@ -337,6 +354,7 @@ Skip gracefully when `design_assets.paths` empty (pure backend phase).
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2_verify_prerequisites.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2_verify_prerequisites 2>/dev/null || true
 ```
 </step>
 
@@ -959,6 +977,7 @@ Plan granularity check:
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2a_plan.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2a_plan 2>/dev/null || true
 ```
 </step>
 
@@ -1066,6 +1085,7 @@ Planner should convert each warning into task annotations: `<edits-schema>X</edi
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2a5_cross_system_check.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2a5_cross_system_check 2>/dev/null || true
 ```
 </step>
 
@@ -1195,6 +1215,7 @@ If no API routes or web pages detected → write minimal contract with CONTEXT-d
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2b_contracts.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b_contracts 2>/dev/null || true
 ```
 </step>
 
@@ -1457,6 +1478,7 @@ After classification, include per-goal surface in blueprint narration:
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2b5_test_goals.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b5_test_goals 2>/dev/null || true
 ```
 </step>
 
@@ -1541,6 +1563,7 @@ UI-SPEC:
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2b6_ui_spec.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b6_ui_spec 2>/dev/null || true
 ```
 </step>
 
@@ -1566,6 +1589,7 @@ UI_MAP_ENABLED=$(awk '/^ui_map:/{f=1; next} f && /^[a-z_]+:/{f=0} f && /enabled:
 if [ "$UI_MAP_ENABLED" != "true" ]; then
   echo "ℹ ui_map disabled in config — skipping UI-MAP generation"
   touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b6b_ui_map 2>/dev/null || true
 else
   # Kiểm tra phase có touch FE không
   FE_TASKS=$(grep -cE "(\.tsx|\.jsx|\.vue|\.svelte)" "${PHASE_DIR}"/PLAN*.md 2>/dev/null || echo "0")
@@ -1573,6 +1597,7 @@ else
   if [ "${FE_TASKS:-0}" -eq 0 ]; then
     echo "ℹ Phase không có task FE — skip UI-MAP"
     touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b6b_ui_map 2>/dev/null || true
   else
     echo "Phase có ${FE_TASKS} dòng task FE. Chuẩn bị UI-MAP.md..."
 
@@ -1628,6 +1653,8 @@ else
     fi
 
     touch "${PHASE_DIR}/.step-markers/2b6b_ui_map.done"
+
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b6b_ui_map 2>/dev/null || true
   fi
 fi
 ```
@@ -1802,6 +1829,7 @@ Flow detection:
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2b7_flow_detect.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b7_flow_detect 2>/dev/null || true
 ```
 </step>
 
@@ -1915,6 +1943,7 @@ Result: {PASS|WARNING|BLOCK} — {N} mismatches
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2c_verify.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c_verify 2>/dev/null || true
 ```
 </step>
 
@@ -1972,6 +2001,7 @@ FAIL → hard exit 1. PLAN author must fix.
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2c_verify_plan_paths.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c_verify_plan_paths 2>/dev/null || true
 ```
 </step>
 
@@ -2033,6 +2063,7 @@ WARN conditions:
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2c1c_verify_utility_reuse.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c1c_verify_utility_reuse 2>/dev/null || true
 ```
 </step>
 
@@ -2116,6 +2147,7 @@ Compile check: {PASS|FAIL} via {config.contract_format.compile_cmd}
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2c2_compile_check.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c2_compile_check 2>/dev/null || true
 ```
 </step>
 
@@ -2484,6 +2516,19 @@ Proceeding to commit.
 # R7 step marker (v1.14.4+ — enforced via 3_complete gate)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/2d_validation_gate.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2d_validation_gate 2>/dev/null || true
+# v1.15.2 — fix marker drift. Frontmatter runtime_contract declares
+# "2d_crossai_review" but body historically only wrote "2d_validation_gate"
+# → Stop hook always blocked on a marker that never existed. Touch both now.
+touch "${PHASE_DIR}/.step-markers/2d_crossai_review.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2d_crossai_review 2>/dev/null || true
+
+# Emit contract-declared telemetry + release run on clean blueprint exit
+type -t vg_emit >/dev/null 2>&1 && {
+  vg_emit "blueprint.plan_written"         "{\"phase\":\"${PHASE_NUMBER}\"}"
+  vg_emit "blueprint.contracts_generated"  "{\"phase\":\"${PHASE_NUMBER}\"}"
+}
+type -t vg_run_complete >/dev/null 2>&1 && vg_run_complete "PASS"
 ```
 </step>
 
@@ -2582,6 +2627,19 @@ git commit -m "blueprint({phase}): plans + API contracts — CrossAI {verdict}"
 # R7 step marker (self-final)
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 touch "${PHASE_DIR}/.step-markers/3_complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 3_complete 2>/dev/null || true
+
+# v2.2 — terminal emit + run-complete. Validators fire here; BLOCK on violations.
+PLAN_COUNT=$(ls "${PHASE_DIR}"/PLAN*.md 2>/dev/null | wc -l | tr -d ' ')
+ENDPOINT_COUNT=$(grep -c '^## ' "${PHASE_DIR}/API-CONTRACTS.md" 2>/dev/null || echo 0)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"plans\":${PLAN_COUNT},\"endpoints\":${ENDPOINT_COUNT}}" >/dev/null
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ blueprint run-complete BLOCK — review orchestrator output + fix before /vg:build" >&2
+  exit $RUN_RC
+fi
 ```
 </step>
 

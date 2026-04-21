@@ -33,9 +33,12 @@ runtime_contract:
     - "9_post_execution"
     - "10_postmortem_sanity"
   must_emit_telemetry:
-    - event_type: "build.phase_start"
+    # v1.15.2 — names match vg_run_start/vg_run_complete auto-emits.
+    # Previously declared build.phase_start/build.phase_end but 0 emit calls
+    # existed anywhere in body → hook always failed this check.
+    - event_type: "build.started"
       phase: "${PHASE_NUMBER}"
-    - event_type: "build.phase_end"
+    - event_type: "build.completed"
       phase: "${PHASE_NUMBER}"
   forbidden_without_override:
     # Every escape hatch must leave a debt-register trail.
@@ -107,6 +110,15 @@ if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
 fi
 ```
 </step>
+
+```bash
+# v2.2 — register run with orchestrator (idempotent if UserPromptSubmit hook fired)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:build "${PHASE_NUMBER:-${PHASE_ARG}}" "${ARGUMENTS}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 0_gate_integrity_precheck 2>/dev/null || true
+```
 
 <step name="0_session_lifecycle">
 **Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
@@ -193,6 +205,13 @@ if [ "$STATUS_ONLY" = "true" ]; then
   vg_build_progress_status "$PHASE_DIR_LOOKUP"
   exit 0
 fi
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/1_parse_args.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 1_parse_args 2>/dev/null || true
 ```
 </step>
 
@@ -706,6 +725,13 @@ fi
 ```
 
 Final action: `touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"`
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 4_load_contracts_and_context 2>/dev/null || true
+```
 </step>
 
 <step name="5_handle_branching">
@@ -744,10 +770,26 @@ Filter: skip `has_summary: true`. If `--gaps-only`: skip non-gap_closure. If `--
 Report execution plan table.
 
 Final action: `touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"`
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 7_discover_plans 2>/dev/null || true
+```
 </step>
 
 <step name="8_execute_waves">
-For each wave:
+
+**⚠ WAVE_FILTER gate (v2.2):** If `WAVE_FILTER` is set (from `--wave N`), execute **ONLY** that wave. After Wave N completes + commits successfully, skip all subsequent waves and proceed directly to step 9_post_execution. Use for incremental testing on large phases (8+ waves).
+
+```bash
+if [ -n "${WAVE_FILTER:-}" ]; then
+  echo "▸ --wave ${WAVE_FILTER} mode: orchestrator will execute ONLY Wave ${WAVE_FILTER} then exit to step 9."
+fi
+```
+
+For each wave (subject to WAVE_FILTER gate above):
 
 ### 8a: Generate wave-context.md (BEFORE spawning executors)
 
@@ -1954,6 +1996,13 @@ echo "wave-${N}: ${FAILED_GATE:-passed} (retries: ${RETRY_COUNT})" >> "${PHASE_D
 ```
 
 Only proceed to next wave if `$FAILED_GATE` empty.
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/8_execute_waves.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 8_execute_waves 2>/dev/null || true
+```
 </step>
 
 <step name="8_5_bootstrap_reflection_per_wave">
@@ -2514,6 +2563,13 @@ Commit summaries:
 git add ${PHASE_DIR}/SUMMARY*.md ${PLANNING_DIR}/STATE.md ${PLANNING_DIR}/ROADMAP.md
 git commit -m "build({phase}): {completed}/{total} plans executed"
 ```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/9_post_execution.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 9_post_execution 2>/dev/null || true
+```
 </step>
 
 <step name="10_postmortem_sanity">
@@ -2583,6 +2639,25 @@ if [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
 fi
 
 touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 10_postmortem_sanity 2>/dev/null || true
+```
+
+```bash
+# v2.2 — terminal emit + run-complete. Validators fire here; BLOCK on violations.
+SUMMARY_COUNT=$(ls "${PHASE_DIR}"/SUMMARY*.md 2>/dev/null | wc -l | tr -d " ")
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "build.completed" --payload "{\"phase\":\"${PHASE_NUMBER:-${PHASE_ARG}}\",\"summaries\":${SUMMARY_COUNT}}" >/dev/null
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ build run-complete BLOCK — review orchestrator output + fix before /vg:review" >&2
+  exit $RUN_RC
+fi
 ```
 </step>
 

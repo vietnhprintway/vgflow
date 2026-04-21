@@ -1,5 +1,81 @@
 # Changelog
 
+## [2.2.0] - 2026-04-21
+
+### Major — Orchestrator + runtime contract + anti-rationalization enforcement
+
+v2.2 đóng gap lớn nhất của VG: AI tự-chứng thực "done" qua rationalization. Ship **trust-boundary layer** giữa AI và pipeline — AI không advance pipeline được nếu thiếu evidence runtime.
+
+### Added
+
+**Orchestrator layer** (`scripts/vg-orchestrator/`):
+- Python CLI binary với 20+ subcommands: `run-start`, `run-complete`, `run-abort`, `run-resume`, `run-repair`, `mark-step`, `emit-event`, `wave-start`, `wave-complete`, `override`, `validate`, `verify-hash-chain`, `query-events`.
+- SQLite `events.db` với hash chain (tamper-evident event log, WAL + flock concurrency).
+- 5 JSON schemas: event, evidence-json, runtime-contract, override-debt-entry, validator-output.
+- Runtime contract parsed từ skill-MD frontmatter (must_write, must_touch_markers, must_emit_telemetry, forbidden_without_override).
+
+**9 validators** (`scripts/validators/`):
+- `phase-exists`, `context-structure`, `plan-granularity`, `wave-attribution`, `goal-coverage`, `task-goal-binding`, `test-first`, `override-debt-balance`, `event-reconciliation`.
+- **`runtime-evidence`** (v2.2 hallmark) — chặn AI mark goals READY dựa "code evidence". Yêu cầu Playwright spec phải **đã chạy** (report newer than SPECS.md mtime). Critical goals có code nhưng không runtime proof → BLOCK.
+- **Validator quarantine**: 3 consecutive fails → auto-disable, emit `validation.warned` reason=quarantined. Một PASS/WARN re-enable. Safety net chống 1 validator broken stall pipeline.
+
+**Schema validation** (`scripts/vg-orchestrator/contracts.py`): jsonschema validate runtime_contract at parse-time. Typo/structural errors surface ở load, không runtime.
+
+**Hooks 3-layer**:
+- `UserPromptSubmit`: vg-entry-hook.py registers run BEFORE skill-MD loads (AI can't skip init).
+- `Stop`: vg-verify-claim.py checks runtime_contract, exit 2 = force AI continue if evidence missing.
+- `PostToolUse`: existing hook preserved.
+
+**Skill-MD v2 rewrites** (all 6 pipeline commands):
+- scope.md, blueprint.md, build.md, review.md, test.md, accept.md.
+- Pattern: entry block `run-start` (idempotent) + emit `{cmd}.started` + inline `mark-step` at each step + terminal block emit `{cmd}.completed` + `run-complete` gate.
+- Inline commands (no bash functions — they don't persist across Claude Code Bash tool calls).
+
+**`/vg:doctor stack`** subcommand: diagnostic script check orchestrator reachable, events.db integrity, schemas valid, validators present, hooks wired, bootstrap consistent.
+
+### Workflow fixes
+
+- **`--wave N` contract exemption**: partial-run mode không ép full pipeline markers (8_execute_waves, 9_post_execution, 10_postmortem_sanity, complete) + `{cmd}.completed`. Wave-by-wave checkpoint clean, không override debt.
+- **Goal-coverage pipeline ordering**: gate ở review downgraded BLOCK→WARN. Validator dispatch removed from `vg:review` (runs `vg:test` + `vg:accept` where tests exist). Prevents backend-only phase deadlock.
+- **Validation verdict mapping**: PASS→validation.passed, WARN→validation.warned (new event type), BLOCK→validation.failed. Prior code collapsed WARN+BLOCK misleading audit.
+- **`${PHASE_DIR}` substitution**: when phase_dir=None (phase not on disk), fallback to readable `.vg/phases/{phase}-<missing>` instead of literal `${PHASE_DIR}`.
+- **Literal `\n` bug** (Python injection script artifact): replaced 3 broken commands in build.md với single-line form. Same fix applied to review.md + scope.md via pattern.
+- **Dedup `{cmd}.started` event**: 5 manual emits removed from skill-MDs. Orchestrator run-start auto-emit = single source.
+
+### Changed
+
+- All 6 pipeline skill-MDs require orchestrator subprocess at entry + exit (idempotent with UserPromptSubmit hook).
+- COMMAND_VALIDATORS dispatch mapping added runtime-evidence to review + test + accept.
+- Schema regex allows digits in flag names (`--allow-r5-violation` etc).
+
+### Deprecated / Removed
+
+- Bash function helpers `_mark()` / `_emit()` in skill-MDs — not persistent across Claude Code Bash invocations, replaced with inline commands.
+
+### Fixed
+
+- `validation.warned` vs `validation.failed` event distinction (phase-exists validator returned WARN was marked failed).
+- `--wave N` declared but unimplemented in build.md — now gates in step 8.
+- Stop hook false-fire on aborted runs (test via orchestrator state clear).
+
+### Tests
+
+- `scripts/tests/test_bypass_negative.py`: 10 scenarios AI could bypass orchestrator. All BLOCK correctly.
+- `scripts/vg-stack-health.py`: 8-check diagnostic, exit 0 healthy / 1 warn / 2 block.
+
+### Migration from v1.14.x
+
+- Skill-MDs auto-upgraded via install/sync — no user action needed.
+- Existing phases keep working (runtime_contract optional — old skill-MDs that lack it skip the check).
+- `events.db` auto-created on first v2.2 run.
+- Quarantine file `.vg/validator-quarantine.json` auto-gitignored.
+
+### Breaking? No
+
+- Backward-compatible: pre-v2.2 phases still process via v2 skill-MD.
+- All `/vg:*` commands preserve argument-hint; added flags are opt-in.
+- Hooks fail-open: if orchestrator missing, skill-MD proceeds (degraded-correct).
+
 ## [1.14.0] - 2026-04-20
 
 ### Added — Migrate semantic gates (real enforcement, no decoration)

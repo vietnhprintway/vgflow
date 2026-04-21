@@ -133,6 +133,18 @@ for arg in $ARGUMENTS; do
     *) PHASE_NUMBER="$arg" ;;
   esac
 done
+
+# v1.15.2 — register run so Stop hook can verify runtime_contract evidence
+# v2.2 — direct orchestrator call replaces bash-function indirection.
+# No fail-open: if orchestrator missing, skill cannot proceed. This is
+# the "AI can't skip init" contract — wrapper outside LLM rationalization.
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start \
+    vg:scope "${PHASE_NUMBER}" "${ARGUMENTS}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 0_parse_and_validate 2>/dev/null || true
 ```
 
 **Validate:**
@@ -555,6 +567,10 @@ AskUserQuestion:
 **When exhausted (no more gray areas):**
 AI states: "I've analyzed all {N} decisions for conflicts, edge cases, and gaps. {M} gray areas resolved through probes. Proceeding to artifact generation."
 → Proceed to Step 2. No confirmation question needed — AI decides when scope is thorough enough.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 1_deep_discussion 2>/dev/null || true
+```
 </step>
 
 <step name="2_artifact_generation">
@@ -677,6 +693,10 @@ Append to `${PHASE_DIR}/DISCUSSION-LOG.md`:
 ```
 
 **If file already exists (re-scope):** Read existing content, then append new session with incremented session label. Preserve all previous sessions verbatim.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 2_artifact_generation 2>/dev/null || true
+```
 </step>
 
 <step name="3_completeness_validation">
@@ -738,6 +758,10 @@ esac
 Previous inline substring match missed inflections — "QPS throttling" (SPECS) vs "QPS throttle" (decision title). Script now stems both sides (strips -ing/-tion/-ed/-s/...) + applies prefix-tolerance match so "throttl" ↔ "throttle" count as same root. Reduces false-negative unmatched spec items.
 
 Check B and D still WARN (softer signals). Check A and C are structural — block downstream errors.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 3_completeness_validation 2>/dev/null || true
+```
 </step>
 
 <step name="4_crossai_review">
@@ -798,6 +822,10 @@ Read and follow `.claude/commands/vg/_shared/crossai-invoke.md`.
   If "Re-discuss" -> open free-form round focused on that finding, then re-run validation (Step 3) on updated CONTEXT.md.
   If "Note" -> append to CONTEXT.md ## Deferred Ideas section.
   If "Ignore" -> log in DISCUSSION-LOG.md as "CrossAI finding ignored: {reason}".
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 4_crossai_review 2>/dev/null || true
+```
 </step>
 
 <step name="4_5_bootstrap_reflection">
@@ -821,6 +849,10 @@ fi
 ```
 
 See `.claude/commands/vg/_shared/reflection-trigger.md` for full spawn template and interactive flow.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 4_5_bootstrap_reflection 2>/dev/null || true
+```
 </step>
 
 <step name="5_commit_and_next">
@@ -836,6 +868,20 @@ TEST_SCENARIO_COUNT=$(grep -c '^\- TS-' "${PHASE_DIR}/CONTEXT.md" || echo 0)
 
 git add "${PHASE_DIR}/CONTEXT.md" "${PHASE_DIR}/DISCUSSION-LOG.md" "${PHASE_DIR}/PIPELINE-STATE.json"
 git commit -m "scope(${PHASE_NUMBER}): ${DECISION_COUNT} decisions, ${ENDPOINT_COUNT} endpoints, ${TEST_SCENARIO_COUNT} test scenarios"
+
+# v2.2: mark final step + emit completion event + invoke run-complete.
+# Orchestrator runs phase-exists + context-structure validators, emits
+# run.completed or run.blocked based on contract check. No bash catch-up
+# needed — individual steps mark as they finish (see _mark calls above).
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 5_commit_and_next 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "scope.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"decisions\":${DECISION_COUNT},\"endpoints\":${ENDPOINT_COUNT},\"scenarios\":${TEST_SCENARIO_COUNT}}" >/dev/null
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ scope run-complete BLOCK — review orchestrator output + fix before /vg:blueprint" >&2
+  exit $RUN_RC
+fi
 ```
 
 **Display summary:**

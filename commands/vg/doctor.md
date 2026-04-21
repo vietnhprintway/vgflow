@@ -36,7 +36,7 @@ VERB=""
 FWD_ARGS=""
 for arg in $ARGUMENTS; do
   case "$arg" in
-    health|integrity|gate-stats|recover|help)
+    health|integrity|gate-stats|recover|stack|help)
       [ -z "$VERB" ] && VERB="$arg" || FWD_ARGS="${FWD_ARGS} ${arg}"
       ;;
     --integrity)
@@ -75,7 +75,10 @@ The shell block above resolves `VERB` and `FWD_ARGS`. The outer model reads the 
 | `integrity`   | `Skill(skill="vg:integrity", args=FWD_ARGS)` |
 | `gate-stats`  | `Skill(skill="vg:gate-stats", args=FWD_ARGS)` |
 | `recover`     | `Skill(skill="vg:recover", args=FWD_ARGS)` |
+| `stack`       | run `python .claude/scripts/vg-stack-health.py` inline (no sub-skill) |
 | `help` / ""   | print menu below, exit 0 |
+
+For `stack` verb: executes the v2.2 stack diagnostic — orchestrator reachable, events.db integrity, schemas valid, validators present, hooks wired, bootstrap consistent. Exit 0 healthy, 1 warnings, 2 blocking issues.
 
 ```bash
 if [ -z "$VERB" ] || [ "$VERB" = "help" ]; then
