@@ -249,6 +249,19 @@ MAJOR_LATEST="$(printf    '%s' "$LATEST"    | cut -d. -f1)"
 case "$MAJOR_INSTALLED" in *[!0-9]*|'') MAJOR_INSTALLED=0 ;; esac
 case "$MAJOR_LATEST"    in *[!0-9]*|'') MAJOR_LATEST=0    ;; esac
 
+# Additional deep-compat scan — catches breaking changes WITHIN a major
+# (renamed step markers, dropped contract fields, removed scripts, etc.)
+# compat-check.py reads latest RELEASE.md / CHANGELOG, grep against installed
+# skill files, surface anything user needs to know regardless of major bump.
+COMPAT_CHECK=".claude/scripts/compat-check.py"
+if [ -f "$COMPAT_CHECK" ]; then
+  echo ""
+  echo "━━━ Deep compat scan (${INSTALLED} → ${LATEST}) ━━━"
+  ${PYTHON_BIN:-python3} "$COMPAT_CHECK" \
+    --from "$INSTALLED" --to "$LATEST" 2>&1 | head -50 \
+    || echo "(compat-check returned non-zero — review output before proceeding)"
+fi
+
 if [ "$MAJOR_LATEST" -gt "$MAJOR_INSTALLED" ] && [ "$INSTALLED" != "0.0.0" ]; then
   MIG="migrations/v${MAJOR_INSTALLED}_to_v${MAJOR_LATEST}.md"
   echo ""

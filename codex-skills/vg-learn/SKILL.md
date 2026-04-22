@@ -133,7 +133,22 @@ Apply candidate to bootstrap zone.
 1. Schema validate (for `config_override`): target key must be in `schema/overlay.schema.yml` allowlist
    - If not in allowlist → offer fallback: "convert to prose rule?"
 2. Scope syntax validate via `scope-evaluator.py --context-json <empty> --scope-json <scope>` → exit 2 = malformed
-3. Conflict detect vs active ACCEPTED rules (same target key, opposite value/action) → block, show diff
+3. **Conflict detect** vs active ACCEPTED rules (same target key, opposite value/action) — MUST call `bootstrap-conflict.py`:
+   ```bash
+   # Write candidate block to tempfile then call conflict detector
+   CAND_YAML=$(mktemp -t vg-candidate-XXXXXX.yml)
+   # AI extracts candidate YAML block from CANDIDATES.md for L-XXX into $CAND_YAML
+   RESULT=$("${PYTHON_BIN:-python3}" .claude/scripts/bootstrap-conflict.py \
+     --candidate "$CAND_YAML" --emit json)
+   CONFLICT_RC=$?
+   rm -f "$CAND_YAML"
+   if [ "$CONFLICT_RC" -ne 0 ]; then
+     echo "⛔ Conflict detected — cannot promote L-XXX:" >&2
+     echo "$RESULT" | ${PYTHON_BIN:-python3} -c "import json,sys; [print(f'  - {c}') for c in json.load(sys.stdin).get('conflicts', [])]"
+     echo "   Resolve: retract conflicting rule OR adjust candidate scope." >&2
+     exit 1
+   fi
+   ```
 4. Dedupe check vs ACCEPTED (semantic equivalence) → block if duplicate
 5. Dry-run REQUIRED (shows impact preview)
 

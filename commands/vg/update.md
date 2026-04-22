@@ -171,6 +171,19 @@ MAJOR_LATEST="$(printf    '%s' "$LATEST"    | cut -d. -f1)"
 case "$MAJOR_INSTALLED" in *[!0-9]*|'') MAJOR_INSTALLED=0 ;; esac
 case "$MAJOR_LATEST"    in *[!0-9]*|'') MAJOR_LATEST=0    ;; esac
 
+# Additional deep-compat scan — catches breaking changes WITHIN a major
+# (renamed step markers, dropped contract fields, removed scripts, etc.)
+# compat-check.py reads latest RELEASE.md / CHANGELOG, grep against installed
+# skill files, surface anything user needs to know regardless of major bump.
+COMPAT_CHECK=".claude/scripts/compat-check.py"
+if [ -f "$COMPAT_CHECK" ]; then
+  echo ""
+  echo "━━━ Deep compat scan (${INSTALLED} → ${LATEST}) ━━━"
+  ${PYTHON_BIN:-python3} "$COMPAT_CHECK" \
+    --from "$INSTALLED" --to "$LATEST" 2>&1 | head -50 \
+    || echo "(compat-check returned non-zero — review output before proceeding)"
+fi
+
 if [ "$MAJOR_LATEST" -gt "$MAJOR_INSTALLED" ] && [ "$INSTALLED" != "0.0.0" ]; then
   MIG="migrations/v${MAJOR_INSTALLED}_to_v${MAJOR_LATEST}.md"
   echo ""
@@ -354,25 +367,6 @@ if [ -f "${REPO_ROOT}/vgflow/sync.sh" ]; then
   ( cd "$REPO_ROOT" && bash vgflow/sync.sh --no-source 2>&1 | tail -20 ) || echo "(sync.sh returned non-zero, continuing)"
 else
   echo "(vgflow/sync.sh not present — skipping codex/gemini mirror sync)"
-fi
-```
-</step>
-
-<step name="8b_data_migrations">
-**Auto-run data migrations (Batch 5b+) — convert legacy .vg/ artifacts to new schema.**
-
-v2.3 introduced content-schema step markers. Pre-2.3 empty markers are still
-accepted in lenient mode, but post-upgrade projects should run the migration
-once to get forgery-resistant content markers. Idempotent — skips already-migrated.
-
-```bash
-# Marker content schema migration (v2.3+)
-MIG_SCRIPT="${REPO_ROOT}/.claude/scripts/marker-migrate.py"
-if [ -f "$MIG_SCRIPT" ] && [ -d "${REPO_ROOT}/${PLANNING_DIR:-.vg}/phases" ]; then
-  echo ""
-  echo "Running data migration: marker content schema (Batch 5b)..."
-  python3 "$MIG_SCRIPT" --planning "${REPO_ROOT}/${PLANNING_DIR:-.vg}" 2>&1 | tail -3 \
-    || echo "(marker-migrate returned non-zero, continuing — legacy markers still work in lenient mode)"
 fi
 ```
 </step>

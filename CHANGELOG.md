@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.3.1] - 2026-04-23
+
+### Level 5 push — close 3 autonomy gaps from v2.3 review
+
+v2.3.1 closes the remaining gaps preventing VG from being classified as **Level 5 Autonomous Workflow Engineering**:
+
+### Gap 1 — Dead Python scripts wired or deleted
+
+- `bootstrap-conflict.py` (128 LoC) — now called by `/vg:learn --promote` as mandatory pre-check. Candidates with scope conflicting with active ACCEPTED rules are rejected before overlay write.
+- `bootstrap-hygiene.py` (470+ LoC) — `/vg:bootstrap --health`, `--trace`, and new `--efficacy` subcommands all route here. Was previously hitting `bootstrap-loader.py` which didn't have this logic.
+- `compat-check.py` (159 LoC) — wired into `/vg:update` step `4_breaking_gate`. Surfaces breaking changes within a major (renamed step markers, dropped contract fields, removed scripts).
+- `vg_sync_codex.py` — **deleted.** Superseded by `generate-codex-skills.sh` (v2.3) which is now called automatically by `sync.sh`.
+- `phase-metadata.py` (188 LoC) — confirmed referenced by `bootstrap-test-runner.py` + `bootstrap.md`; kept.
+- `vg_migrate_goal_tags.py` — kept as one-shot migration utility (no runtime invocation by design).
+
+### Gap 2 — Codex skill drift loop closed
+
+- `sync.sh` now runs `generate-codex-skills.sh --force` automatically in step `1b` of every sync. Previously codex-skills were manually regenerated and drifted up to 400 lines behind Claude source (observed on `review.md` pre-2.3).
+- Next sync emits `REGENERATED: codex-skills (41 skills from Claude source)` in summary.
+
+### Gap 3 — Bootstrap outcome tracking functional
+
+- `cmd_efficacy` in `bootstrap-hygiene.py` now **surgically mutates ACCEPTED.md** in place: rule blocks get their `hits`, `hit_outcomes.success_count`, `hit_outcomes.fail_count`, and `last_hit` timestamp updated from events.jsonl + events.db.
+- Previously `--apply` only wrote to `.efficacy-log.md`; ACCEPTED.md stayed at `hits: 0` forever → self-learning system was mute.
+- `accept.md` post-UAT now queries events.db for `bootstrap.rule_fired` events in the phase, emits `bootstrap.outcome_recorded` with phase verdict per rule, then auto-runs `bootstrap-hygiene.py efficacy --apply`.
+- Phase success/fail attribution: derived from final UAT verdict (DEFER|REJECTED|FAILED → fail, else success).
+
+### Tests
+
+- `test_bootstrap_efficacy.py` +6 cases (dry-run no-mutation, --apply updates hits, multiple rules, audit log, empty events no-op, idempotent)
+- **Total 77/77 targeted tests pass** (71 from v2.3 + 6 new).
+
+### Engineering level
+
+v2.3.1 reaches **Level 5 — Autonomous Workflow Engineering**:
+1. ✅ Self-healing: dead scripts wired or deleted, distribution integrity via auto-regen
+2. ✅ Auto-bootstrap learning feedback loop: rule fire → outcome attribution → efficacy → ACCEPTED.md update
+3. ✅ Zero-drift distribution: sync.sh single source of truth
+
+---
+
 ## [2.3.0] - 2026-04-23
 
 ### OHOK hardening — close 6 performative gaps + marker forgery attack surface

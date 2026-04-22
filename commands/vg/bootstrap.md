@@ -50,16 +50,28 @@ Full report:
 - Recent candidates pending review count
 
 ```bash
-${PYTHON_BIN} .claude/scripts/bootstrap-loader.py --emit trace --command bootstrap
+${PYTHON_BIN} .claude/scripts/bootstrap-hygiene.py health
 ```
 
 ### `/vg:bootstrap --trace <rule-id>`
 
-Show firing history of one rule. Reads `${PLANNING_DIR}/telemetry.jsonl` for events with `event_type=bootstrap.rule_fired` and `rule_id=<id>`.
+Show firing history of one rule. Reads telemetry.jsonl + events.db for events with `event_type=bootstrap.rule_fired` and `rule_id=<id>`.
 
 ```bash
-grep '"rule_id":"L-042"' "${PLANNING_DIR}/telemetry.jsonl" | python -m json.tool
+${PYTHON_BIN} .claude/scripts/bootstrap-hygiene.py trace --rule "$RULE_ID"
 ```
+
+### `/vg:bootstrap --efficacy`
+
+Recompute `hits` + `hit_outcomes.{success_count,fail_count}` in ACCEPTED.md
+from telemetry events. Run periodically (or auto-triggered by `/vg:accept`
+at phase completion — see Gap 3 wiring).
+
+```bash
+${PYTHON_BIN} .claude/scripts/bootstrap-hygiene.py efficacy
+```
+
+Outputs summary of rules updated + new efficacy scores.
 
 ### `/vg:bootstrap --test`
 

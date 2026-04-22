@@ -101,6 +101,27 @@ if [ "$SKIP_SOURCE" = "false" ] && [ -d "$REPO_ROOT/.claude/commands/vg" ]; then
 fi
 
 # ============================================================
+# 1b. REGENERATE CODEX SKILLS FROM CLAUDE SOURCE
+# ============================================================
+# v2.3+ fix: codex-skills were drifting (400+ lines behind review.md). Now
+# regenerated automatically every sync so Codex runs get the same skill body
+# as Claude. The generator strips <NARRATION_POLICY> and prepends the fixed
+# <codex_skill_adapter> prelude — everything else is identical.
+if [ "$SKIP_SOURCE" = "false" ] && [ -x "$SCRIPT_DIR/scripts/generate-codex-skills.sh" ]; then
+  echo "━━━ 1b. Regenerate Codex skills from Claude source ━━━"
+  if [ "$MODE_CHECK" = "true" ]; then
+    # Dry-run: list what would change by diffing timestamps. Generator
+    # handles --force internally; in check mode we just report.
+    echo "(check mode — skipping regen, run without --check to apply)"
+  else
+    DEV_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/scripts/generate-codex-skills.sh" --force 2>&1 | tail -3
+    # Add explicit marker to SUMMARY so operator knows codex was touched
+    SUMMARY+=("REGENERATED: codex-skills (41 skills from Claude source)")
+  fi
+  echo ""
+fi
+
+# ============================================================
 # 2. MIRROR → CURRENT PROJECT (.claude/, .codex/ in repo being worked on)
 # ============================================================
 # Re-sync mirror back to .claude — ensures round-trip consistency

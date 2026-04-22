@@ -1379,6 +1379,44 @@ git worktree prune 2>/dev/null || true
   bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" cleanup 0 all 2>/dev/null || true
 ```
 
+**Bootstrap rule outcome attribution (Gap 3 fix):**
+
+For each bootstrap rule that fired during this phase, emit a
+`bootstrap.outcome_recorded` event so `/vg:bootstrap --efficacy` can update
+`hits` + `hit_outcomes` in ACCEPTED.md. Without this, rules accumulate
+`hits=0` forever even after firing — we can't prove a promoted rule is
+actually affecting behavior.
+
+```bash
+# Get phase verdict (final state after UAT quorum gate)
+PHASE_VERDICT="success"
+if grep -qE '^\*\*Verdict:\*\*\s*(DEFER|REJECTED|FAILED)' "${PHASE_DIR}"/*UAT.md 2>/dev/null; then
+  PHASE_VERDICT="fail"
+fi
+
+# Query events.db for bootstrap.rule_fired events in this phase
+if [ -f ".vg/events.db" ] && command -v sqlite3 >/dev/null 2>&1; then
+  FIRED_RULES=$(sqlite3 .vg/events.db \
+    "SELECT DISTINCT json_extract(payload, '\$.rule_id')
+     FROM events
+     WHERE event_type='bootstrap.rule_fired'
+       AND json_extract(payload, '\$.phase')='${PHASE_NUMBER}'
+       AND json_extract(payload, '\$.rule_id') IS NOT NULL;" 2>/dev/null)
+
+  for RID in $FIRED_RULES; do
+    [ -z "$RID" ] && continue
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+      "bootstrap.outcome_recorded" \
+      --payload "{\"rule_id\":\"${RID}\",\"phase\":\"${PHASE_NUMBER}\",\"outcome\":\"${PHASE_VERDICT}\"}" \
+      >/dev/null 2>&1 || true
+  done
+
+  # Auto-update ACCEPTED.md efficacy counters
+  "${PYTHON_BIN:-python3}" .claude/scripts/bootstrap-hygiene.py efficacy --apply \
+    2>&1 | tail -5 || echo "(efficacy update returned non-zero, non-blocking)"
+fi
+```
+
 **Update VG-native state:**
 ```bash
 # VG-native state update (no GSD dependency)

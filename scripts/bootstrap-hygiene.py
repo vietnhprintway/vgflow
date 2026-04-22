@@ -315,16 +315,70 @@ def cmd_efficacy(args) -> int:
         return 0
 
     if args.apply:
-        # Rewrite ACCEPTED.md — simple append-only diff (don't try to surgical-edit
-        # YAML blocks that we didn't parse perfectly; instead write a footer log).
+        # Surgical in-place update of ACCEPTED.md (CrossAI gap 3 fix).
+        # Rules now have real hits + hit_outcomes updated from events.db so
+        # /vg:bootstrap --health can prove rules actually affect behavior.
+        text = ACCEPTED_MD.read_text(encoding="utf-8", errors="replace") \
+            if ACCEPTED_MD.exists() else ""
+        updated_count = 0
+        for rid, old, new, succ, fl in changes:
+            # Locate the rule block: starts with `- id: {rid}` or matching indented form
+            # and extends until next `- id:` or EOF
+            block_pat = re.compile(
+                rf"(- id:\s*{re.escape(rid)}\b.*?)(?=(?:^- id:)|\Z)",
+                re.DOTALL | re.MULTILINE,
+            )
+            m = block_pat.search(text)
+            if not m:
+                continue
+            block = m.group(1)
+
+            # Replace hits: N  (any whitespace/value) with hits: new
+            block_new = re.sub(r"(\bhits:\s*)\d+", rf"\g<1>{new}", block, count=1)
+            # Replace or insert hit_outcomes.success_count / fail_count
+            if re.search(r"\bsuccess_count:\s*\d+", block_new):
+                block_new = re.sub(r"(\bsuccess_count:\s*)\d+",
+                                   rf"\g<1>{succ}", block_new, count=1)
+            else:
+                # Block doesn't have hit_outcomes — insert minimal form after hits:
+                block_new = re.sub(
+                    r"(\bhits:\s*\d+\n)",
+                    rf"\g<1>  hit_outcomes:\n    success_count: {succ}\n    fail_count: {fl}\n",
+                    block_new, count=1,
+                )
+            if re.search(r"\bfail_count:\s*\d+", block_new):
+                block_new = re.sub(r"(\bfail_count:\s*)\d+",
+                                   rf"\g<1>{fl}", block_new, count=1)
+
+            # Update last_hit timestamp
+            now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if re.search(r"\blast_hit:\s*", block_new):
+                block_new = re.sub(r"(\blast_hit:\s*).*", rf"\g<1>{now_ts}",
+                                   block_new, count=1)
+            else:
+                block_new = re.sub(
+                    r"(\bhits:\s*\d+\n)",
+                    rf"\g<1>  last_hit: {now_ts}\n",
+                    block_new, count=1,
+                )
+
+            if block != block_new:
+                text = text.replace(block, block_new, 1)
+                updated_count += 1
+
+        if updated_count > 0:
+            ACCEPTED_MD.write_text(text, encoding="utf-8")
+            print(f"\n✓ Updated {updated_count} rule entries in ACCEPTED.md")
+
+        # Also append to log for audit trail
         log_path = BOOTSTRAP_DIR / ".efficacy-log.md"
         with log_path.open("a", encoding="utf-8") as f:
             f.write(f"\n## Efficacy update {datetime.now(timezone.utc).isoformat()}\n")
             for rid, old, new, succ, fl in changes:
                 f.write(f"- {rid}: hits {old} → {new}, success={succ}, fail={fl}\n")
-        print(f"\nWrote summary to {log_path}")
+        print(f"✓ Appended audit to {log_path}")
     else:
-        print("\nRun with --apply to persist changes to .efficacy-log.md")
+        print("\nRun with --apply to persist changes to ACCEPTED.md + .efficacy-log.md")
     return 0
 
 
