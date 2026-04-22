@@ -39,9 +39,18 @@ runtime_contract:
       phase: "${PHASE_NUMBER}"
   forbidden_without_override:
     # If these flags present, hook also checks override-debt register updated.
+    # OHOK v2 Day 1: added --skip-design-check + --skip-crossai. These were
+    # silently honored before → dogfood phase 14 exposed /vg:review over-skip
+    # pattern (OD-149); phase 13 UI-SPEC had 10 orphan colors + 18 undefined
+    # CSS vars (retroactive validator finding). Enforcement path: validator
+    # vg-design-coherence BLOCKs unless either the UI-SPEC is clean OR
+    # --skip-design-check + valid --override-reason present + rationalization
+    # guard PASS/FLAG verdict.
     - "--allow-missing-persistence"
     - "--allow-missing-org"
     - "--allow-crossai-inconclusive"
+    - "--skip-design-check"
+    - "--skip-crossai"
     - "--override-reason"
 ---
 
@@ -1760,11 +1769,21 @@ if [ "$CHAIN_COUNT" -eq 0 ]; then
 else
   echo "Flow detect: $CHAIN_COUNT chains >= 3 goals found. Generating FLOW-SPEC.md skeleton..."
 
+  # Bootstrap rule injection — project rules targeting blueprint fire here
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+  BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "blueprint")
+  vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "blueprint" "${PHASE_NUMBER}"
+
   # Generate skeleton — AI fills in step details from goal success criteria
   Agent(subagent_type="general-purpose", model="${MODEL_TEST_GOALS}"):
     prompt: |
       Generate FLOW-SPEC.md for phase ${PHASE}. This defines multi-page test flows
       for the flow-runner skill.
+
+      <bootstrap_rules>
+      ${BOOTSTRAP_RULES_BLOCK}
+      </bootstrap_rules>
+
 
       Input — detected dependency chains (goals that form sequential business flows):
       ${CHAIN_OUTPUT}

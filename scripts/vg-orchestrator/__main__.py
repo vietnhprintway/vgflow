@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Ensure package-relative imports work when run via `python -m vg_orchestrator`
@@ -69,6 +70,73 @@ def cmd_run_start(args) -> int:
 
     session_id = os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
     extra_str = " ".join(args.extra) if isinstance(args.extra, list) else (args.extra or "")
+
+    # OHOK v2 Day 2 — reject --override-reason < 50 chars or obvious placeholders.
+    # Prior state: 4-char reason like "foo" was accepted → Codex audit flagged
+    # override-abuse vector (4-char reason normalizing to blanket skip). Now:
+    # reason MUST be concrete, minimum 50 chars, not match common placeholder
+    # patterns. Also emit override.proposed event so skill-level caller MUST
+    # invoke rationalization-guard before proceeding.
+    import re as _re
+
+    # Parse REMAINDER list directly — args.extra is a list when nargs=REMAINDER.
+    # Shell already tokenized; we must concat everything between --override-reason
+    # and the next --flag (or EOL) to reconstruct quoted multi-word values.
+    override_flag = None  # the flag being justified (e.g. --skip-goal-coverage)
+    override_reason_val = None
+    extra_list = args.extra if isinstance(args.extra, list) else []
+    i = 0
+    while i < len(extra_list):
+        tok = extra_list[i]
+        if tok == "--override-reason":
+            # Consume tokens until next flag or EOL
+            val_tokens = []
+            j = i + 1
+            while j < len(extra_list) and not extra_list[j].startswith("--"):
+                val_tokens.append(extra_list[j])
+                j += 1
+            override_reason_val = " ".join(val_tokens).strip()
+            i = j
+            continue
+        if tok.startswith("--override-reason="):
+            override_reason_val = tok.split("=", 1)[1].strip()
+            i += 1
+            continue
+        i += 1
+
+    # Identify which flag is being overridden (first --skip-*/--allow-* before reason)
+    for t in extra_list:
+        if t.startswith("--skip-") or t.startswith("--allow-"):
+            override_flag = t
+            break
+
+    override_match = override_reason_val is not None
+    if override_match:
+        reason = override_reason_val or ""
+        if len(reason) < 50:
+            print(f"⛔ --override-reason too short ({len(reason)} chars, min 50).\n"
+                  f"   Got: {reason!r}\n"
+                  f"   Overrides must cite concrete evidence: ticket/issue URL, "
+                  f"failing test name, infra blocker, etc. Placeholder reasons "
+                  f"normalize into blanket skips.",
+                  file=sys.stderr)
+            return 2
+
+        # Reject common placeholder patterns (case-insensitive)
+        placeholders = [
+            r"^(test|tbd|fixme|fix ?later|todo|temp|temporary)\b",
+            r"^(quick|small|minor|trivial) ?(fix|patch|change)",
+            r"^(need|will|should|might) ?(to )?(fix|check|verify)",
+            r"^skip(ping)? for now",
+            r"^not( a)? blocker",
+        ]
+        for pat in placeholders:
+            if _re.search(pat, reason, _re.IGNORECASE):
+                print(f"⛔ --override-reason matches placeholder pattern: {pat!r}\n"
+                      f"   Got: {reason!r}\n"
+                      f"   Cite concrete evidence: issue URL, test name, CI run ID, etc.",
+                      file=sys.stderr)
+                return 2
     run_id = db.create_run(
         command=args.command,
         phase=args.phase,
@@ -105,6 +173,24 @@ def cmd_run_start(args) -> int:
         outcome="INFO",
         payload={},
     )
+
+    # OHOK v2 Day 2 — if override-reason was approved (passed length + placeholder
+    # checks above), emit override.proposed so skill-level caller can invoke
+    # rationalization-guard + log override-debt atomically. Skill must call
+    # vg-orchestrator override <flag> <reason> to close the loop.
+    if override_match:
+        db.append_event(
+            run_id=run_id,
+            event_type="override.proposed",
+            phase=args.phase,
+            command=args.command,
+            actor="orchestrator",
+            outcome="INFO",
+            payload={"flag": override_flag or "(unknown-flag)",
+                     "reason": (override_reason_val or "")[:200],
+                     "requires_guard": True},
+        )
+
     print(run_id)
     return 0
 
@@ -446,6 +532,74 @@ def cmd_validate(args) -> int:
     return r.returncode
 
 
+def cmd_promote_goal_manual(args) -> int:
+    """OHOK v2 Day 3 — promote a goal to verification=manual with user justification.
+    Emits goal.promoted_manual event (review-skip-guard accepts MANUAL status as
+    explicit promotion, not silent skip). Writes GOAL-COVERAGE-MATRIX row if
+    missing, else updates status column.
+
+    Usage: vg-orchestrator promote-goal-manual G-02 --phase 14 --reason "..."
+    """
+    current = state_mod.read_current_run()
+    phase = args.phase or (current["phase"] if current else None)
+    if not phase:
+        print("⛔ --phase required (no active run)", file=sys.stderr)
+        return 1
+
+    if len(args.reason.strip()) < 50:
+        print(f"⛔ --reason must be ≥50 chars (got {len(args.reason.strip())}).\n"
+              f"   Manual promotion is an explicit user decision — require "
+              f"concrete user-visible justification not auto-generated prose.",
+              file=sys.stderr)
+        return 2
+
+    repo = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd())
+    phase_dirs = list((repo / ".vg" / "phases").glob(f"{phase}-*")) or \
+                 list((repo / ".vg" / "phases").glob(f"{phase.zfill(2)}-*"))
+    if not phase_dirs:
+        print(f"⛔ phase {phase} not found", file=sys.stderr)
+        return 1
+
+    matrix = phase_dirs[0] / "GOAL-COVERAGE-MATRIX.md"
+    if not matrix.exists():
+        print(f"⛔ {matrix} not found — run /vg:review first to create it",
+              file=sys.stderr)
+        return 1
+
+    text = matrix.read_text(encoding="utf-8", errors="replace")
+    # Pattern: | G-02 | ... | ... | READY | ... |
+    goal_pat = re.compile(
+        rf"(^\|\s*{re.escape(args.goal_id)}\s*\|[^|]+\|[^|]+\|\s*)([A-Z_]+)(\s*\|)",
+        re.MULTILINE,
+    )
+    new_text, n = goal_pat.subn(r"\1MANUAL\3", text, count=1)
+    if n == 0:
+        print(f"⛔ goal {args.goal_id} not found in {matrix.name}",
+              file=sys.stderr)
+        return 1
+
+    # Append justification line near goal row (or in a dedicated MANUAL section)
+    manual_entry = (f"\n- **{args.goal_id} MANUAL** ({datetime.utcnow().isoformat()}Z): "
+                    f"{args.reason}\n")
+    new_text += manual_entry
+    matrix.write_text(new_text, encoding="utf-8")
+
+    if current:
+        db.append_event(
+            run_id=current["run_id"],
+            event_type="goal.promoted_manual",
+            phase=phase,
+            command=current["command"],
+            actor="user",
+            outcome="INFO",
+            payload={"goal_id": args.goal_id,
+                     "reason": args.reason[:300]},
+        )
+
+    print(f"✓ {args.goal_id} → MANUAL in {matrix.name}")
+    return 0
+
+
 def cmd_override(args) -> int:
     """Log override.used event for this run + append to OVERRIDE-DEBT.md.
     Satisfies forbidden_without_override contract check at run-complete."""
@@ -654,17 +808,31 @@ def _record_rule_outcomes(run_id: str, command: str, phase: str,
 COMMAND_VALIDATORS = {
     "vg:scope": ["phase-exists", "context-structure"],
     "vg:blueprint": ["phase-exists", "context-structure", "plan-granularity",
-                     "task-goal-binding"],
-    "vg:build": ["phase-exists"],  # wave-attribution runs per wave-complete
+                     "task-goal-binding", "vg-design-coherence"],
+    # OHOK v2 Day 2 expansion — build previously had min enforcement (phase-exists
+    # only). Now catches: commit format drift (R1), missing citations (R2),
+    # goal-binding gap, plan granularity drift, override-debt balance per-step
+    # not only at accept. Wave-attribution still runs per wave-complete separately.
+    "vg:build": ["phase-exists", "commit-attribution", "task-goal-binding",
+                 "plan-granularity", "override-debt-balance"],
     # Review doesn't enforce goal-coverage — tests land in /vg:test, so review
     # always fails before tests exist. Enforcement moved to /vg:test + /vg:accept
     # where tests MUST exist. Review's in-skill 0b gate warns advisory only.
     # runtime-evidence: BLOCK if Playwright specs exist but not executed
     # (anti-rationalization — prevents AI from certifying "code evidence only").
-    "vg:review": ["phase-exists", "runtime-evidence"],
-    "vg:test": ["phase-exists", "goal-coverage", "runtime-evidence"],
+    # OHOK v2 Day 3 — review-skip-guard catches skipped_no_browser with
+    # critical UI goals (phase 14 dogfood pattern). deferred-evidence catches
+    # @deferred-* tags without ticket link.
+    "vg:review": ["phase-exists", "runtime-evidence", "review-skip-guard"],
+    "vg:test": ["phase-exists", "goal-coverage", "runtime-evidence",
+                "deferred-evidence"],
+    # OHOK v2 Day 4 — add acceptance-reconciliation as final gate.
+    # Catches: critical goals not passing, HARD override-debt active,
+    # scope branching unresolved, step markers missing after build waves.
     "vg:accept": ["phase-exists", "event-reconciliation",
-                  "override-debt-balance", "runtime-evidence"],
+                  "override-debt-balance", "runtime-evidence",
+                  "commit-attribution",
+                  "acceptance-reconciliation"],
 }
 
 
@@ -1001,6 +1169,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--flag", required=True)
     s.add_argument("--reason", required=True)
     s.set_defaults(func=cmd_override)
+
+    # OHOK v2 Day 3 — promote goal to MANUAL with user justification
+    s = sub.add_parser("promote-goal-manual",
+                       help="Promote goal to verification=manual (user sign-off)")
+    s.add_argument("goal_id", help="e.g. G-02")
+    s.add_argument("--phase", default=None,
+                   help="phase (else uses active run)")
+    s.add_argument("--reason", required=True,
+                   help="Justification ≥50 chars (user-visible)")
+    s.set_defaults(func=cmd_promote_goal_manual)
 
     s = sub.add_parser("run-resume", help="Resume interrupted run")
     s.set_defaults(func=cmd_run_resume)

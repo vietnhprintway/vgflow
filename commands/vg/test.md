@@ -1877,11 +1877,22 @@ fi
 
 For mỗi goal READY (đọc từ `$STATUS_JSON` step 5d codegen):
 
+**Bootstrap rule injection** — before spawn, render project rules targeting `test` step:
+```bash
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "test")
+vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "test" "${PHASE_NUMBER}"
+```
+
 ```
 Agent(subagent_type="general-purpose", model="sonnet",  # zero parent context, isolated
       name="deep-probe-{goal-id}"):
   prompt: |
     Generate 3 edge-case variants BEYOND happy path cho goal {goal-id}.
+
+    <bootstrap_rules>
+    ${BOOTSTRAP_RULES_BLOCK}
+    </bootstrap_rules>
 
     Input:
     - SPECS.md, CONTEXT.md, API-CONTRACTS.md, GOAL-COVERAGE-MATRIX.md

@@ -107,25 +107,31 @@ def _parse_list(lines: list[str], indent: int) -> tuple[list, int]:
             break
         if cur_indent == indent and ln.lstrip().startswith("- "):
             item_text = ln.lstrip()[2:].strip()
-            if ":" in item_text and not item_text.endswith(":"):
-                # inline dict-item: "- key: value"
-                # Expand as dict block starting with this key
+            # Case A: "- key: value" (inline dict-item with value) OR "- key:" (dict-item with nested block)
+            if ":" in item_text:
+                # Split key:value to decide inline vs nested
+                key_part, _, rest_part = item_text.partition(":")
+                key_part = key_part.strip()
+                rest_part = rest_part.strip()
+                # Item = dict starting at this key. Synthesize a dict block.
                 inline_lines = [(" " * (indent + 2)) + item_text]
-                # collect continuation lines
+                # Collect continuation lines at DEEPER indent than the "- "
                 j = i + 1
                 while j < len(lines):
                     nl = lines[j]
                     nl_indent = len(nl) - len(nl.lstrip())
+                    # Children of a list item sit at indent+2 (aligned with the content of "- key:")
+                    # Anything at indent or less breaks out of this item
                     if nl_indent > indent:
                         inline_lines.append(nl)
                         j += 1
                     else:
                         break
                 val, _ = _parse_dict(inline_lines, indent + 2)
-                result.append(val)
+                result.append(val if val else {key_part: _parse_scalar(rest_part) if rest_part else None})
                 i = j
             elif not item_text:
-                # nested block
+                # bare "-" followed by nested block on next line
                 sub, consumed = _parse_block(lines[i + 1 :], indent + 2)
                 result.append(sub)
                 i += 1 + consumed

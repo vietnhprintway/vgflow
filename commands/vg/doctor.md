@@ -36,8 +36,11 @@ VERB=""
 FWD_ARGS=""
 for arg in $ARGUMENTS; do
   case "$arg" in
-    health|integrity|gate-stats|recover|stack|help)
+    health|integrity|gate-stats|recover|stack|wired|help)
       [ -z "$VERB" ] && VERB="$arg" || FWD_ARGS="${FWD_ARGS} ${arg}"
+      ;;
+    --wired)
+      VERB="wired"
       ;;
     --integrity)
       echo "⚠ DEPRECATED: --integrity flag. Use /vg:integrity instead." >&2
@@ -76,6 +79,7 @@ The shell block above resolves `VERB` and `FWD_ARGS`. The outer model reads the 
 | `gate-stats`  | `Skill(skill="vg:gate-stats", args=FWD_ARGS)` |
 | `recover`     | `Skill(skill="vg:recover", args=FWD_ARGS)` |
 | `stack`       | run `python .claude/scripts/vg-stack-health.py` inline (no sub-skill) |
+| `wired`       | run `python .claude/scripts/vg-wired-check.py ${FWD_ARGS}` inline — WIRED-OR-NOTHING 3-check for validators/hooks/commands (OHOK v2 Day 6) |
 | `help` / ""   | print menu below, exit 0 |
 
 For `stack` verb: executes the v2.2 stack diagnostic — orchestrator reachable, events.db integrity, schemas valid, validators present, hooks wired, bootstrap consistent. Exit 0 healthy, 1 warnings, 2 blocking issues.

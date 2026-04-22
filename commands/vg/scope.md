@@ -74,6 +74,17 @@ PROMPT=$(challenge_answer "$user_answer" "round-$ROUND" "phase-scope" "$accumula
 
 Orchestrator MUST:
 1. Capture fd 3 via `3>&1 1>/dev/null 2>/dev/null` pattern → `$PROMPT` contains full inline content
+1b. **Inject bootstrap rules** into prompt so promoted rules apply to subagent reasoning:
+    ```bash
+    source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+    BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope")
+    vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope" "${PHASE_NUMBER}"
+    PROMPT="${PROMPT}
+
+    <bootstrap_rules>
+    ${BOOTSTRAP_RULES_BLOCK}
+    </bootstrap_rules>"
+    ```
 2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.adversarial_model:-opus}` — v1.9.3 default Opus, zero parent context) with `prompt=$PROMPT` parameter
 3. Parse subagent stdout (one JSON line)
 4. Call `challenger_dispatch "$subagent_json" "round-$ROUND" "phase-scope" "$PHASE_NUMBER"`
@@ -101,6 +112,17 @@ PROMPT=$(expand_dimensions "$ROUND" "$ROUND_TOPIC" "$accumulated" "${PLANNING_DI
 
 Orchestrator MUST:
 1. Capture fd 3 via `3>&1 1>/dev/null 2>/dev/null` → `$PROMPT` = full inline prompt content
+1b. **Inject bootstrap rules** (same pattern as challenger — rules match `target_step=scope` fire here):
+    ```bash
+    source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+    BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope")
+    vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope" "${PHASE_NUMBER}"
+    PROMPT="${PROMPT}
+
+    <bootstrap_rules>
+    ${BOOTSTRAP_RULES_BLOCK}
+    </bootstrap_rules>"
+    ```
 2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.dimension_expand_model:-opus}`, zero parent context) with `prompt=$PROMPT`
 3. Parse subagent stdout (one JSON line)
 4. Call `expander_dispatch "$subagent_json" "round-$ROUND" "$PHASE_NUMBER"`

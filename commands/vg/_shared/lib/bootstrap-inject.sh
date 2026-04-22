@@ -96,7 +96,7 @@ vg_bootstrap_emit_fired() {
   local telemetry_file="${PLANNING_DIR:-.vg}/telemetry.jsonl"
 
   ${PYTHON_BIN:-python3} - "$payload_file" "$step_name" "$phase" "$command" "$telemetry_file" <<'PY' 2>/dev/null
-import json, sys, os
+import json, sys, os, subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -118,6 +118,8 @@ if not fired:
     sys.exit(0)
 
 ts = datetime.utcnow().isoformat() + 'Z'
+
+# Sink 1 — telemetry.jsonl (legacy, for /vg:bootstrap --trace fallback path)
 Path(telemetry).parent.mkdir(parents=True, exist_ok=True)
 with open(telemetry, 'a', encoding='utf-8') as f:
     for rid in fired:
@@ -129,6 +131,27 @@ with open(telemetry, 'a', encoding='utf-8') as f:
             'phase': phase,
             'step': step,
         }) + '\n')
+
+# Sink 2 — events.db (v2.2 canonical — used by /vg:bootstrap --trace primary path,
+# bootstrap-hygiene efficacy, and events-chain integrity). Only works if an active
+# run exists (orchestrator-managed lifecycle). Silent skip on any error — the
+# telemetry.jsonl sink above keeps the signal even when orchestrator run is absent.
+orch = Path(__file__).resolve().parent if False else None  # keep import parity
+for rid in fired:
+    subprocess.run(
+        ["python3", ".claude/scripts/vg-orchestrator", "emit-event",
+         "bootstrap.rule_fired",
+         "--step", step,
+         "--actor", "orchestrator",
+         "--outcome", "INFO",
+         "--payload", json.dumps({
+             "rule_id": rid,
+             "command": command,
+             "phase": phase,
+             "step": step,
+         })],
+        capture_output=True, text=True, timeout=10,
+    )
 PY
 }
 
@@ -147,37 +170,46 @@ import re, sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-# Find every Agent spawn (orchestrator-spawned subagent) and check its prompt
-# body has a <bootstrap_rules> block. We scope to prompts that use the
-# executor/planner/reviewer/scanner/scope-discuss role archetype — admin
-# commands like /vg:bootstrap --view don't need injection.
-SPAWN_RE = re.compile(
-    r'Agent\(subagent_type=["\']general-purpose["\'].*?model=\$\{MODEL_'
-    r'(EXECUTOR|PLANNER|TEST_GOALS|SCANNER|REVIEWER)\}[^\n]*\n'
-    r'(?P<body>(?:[^\n]*\n){1,120})',
-    re.MULTILINE,
-)
-BOOTSTRAP_RE = re.compile(r'<bootstrap_rules>', re.MULTILINE)
+
+# VG commands mix literal `Agent(...)` calls (blueprint/build) with prose
+# descriptions like "Dispatch Task tool (subagent_type=general-purpose, ...)".
+# Both patterns count as spawn sites. Check 300 lines following each match
+# for <bootstrap_rules> tag — if missing, the spawn is uninjected.
+SPAWN_RES = [
+    re.compile(r'Agent\(\s*subagent_type=["\']general-purpose["\']', re.MULTILINE),
+    re.compile(r'subagent_type=general-purpose', re.MULTILINE),
+]
+BOOTSTRAP_RE = re.compile(r'<bootstrap_rules>|BOOTSTRAP_RULES_BLOCK', re.MULTILINE)
 
 violations = []
 checked = 0
 
 for md in sorted(root.glob('*.md')):
     text = md.read_text(encoding='utf-8', errors='replace')
-    for m in SPAWN_RE.finditer(text):
-        checked += 1
-        body = m.group('body')
-        if not BOOTSTRAP_RE.search(body):
-            line = text[:m.start()].count('\n') + 1
-            violations.append(f"{md.name}:{line} — Agent spawn (model=MODEL_{m.group(1)}) missing <bootstrap_rules> block")
+    lines = text.split('\n')
+    seen_starts: set[int] = set()
+
+    for rx in SPAWN_RES:
+        for m in rx.finditer(text):
+            start_line = text[:m.start()].count('\n') + 1
+            if start_line in seen_starts:
+                continue
+            seen_starts.add(start_line)
+            checked += 1
+            # Look backwards ~30 lines AND forwards ~300 lines for bootstrap_rules
+            window_start = max(0, start_line - 30)
+            window_end = min(len(lines), start_line + 300)
+            window = '\n'.join(lines[window_start:window_end])
+            if not BOOTSTRAP_RE.search(window):
+                violations.append(f"{md.name}:{start_line} — spawn site missing <bootstrap_rules> / BOOTSTRAP_RULES_BLOCK in ±window")
 
 if violations:
-    print(f"⛔ Bootstrap injection violations ({len(violations)} of {checked} spawn paths):")
+    print(f"⛔ Bootstrap injection violations ({len(violations)} of {checked} spawn sites):")
     for v in violations:
         print(f"   - {v}")
     sys.exit(1)
 
-print(f"✓ All {checked} Agent spawn paths inject <bootstrap_rules>")
+print(f"✓ All {checked} spawn sites have bootstrap injection nearby")
 sys.exit(0)
 PY
 }

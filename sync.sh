@@ -91,6 +91,10 @@ if [ "$SKIP_SOURCE" = "false" ] && [ -d "$REPO_ROOT/.claude/commands/vg" ]; then
 
   # Scripts + templates
   sync_dir "$REPO_ROOT/.claude/scripts" "$SCRIPT_DIR/scripts" "*.py" "scripts"
+  # OHOK v2 — also sync *.sh helpers (rationalization-guard.sh extracted from .md)
+  sync_dir "$REPO_ROOT/.claude/scripts" "$SCRIPT_DIR/scripts" "*.sh" "scripts-sh"
+  sync_dir "$REPO_ROOT/.claude/scripts/validators" "$SCRIPT_DIR/scripts/validators" "*.py" "validators"
+  sync_dir "$REPO_ROOT/.claude/scripts/vg-orchestrator" "$SCRIPT_DIR/scripts/vg-orchestrator" "*.py" "orchestrator"
   sync_dir "$REPO_ROOT/.claude/templates/vg" "$SCRIPT_DIR/templates/vg" "*" "templates"
 
   echo ""

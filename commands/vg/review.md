@@ -1739,6 +1739,23 @@ the same schema; iteration logic is identical.
 **Spawn 1 Haiku agent per view** using Agent tool with `model="haiku"`.
 Each agent scans 1 view exhaustively with a FIXED workflow — no discretion to skip.
 
+**Bootstrap rules injection (v1.15.0+):** Before spawning each Haiku scanner,
+render + inject promoted project rules so scanners see project-specific checks
+(e.g. "verify data persists after mutation" rule L-050 will fire here):
+```bash
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "review")
+vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "review" "${PHASE_NUMBER}"
+```
+Then in each Haiku prompt body, include:
+```
+<bootstrap_rules>
+${BOOTSTRAP_RULES_BLOCK}
+</bootstrap_rules>
+```
+Position: after static `<scanner_workflow>` block, before `<view_assignment>`.
+Scanner skill treats rules as additional per-element checks on top of fixed protocol.
+
 IF --retry-failed:
   Normalize RETRY_VIEWS[] → view-assignments-retry.json (same schema as view-assignments.json):
     {

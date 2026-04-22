@@ -97,6 +97,16 @@ if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/vg-run.sh" ]; then
   source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/vg-run.sh" 2>/dev/null
   type -t vg_ensure_override_debt_register >/dev/null 2>&1 && vg_ensure_override_debt_register
 fi
+
+# OHOK v2 Day 1 — source rationalization-guard so guard functions are defined
+# before any caller invokes them. Prior state: functions defined in .md prose
+# but no caller sourced them → bash "command not found" silently skipped →
+# every override flag bypassed the guard. Now fail-closed: if the .sh is
+# missing, any subsequent guard call will exit 127 (command not found) which
+# callers MUST treat as BLOCK, never skip.
+if [ -f "${REPO_ROOT}/.claude/scripts/rationalization-guard.sh" ]; then
+  source "${REPO_ROOT}/.claude/scripts/rationalization-guard.sh"
+fi
 ```
 
 ```bash

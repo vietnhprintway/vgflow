@@ -90,6 +90,13 @@ _ENTRY_RE = re.compile(
 # YAML block form (v1.8.0+): entries wrapped in yaml fences
 _YAML_BLOCK_RE = re.compile(r"```yaml\s*\n(.*?)\n```", re.DOTALL)
 
+# Flat list-item form (log_override_debt.sh output): "- id: OD-XXX\n  key: val\n..."
+# Matches entries in .vg/OVERRIDE-DEBT.md produced by _shared/lib/override-debt.sh.
+_FLAT_ENTRY_RE = re.compile(
+    r"^- id:\s*(\S+)\s*\n((?:  \S.*\n?)+)",
+    re.MULTILINE,
+)
+
 
 def load_overrides(planning_dir: Path) -> list[dict]:
     """Load override entries from OVERRIDE-DEBT.md. Returns list of dicts."""
@@ -99,14 +106,38 @@ def load_overrides(planning_dir: Path) -> list[dict]:
 
     text = register.read_text(encoding="utf-8", errors="replace")
     entries = []
+    seen_ids: set[str] = set()
 
-    # Try YAML block form first
+    # Try YAML block form first (v1.8.0+)
     for m in _YAML_BLOCK_RE.finditer(text):
         block = m.group(1)
-        # Minimal YAML parse: look for id/severity/phase/gate_id/status/scope
         entry = _parse_yaml_entry(block)
-        if entry:
+        if entry and entry.get("id") and entry["id"] not in seen_ids:
             entries.append(entry)
+            seen_ids.add(entry["id"])
+
+    # Flat list-item form (log_override_debt.sh produces this)
+    # Reconstruct a YAML block by prepending "id: X\n" + dedenting the indented body.
+    for m in _FLAT_ENTRY_RE.finditer(text):
+        # Skip the schema example (id == "OD-XXX" is the template placeholder)
+        od_id = m.group(1).strip()
+        if od_id in seen_ids or od_id.upper() == "OD-XXX":
+            continue
+        body = m.group(2)
+        dedented = "\n".join(
+            line[2:] if line.startswith("  ") else line
+            for line in body.splitlines()
+        )
+        synth = f"id: {od_id}\n{dedented}\n"
+        entry = _parse_yaml_entry(synth)
+        if entry and entry.get("id"):
+            # Normalize status terminology — flat form uses `active/resolved/expired`
+            # while YAML block form uses `OPEN/RESOLVED/WONT_FIX`. Map to canonical OPEN
+            # so downstream revalidate() filter catches them.
+            raw_status = str(entry.get("status", "active")).lower()
+            entry["status"] = "OPEN" if raw_status == "active" else raw_status.upper()
+            entries.append(entry)
+            seen_ids.add(entry["id"])
 
     # Then table rows (legacy)
     for m in _ENTRY_RE.finditer(text):

@@ -45,6 +45,15 @@ resolve_phase_dir() {
     return 0
   fi
 
+  # ─── Step 1b: exact bare-dir match (legacy phases like `00/`, `01/`) ──
+  # OHOK v2 Day 5 — migrations from GSD produced bare dir names without `-task`
+  # suffix. Prior state: resolver only tried `${input}-*` pattern → bare dirs
+  # never matched → "no unique directory for phase '00'" error.
+  if [ -d "${phases_dir}/${input}" ]; then
+    echo "${phases_dir}/${input}/"
+    return 0
+  fi
+
   # ─── Step 2: normalize integer part to 2-digit zero-pad ──────────────
   local major rest normalized
   major="${input%%.*}"
