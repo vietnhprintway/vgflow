@@ -325,11 +325,61 @@ def cmd_run_abort(args) -> int:
     return 0
 
 
+# OHOK-8 (2026-04-22, CrossAI round 3): prevent forgery of system-emitted
+# events via the CLI. Skills need emit-event for their own signaling (step
+# markers, custom signals) but MUST NOT be able to forge gate-relevant
+# events that validators trust.
+#
+# Any event type matching these prefixes can ONLY be emitted from inside
+# orchestrator core code (which calls db.append_event() directly with
+# actor="orchestrator"). CLI emission with these prefixes is rejected.
+#
+# The exception: validator-internal emissions (e.g. validation.passed/blocked)
+# already bypass this path because validators invoke db.append_event directly
+# via _run_validators.
+RESERVED_EVENT_PREFIXES = (
+    "run.",                   # run.started, run.completed, run.aborted, etc.
+    "validation.",            # validation.passed / .failed / .blocked / .warned
+    "wave.",                  # wave.started, wave.completed
+    "build.crossai_",         # iteration_started, iteration_complete, loop_*
+    "goal.promoted_manual",   # manual promotions — must go through cmd
+    "override.",              # override.proposed, .used, .resolved
+    "debt_register.",         # debt_register.write_failed (orchestrator-only)
+)
+RESERVED_EVENT_EXACT = {
+    "step.marked",            # step markers — must use mark-step command
+}
+
+
+def _is_reserved_event(event_type: str) -> bool:
+    if event_type in RESERVED_EVENT_EXACT:
+        return True
+    return any(event_type.startswith(p) for p in RESERVED_EVENT_PREFIXES)
+
+
 def cmd_emit_event(args) -> int:
     current = state_mod.read_current_run()
     if not current:
         print("⛔ No active run. Call run-start first.", file=sys.stderr)
         return 1
+
+    # OHOK-8: block forgery of gate-relevant event types via CLI
+    if _is_reserved_event(args.event_type):
+        print(
+            f"⛔ Event type '{args.event_type}' is RESERVED for orchestrator "
+            f"core — cannot be emitted via CLI.\n"
+            f"   Reserved prefixes: {', '.join(RESERVED_EVENT_PREFIXES)}\n"
+            f"   Reserved exact: {', '.join(sorted(RESERVED_EVENT_EXACT))}\n\n"
+            f"   Rationale (OHOK-8 round-3): CrossAI reviewers found that\n"
+            f"   AI could forge terminal events like build.crossai_loop_complete\n"
+            f"   via `emit-event` CLI → bypass validators that count events.\n"
+            f"   These events must come from the actual code paths (run-start/\n"
+            f"   run-complete/wave-complete/vg-build-crossai-loop.py etc.).\n\n"
+            f"   If you need a custom skill signal, use a non-reserved\n"
+            f"   namespace like `skill.<name>.custom_event` or similar.",
+            file=sys.stderr,
+        )
+        return 2
 
     payload = {}
     if args.payload:
@@ -350,6 +400,87 @@ def cmd_emit_event(args) -> int:
         payload=payload,
     )
     print(evt["this_hash"][:16])
+    return 0
+
+
+def cmd_emit_crossai_terminal(args) -> int:
+    """OHOK-8: dedicated path for emitting loop_exhausted / loop_user_override.
+    Bypasses cmd_emit_event's reserved-type block because this subcommand is
+    itself the controlled path.
+
+    For `exhausted`: verifies that iteration count already reached max_iterations.
+    For `user_override`: verifies a recent override.used event with crossai flag
+    exists in this run (→ guarantees the HARD debt was logged first).
+    """
+    current = state_mod.read_current_run()
+    if not current:
+        print("⛔ No active run", file=sys.stderr)
+        return 1
+    if current["command"] != "vg:build":
+        print(f"⛔ emit-crossai-terminal only valid in vg:build run, "
+              f"got {current['command']}", file=sys.stderr)
+        return 1
+
+    try:
+        payload = json.loads(args.payload)
+    except json.JSONDecodeError as e:
+        print(f"⛔ Invalid payload JSON: {e}", file=sys.stderr)
+        return 1
+
+    run_id = current["run_id"]
+
+    # Sanity: verify pre-condition per kind
+    import sqlite3
+    conn = sqlite3.connect(str(Path(os.environ.get("VG_REPO_ROOT")
+                                     or os.getcwd()) / ".vg" / "events.db"))
+    try:
+        if args.kind == "exhausted":
+            r = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE run_id = ? "
+                "AND event_type = 'build.crossai_iteration_started'",
+                (run_id,),
+            ).fetchone()
+            iter_count = r[0] or 0
+            max_iter = int(payload.get("max_iterations", 5))
+            if iter_count < max_iter:
+                print(
+                    f"⛔ Cannot declare exhausted — only {iter_count}/{max_iter} "
+                    f"iterations started. Run more iterations or adjust "
+                    f"max_iterations in the loop invocation.",
+                    file=sys.stderr,
+                )
+                return 2
+            event_type = "build.crossai_loop_exhausted"
+        else:  # user_override
+            r = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE run_id = ? "
+                "AND event_type = 'override.used' "
+                "AND payload_json LIKE '%crossai%'",
+                (run_id,),
+            ).fetchone()
+            override_count = r[0] or 0
+            if override_count == 0:
+                print(
+                    "⛔ user_override requires override.used event with crossai "
+                    "flag first. Run: vg-orchestrator override "
+                    "--flag=skip-crossai-build-loop --reason='<ticket/URL, ≥50ch>'",
+                    file=sys.stderr,
+                )
+                return 2
+            event_type = "build.crossai_loop_user_override"
+    finally:
+        conn.close()
+
+    evt = db.append_event(
+        run_id=run_id,
+        event_type=event_type,
+        phase=current["phase"],
+        command="vg:build",
+        actor="orchestrator",
+        outcome="INFO",
+        payload=payload,
+    )
+    print(f"emitted: {event_type} hash={evt['this_hash'][:12]}")
     return 0
 
 
@@ -1208,6 +1339,19 @@ QUARANTINE_FILE = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()
                        ) / ".vg" / "validator-quarantine.json"
 QUARANTINE_THRESHOLD = 3  # consecutive crashes OR BLOCKs → auto-disable
 
+# OHOK-8 round-3 P0.4: validators on this allowlist NEVER get quarantined.
+# Codex flagged that mandatory validators could be intentionally failed 3
+# times by AI to trigger auto-disable, then skipped on iteration 4. Hard
+# gates stay live always — a broken hard gate surfaces as operator pain,
+# which is correct behavior (fix the validator, don't skip it).
+UNQUARANTINABLE = {
+    "phase-exists",               # precondition — never skip
+    "commit-attribution",         # commit discipline — core contract
+    "runtime-evidence",           # actual test pass verification
+    "build-crossai-required",     # OHOK-7 MANDATORY loop enforcement
+    "context-structure",          # scope contract integrity
+}
+
 
 def _load_quarantine() -> dict:
     if not QUARANTINE_FILE.exists():
@@ -1227,13 +1371,22 @@ def _save_quarantine(state: dict) -> None:
 
 
 def _quarantine_record(v_name: str, verdict: str) -> bool:
-    """Update quarantine state; return True if validator now quarantined."""
+    """Update quarantine state; return True if validator now quarantined.
+
+    OHOK-8 round-3 P0.4: hard gates on UNQUARANTINABLE allowlist can record
+    their consecutive_fails count but NEVER transition to disabled. Codex
+    flagged intentional-trip attack: AI fails same validator 3x to get it
+    auto-disabled on iteration 4.
+    """
     state = _load_quarantine()
     entry = state.setdefault(v_name, {"consecutive_fails": 0, "disabled": False})
     if verdict in ("BLOCK", "CRASH"):
         entry["consecutive_fails"] = entry.get("consecutive_fails", 0) + 1
         entry["last_fail_at"] = _now_iso()
-        if entry["consecutive_fails"] >= QUARANTINE_THRESHOLD and not entry["disabled"]:
+        # Only quarantine validators NOT on the unquarantinable allowlist
+        if (v_name not in UNQUARANTINABLE
+                and entry["consecutive_fails"] >= QUARANTINE_THRESHOLD
+                and not entry["disabled"]):
             entry["disabled"] = True
             entry["disabled_at"] = _now_iso()
     else:  # PASS / WARN — reset counter AND re-enable (validator proved healthy)
@@ -1512,6 +1665,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("namespace", help="e.g. 'build', 'blueprint', 'shared'")
     s.add_argument("step_name")
     s.set_defaults(func=cmd_mark_step)
+
+    # OHOK-8 round-3 P0.1: dedicated path for emit terminal CrossAI events
+    # (exhausted/user_override). loop_complete is emitted automatically by
+    # the loop script; this subcommand covers the user-choice terminals.
+    s = sub.add_parser(
+        "emit-crossai-terminal",
+        help="Emit build.crossai_loop_exhausted or _user_override (restricted)",
+    )
+    s.add_argument(
+        "kind",
+        choices=["exhausted", "user_override"],
+        help="loop_exhausted (after max iter) or loop_user_override (after override)",
+    )
+    s.add_argument("--payload", default="{}",
+                   help="JSON payload (optional)")
+    s.set_defaults(func=cmd_emit_crossai_terminal)
 
     s = sub.add_parser("wave-start", help="Register wave in build run")
     s.add_argument("wave_n", type=int)

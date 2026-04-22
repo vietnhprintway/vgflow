@@ -321,23 +321,38 @@ def parse_verdict(text: str) -> dict | None:
 
 
 def emit_event(event_type: str, phase: str, payload: dict) -> None:
-    """Pipe payload via stdin so nested JSON with quotes/unicode survives
-    without escape hell. `emit-event --stdin` reads the whole stream."""
+    """OHOK-8: bypass the emit-event CLI (which blocks reserved `build.crossai_*`
+    after round-3 forgery mitigation). Import db module directly so only this
+    script — not user CLI — can land these events. Preserves hash chain because
+    db.append_event serializes via _flock().
+
+    If db import fails (e.g. script invoked from outside repo), fall back to
+    stderr warning — do NOT silently swallow.
+    """
     try:
-        py = sys.executable or "python"
-        # Orchestrator CLI arg order — attempt --stdin first, fallback --payload.
-        proc = subprocess.run(
-            [py, str(ORCHESTRATOR), "emit-event", event_type,
-             "--payload", json.dumps(payload),
-             "--actor", "orchestrator",
-             "--outcome", "INFO"],
-            capture_output=True, text=True, timeout=10,
+        # Load current run + push directly
+        current_run_file = REPO_ROOT / ".vg" / "current-run.json"
+        if not current_run_file.exists():
+            sys.stderr.write(f"⚠ emit {event_type}: no current-run.json\n")
+            return
+        run = json.loads(current_run_file.read_text(encoding="utf-8"))
+        run_id = run.get("run_id")
+        command = run.get("command", "vg:build")
+
+        # Import db lazily — adds orchestrator/ to sys.path once
+        sys.path.insert(0, str(ORCHESTRATOR))
+        import db  # type: ignore[import-not-found]
+        db.append_event(
+            run_id=run_id,
+            event_type=event_type,
+            phase=phase,
+            command=command,
+            actor="orchestrator",
+            outcome="INFO",
+            payload=payload,
         )
-        if proc.returncode != 0:
-            sys.stderr.write(f"⚠ emit-event failed rc={proc.returncode}: "
-                             f"{proc.stderr[:300]}\n")
     except Exception as e:
-        sys.stderr.write(f"⚠ emit-event exception: {e}\n")
+        sys.stderr.write(f"⚠ emit {event_type} exception: {e}\n")
 
 
 def main() -> int:
@@ -381,32 +396,75 @@ def main() -> int:
         codex_rc = f_codex.result()
         gemini_rc = f_gemini.result()
 
-    # Both infra-failed → exit 2 (retry or abort path for caller)
-    if codex_rc >= 124 and gemini_rc >= 124:
+    # OHOK-8 round-3 P0.3: fail CLOSED on any CLI infra failure or parse
+    # failure. Previously if both CLIs returned rc 0 but emitted unparsable
+    # output, both verdicts became PARSE_FAIL and outcome CLEAN → false pass.
+    # Now: any rc != 0 or unparsable output ⇒ exit 2 (infra), not exit 0.
+    if codex_rc != 0:
+        sys.stderr.write(
+            f"⛔ Codex CLI failed rc={codex_rc} — cannot verify build. "
+            f"Treat as INFRA_FAILURE, do not declare CLEAN.\n"
+        )
         emit_event(
             "build.crossai_iteration_complete",
             phase=args.phase,
             payload={"iteration": args.iteration,
                      "outcome": "CLI_INFRA_FAILURE",
-                     "codex_rc": codex_rc, "gemini_rc": gemini_rc},
+                     "codex_rc": codex_rc, "gemini_rc": gemini_rc,
+                     "reason": "codex_nonzero"},
         )
-        sys.stderr.write("⛔ Both CLI invocations infra-failed "
-                         "(timeout / missing binary).\n")
+        return 2
+    if gemini_rc != 0:
+        sys.stderr.write(
+            f"⛔ Gemini CLI failed rc={gemini_rc} — cannot verify build. "
+            f"Treat as INFRA_FAILURE, do not declare CLEAN.\n"
+        )
+        emit_event(
+            "build.crossai_iteration_complete",
+            phase=args.phase,
+            payload={"iteration": args.iteration,
+                     "outcome": "CLI_INFRA_FAILURE",
+                     "codex_rc": codex_rc, "gemini_rc": gemini_rc,
+                     "reason": "gemini_nonzero"},
+        )
         return 2
 
     codex_verdict = parse_verdict(codex_out.read_text(encoding="utf-8",
-                                                       errors="replace")) \
-        if codex_rc == 0 else None
+                                                       errors="replace"))
     gemini_verdict = parse_verdict(gemini_out.read_text(encoding="utf-8",
-                                                         errors="replace")) \
-        if gemini_rc == 0 else None
+                                                         errors="replace"))
+
+    if not codex_verdict:
+        sys.stderr.write(
+            "⛔ Codex output not parseable (no <crossai-build-verdict> XML "
+            "block). Cannot verify — treat as INFRA_FAILURE not CLEAN.\n"
+        )
+        emit_event(
+            "build.crossai_iteration_complete",
+            phase=args.phase,
+            payload={"iteration": args.iteration,
+                     "outcome": "PARSE_FAILURE",
+                     "reason": "codex_unparsable"},
+        )
+        return 2
+    if not gemini_verdict:
+        sys.stderr.write(
+            "⛔ Gemini output not parseable (no <crossai-build-verdict> XML "
+            "block). Cannot verify — treat as INFRA_FAILURE not CLEAN.\n"
+        )
+        emit_event(
+            "build.crossai_iteration_complete",
+            phase=args.phase,
+            payload={"iteration": args.iteration,
+                     "outcome": "PARSE_FAILURE",
+                     "reason": "gemini_unparsable"},
+        )
+        return 2
 
     # Extract BLOCK findings from both
     block_findings: list[dict] = []
     all_findings: list[dict] = []
     for name, v in [("codex", codex_verdict), ("gemini", gemini_verdict)]:
-        if not v:
-            continue
         for f in v.get("findings", []):
             f["_source"] = name
             all_findings.append(f)
@@ -414,8 +472,8 @@ def main() -> int:
                 block_findings.append(f)
 
     has_blocks = (len(block_findings) > 0) or \
-                 (codex_verdict and codex_verdict["verdict"] == "BLOCK") or \
-                 (gemini_verdict and gemini_verdict["verdict"] == "BLOCK")
+                 (codex_verdict["verdict"] == "BLOCK") or \
+                 (gemini_verdict["verdict"] == "BLOCK")
 
     consolidated = {
         "phase": args.phase,
@@ -451,6 +509,21 @@ def main() -> int:
                  "block_count": len(block_findings),
                  "findings_path": str(findings_path.relative_to(REPO_ROOT))},
     )
+
+    # OHOK-8 round 3: on CLEAN exit, emit loop_complete directly from this
+    # script — skill bash cannot do it anymore (reserved event via CLI blocked).
+    # Centralizing here also guarantees loop_complete only fires when the
+    # iteration actually reached CLEAN.
+    if not has_blocks:
+        emit_event(
+            "build.crossai_loop_complete",
+            phase=args.phase,
+            payload={"iterations_completed": args.iteration,
+                     "max_iterations": args.max_iterations,
+                     "early_exit": args.iteration < args.max_iterations,
+                     "codex_verdict": consolidated["codex"]["verdict"],
+                     "gemini_verdict": consolidated["gemini"]["verdict"]},
+        )
 
     print(json.dumps({
         "iteration": args.iteration,

@@ -556,11 +556,25 @@ def _run_scenario_ohok7_crossai_loop_required(fixture: dict) -> tuple[str, str]:
         return r.returncode, r.stdout + r.stderr
 
     def emit(event_type: str, payload: dict) -> None:
-        subprocess.run(
-            [sys.executable, str(orch), "emit-event", event_type,
-             "--payload", json.dumps(payload),
-             "--actor", "orchestrator", "--outcome", "INFO"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+        # OHOK-8 round-3: reserved events blocked via CLI — invoke db.append_event
+        # directly (same path as orchestrator core uses internally).
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "db_mod",
+            REPO_ROOT / ".claude" / "scripts" / "vg-orchestrator" / "db.py",
+        )
+        db_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(db_mod)
+        current_run_file = REPO_ROOT / ".vg" / "current-run.json"
+        run = json.loads(current_run_file.read_text(encoding="utf-8"))
+        db_mod.append_event(
+            run_id=run["run_id"],
+            event_type=event_type,
+            phase=run["phase"],
+            command=run["command"],
+            actor="orchestrator",
+            outcome="INFO",
+            payload=payload,
         )
 
     try:
@@ -590,13 +604,39 @@ def _run_scenario_ohok7_crossai_loop_required(fixture: dict) -> tuple[str, str]:
                 f"got {out2[:200]}"
             )
 
-        # State 3: iteration + terminal (loop_complete) → expect PASS
+        # State 3: OHOK-8 requires full sequence for loop_complete to PASS.
+        # Emit iteration_complete with outcome=CLEAN BEFORE loop_complete
+        # (semantic check rejects terminal without preceding CLEAN iter).
+        emit("build.crossai_iteration_complete",
+             {"iteration": 1, "outcome": "CLEAN",
+              "codex_verdict": "PASS", "gemini_verdict": "PASS",
+              "block_count": 0})
         emit("build.crossai_loop_complete",
-             {"iterations": 1, "outcome": "CLEAN"})
+             {"iterations_completed": 1, "max_iterations": 5,
+              "early_exit": True, "codex_verdict": "PASS",
+              "gemini_verdict": "PASS"})
         rc3, out3 = run_validator()
         if '"verdict": "PASS"' not in out3:
             failures.append(
-                f"state3 iter+terminal: expected PASS, got {out3[:200]}"
+                f"state3 iter+terminal: expected PASS, got {out3[:300]}"
+            )
+
+        # State 4: OHOK-8 round-3 semantic check — loop_complete with
+        # iteration_complete.outcome=BLOCKS_FOUND should BLOCK (premature)
+        emit("build.crossai_iteration_started",
+             {"iteration": 2, "max_iterations": 5})
+        emit("build.crossai_iteration_complete",
+             {"iteration": 2, "outcome": "BLOCKS_FOUND",
+              "codex_verdict": "BLOCK", "gemini_verdict": "BLOCK",
+              "block_count": 3})
+        emit("build.crossai_loop_complete",
+             {"iterations_completed": 2, "max_iterations": 5,
+              "early_exit": True})
+        rc4, out4 = run_validator()
+        if "crossai_premature_complete" not in out4:
+            failures.append(
+                f"state4 premature-complete: expected crossai_premature_complete, "
+                f"got {out4[:300]}"
             )
     finally:
         subprocess.run(
@@ -608,8 +648,10 @@ def _run_scenario_ohok7_crossai_loop_required(fixture: dict) -> tuple[str, str]:
     if failures:
         return "FAIL", "; ".join(failures[:3])
     return "PASS", (
-        "validator enforces OHOK-7 loop: BLOCK without iterations, BLOCK "
-        "without terminal, PASS with iteration + loop_complete"
+        "validator enforces OHOK-7/8 loop: BLOCK without iterations, "
+        "BLOCK without terminal, PASS with full clean sequence "
+        "(iter+iter_complete.CLEAN+loop_complete), BLOCK on premature "
+        "loop_complete (iter_complete.outcome=BLOCKS_FOUND)"
     )
 
 

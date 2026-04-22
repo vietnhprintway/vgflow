@@ -74,6 +74,35 @@ def _count_events_in_run(run_id: str, event_types: set[str]) -> dict[str, int]:
     return counts
 
 
+def _read_event_stream(run_id: str, event_types: list[str]) -> list[dict]:
+    """OHOK-8: read full event stream (payload + order) for semantic checks.
+    Returns newest-first by id descending."""
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        placeholders = ",".join("?" for _ in event_types)
+        rows = conn.execute(
+            f"SELECT id, event_type, actor, outcome, payload_json FROM events "
+            f"WHERE run_id = ? AND event_type IN ({placeholders}) "
+            f"ORDER BY id DESC",
+            [run_id, *event_types],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = {"id": r[0], "event_type": r[1], "actor": r[2], "outcome": r[3]}
+        try:
+            d["payload"] = json.loads(r[4] or "{}")
+        except Exception:
+            d["payload"] = {}
+        out.append(d)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True)
@@ -139,19 +168,137 @@ def main() -> None:
                 expected="one of: " + ", ".join(sorted(TERMINAL_EVENTS)),
                 actual=f"iterations={iter_count}, terminal events=0",
                 fix_hint=(
-                    "After running iterations, main Claude must emit ONE of:\n"
-                    "  - build.crossai_loop_complete (if iteration exit 0)\n"
-                    "  - build.crossai_loop_exhausted (if hit --max)\n"
-                    "  - build.crossai_loop_user_override (if user deferred)\n"
-                    "via: python .claude/scripts/vg-orchestrator emit-event "
-                    "<event_type> --payload '{...}'"
+                    "After running iterations, main Claude must run the\n"
+                    "loop script or issue emit-crossai-terminal via the\n"
+                    "dedicated orchestrator subcommand:\n"
+                    "  - loop_complete: emitted automatically by the loop\n"
+                    "    script when iteration exits CLEAN (0 BLOCK)\n"
+                    "  - loop_exhausted: python vg-orchestrator\n"
+                    "    emit-crossai-terminal loop_exhausted (after 5 iter)\n"
+                    "  - loop_user_override: requires override.used with\n"
+                    "    --flag=skip-crossai-build-loop first"
                 ),
             ))
             emit_and_exit(out)
 
-        # Iterations ran + terminal event present → PASS (no evidence means
-        # clean pass per Output class semantics; adding evidence would
-        # escalate to BLOCK).
+        # OHOK-8 round-3 P0.2: SEMANTIC check on terminal event, not shape.
+        # Previously: "any terminal event = PASS". Codex/Gemini flagged AI
+        # could run loop + see BLOCKS_FOUND + forge loop_complete anyway.
+        # New: for loop_complete, the most-recent iteration_complete MUST
+        # have outcome=CLEAN. Otherwise it's a forged terminal.
+        stream = _read_event_stream(
+            run_id,
+            ["build.crossai_iteration_started",
+             "build.crossai_iteration_complete",
+             "build.crossai_loop_complete",
+             "build.crossai_loop_exhausted",
+             "build.crossai_loop_user_override",
+             "override.used"],
+        )
+
+        # Find the most recent terminal event (stream is newest-first)
+        terminal_evt = next(
+            (e for e in stream if e["event_type"] in TERMINAL_EVENTS), None,
+        )
+        if not terminal_evt:
+            # Shouldn't happen (terminal_count >0 above) but be safe
+            out.add(Evidence(
+                type="crossai_terminal_parse_error",
+                message="Count showed terminal event but stream read returned none",
+            ))
+            emit_and_exit(out)
+
+        term_type = terminal_evt["event_type"]
+
+        if term_type == "build.crossai_loop_complete":
+            # Must have a preceding iteration_complete with outcome=CLEAN
+            # BEFORE the terminal event (id-wise: lower id since stream is
+            # newest-first)
+            preceding_ic = [
+                e for e in stream
+                if e["event_type"] == "build.crossai_iteration_complete"
+                and e["id"] < terminal_evt["id"]
+            ]
+            if not preceding_ic:
+                out.add(Evidence(
+                    type="crossai_forged_terminal",
+                    message=(
+                        "build.crossai_loop_complete emitted but NO preceding "
+                        "build.crossai_iteration_complete exists. Terminal "
+                        "event forged without running actual iteration."
+                    ),
+                    fix_hint=(
+                        "The loop script (vg-build-crossai-loop.py) emits "
+                        "loop_complete automatically when iteration reaches "
+                        "CLEAN. Do not emit it manually via CLI — reserved."
+                    ),
+                ))
+                emit_and_exit(out)
+            last_ic_outcome = (preceding_ic[0]["payload"].get("outcome") or "")
+            if last_ic_outcome.upper() != "CLEAN":
+                out.add(Evidence(
+                    type="crossai_premature_complete",
+                    message=(
+                        f"build.crossai_loop_complete emitted but last "
+                        f"iteration_complete outcome was {last_ic_outcome!r}, "
+                        f"not CLEAN. Terminal emitted despite BLOCK findings."
+                    ),
+                    expected="iteration_complete.outcome=CLEAN before loop_complete",
+                    actual=f"iteration_complete.outcome={last_ic_outcome!r}",
+                    fix_hint=(
+                        "Fix the BLOCK findings first (spawn Sonnet fix "
+                        "subagent), re-run loop iteration N+1, then terminal "
+                        "emits on CLEAN exit."
+                    ),
+                ))
+                emit_and_exit(out)
+
+        elif term_type == "build.crossai_loop_exhausted":
+            # Must have actually reached max_iterations
+            started_events = [
+                e for e in stream
+                if e["event_type"] == "build.crossai_iteration_started"
+            ]
+            max_iter = (terminal_evt["payload"].get("iterations")
+                        or terminal_evt["payload"].get("max_iterations") or 5)
+            if len(started_events) < int(max_iter):
+                out.add(Evidence(
+                    type="crossai_premature_exhausted",
+                    message=(
+                        f"loop_exhausted emitted with only "
+                        f"{len(started_events)} iteration(s), less than "
+                        f"max_iterations={max_iter}."
+                    ),
+                    fix_hint="Run remaining iterations before declaring exhausted.",
+                ))
+                emit_and_exit(out)
+
+        elif term_type == "build.crossai_loop_user_override":
+            # Must have a preceding override.used event with skip-crossai-*
+            skip_overrides = [
+                e for e in stream
+                if e["event_type"] == "override.used"
+                and "crossai" in str(e["payload"].get("flag", "")).lower()
+            ]
+            if not skip_overrides:
+                out.add(Evidence(
+                    type="crossai_user_override_unbacked",
+                    message=(
+                        "loop_user_override emitted but no corresponding "
+                        "override.used event with --flag containing 'crossai'. "
+                        "User override requires HARD debt log first."
+                    ),
+                    fix_hint=(
+                        "Run: python vg-orchestrator override "
+                        "--flag=skip-crossai-build-loop "
+                        "--reason='<ticket URL or commit SHA, ≥50ch>' "
+                        "before emitting the terminal event."
+                    ),
+                ))
+                emit_and_exit(out)
+
+        # All semantic checks passed — PASS silently
+
 
     emit_and_exit(out)
 
