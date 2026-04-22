@@ -390,7 +390,7 @@ if [ "$GOAL_RC" -eq 2 ]; then
   fi
 fi
 
-touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || true
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "0b_goal_coverage_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || true
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0b_goal_coverage_gate 2>/dev/null || true
 ```
@@ -625,7 +625,7 @@ PY
   fi
 
   echo "✓ Infra-smoke PASS (${READY_COUNT}/${TOTAL}) — phase provisioned as specified."
-  touch "${PHASE_DIR}/.step-markers/phaseP_infra_smoke.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_infra_smoke" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_infra_smoke.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_infra_smoke 2>/dev/null || true
   # Exit review early — subsequent steps (browser, goal comparison) N/A for infra profile.
   exit 0
@@ -714,21 +714,7 @@ if matrix.exists():
         if m:
             failed.append(m.group(1))
 
-# Parent commits touching apps/**/src|packages/**/src|infra — our proxy for
-# "files involved in parent work"
-parent_files = set()
-try:
-    r = subprocess.run(
-        ["git", "log", "--name-only", "--format=", "--", str(parent_dir)],
-        capture_output=True, text=True, timeout=10,
-    )
-    for line in r.stdout.splitlines():
-        if line and any(line.startswith(p) for p in ("apps/", "packages/", "infra/")):
-            parent_files.add(line.strip())
-except Exception:
-    pass
-
-# Delta files (current phase)
+# Delta files (current hotfix phase)
 try:
     r = subprocess.run(
         ["git", "diff", "--name-only", "HEAD~1", "HEAD",
@@ -738,6 +724,56 @@ try:
     delta_files = set(f.strip() for f in r.stdout.splitlines() if f.strip())
 except Exception:
     delta_files = set()
+
+# Per-goal overlap (CrossAI R6 fix).
+# Previously: one global parent file set → any touched parent file false-PASSes
+# every failed goal. Now: for each failed goal, find files in parent commits
+# that cite that goal_id, compute overlap per-goal.
+def _files_for_goal(goal_id: str) -> set[str]:
+    """Files changed in parent commits whose message cites `goal_id`.
+
+    Proxy for "files involved in this goal's implementation/failure". Limits
+    by default to code paths. Falls back to empty set if grep yields nothing
+    (goal may have no associated commit — e.g., goal added but never worked on).
+    """
+    try:
+        r = subprocess.run(
+            ["git", "log", f"--grep={goal_id}", "--name-only", "--format=",
+             "--", str(parent_dir), "apps", "packages", "infra"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return {
+            ln.strip() for ln in r.stdout.splitlines()
+            if ln.strip() and any(
+                ln.startswith(p) for p in ("apps/", "packages/", "infra/")
+            )
+        }
+    except Exception:
+        return set()
+
+per_goal: dict[str, dict] = {}
+parent_files: set[str] = set()
+goals_covered = 0
+goals_orthogonal = 0
+
+for g in failed:
+    gf = _files_for_goal(g)
+    parent_files |= gf
+    ovl = sorted(gf & delta_files)
+    covered = bool(ovl)
+    if covered:
+        goals_covered += 1
+    elif gf:
+        # Goal has known files but none overlap with delta — orthogonal
+        goals_orthogonal += 1
+    per_goal[g] = {
+        "parent_files": sorted(gf),
+        "parent_files_count": len(gf),
+        "overlap_files": ovl,
+        "overlap_count": len(ovl),
+        "covered": covered,
+        "has_goal_commits": bool(gf),
+    }
 
 overlap = sorted(parent_files & delta_files)
 coverage_pct = (len(overlap) / len(parent_files) * 100) if parent_files else 0
@@ -750,29 +786,45 @@ out = {
     "overlap_files": overlap,
     "overlap_count": len(overlap),
     "coverage_pct_of_parent": round(coverage_pct, 1),
+    "per_goal": per_goal,
+    "goals_covered": goals_covered,
+    "goals_orthogonal": goals_orthogonal,
+    "goals_no_commits": sum(1 for d in per_goal.values() if not d["has_goal_commits"]),
 }
 Path(out_path).write_text(json.dumps(out, indent=2))
-print(f"✓ delta coverage: {len(overlap)}/{len(parent_files)} parent files touched "
-      f"({coverage_pct:.1f}%), {len(failed)} parent failed goals")
+print(f"✓ delta coverage: {goals_covered}/{len(failed)} failed goals have file overlap "
+      f"({goals_orthogonal} orthogonal, {out['goals_no_commits']} unmapped); "
+      f"total overlap {len(overlap)}/{len(parent_files)} files")
 PY
 
-  # 5. Gate: if parent had failed goals AND delta touches 0 of parent's files, BLOCK
-  OVERLAP_COUNT=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}'))['overlap_count'])" 2>/dev/null || echo 0)
-  if [ "${FAILED_COUNT:-0}" -gt 0 ] && [ "${OVERLAP_COUNT:-0}" -eq 0 ]; then
-    echo "⛔ Parent has ${FAILED_COUNT} BLOCKED/FAILED goals but hotfix touches 0 of parent's files." >&2
+  # 5. Gate: per-goal coverage (CrossAI R6 fix).
+  # Previously: one global overlap → any touched parent file false-PASSed every
+  # goal. Now: each failed goal evaluated independently. Block if ANY failed
+  # goal with known commits has zero overlap with delta.
+  GOALS_COVERED=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}')).get('goals_covered',0))" 2>/dev/null || echo 0)
+  GOALS_ORTHOGONAL=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}')).get('goals_orthogonal',0))" 2>/dev/null || echo 0)
+  GOALS_UNMAPPED=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}')).get('goals_no_commits',0))" 2>/dev/null || echo 0)
+
+  if [ "${FAILED_COUNT:-0}" -gt 0 ] && [ "${GOALS_ORTHOGONAL:-0}" -gt 0 ]; then
+    echo "⛔ ${GOALS_ORTHOGONAL} of ${FAILED_COUNT} failed parent goal(s) have known commits but delta touches NONE of their files." >&2
+    echo "   Covered:   ${GOALS_COVERED}/${FAILED_COUNT}" >&2
+    echo "   Orthogonal: ${GOALS_ORTHOGONAL}/${FAILED_COUNT} ← hotfix does not address these" >&2
+    echo "   Unmapped:  ${GOALS_UNMAPPED}/${FAILED_COUNT} (no parent commits cite these goals)" >&2
     echo "   Delta files: ${DELTA_COUNT}" >&2
-    echo "   This hotfix cannot address parent failures — scope is orthogonal." >&2
     echo "   Options:" >&2
-    echo "     (a) Ensure hotfix edits files in parent's blast radius" >&2
-    echo "     (b) /vg:scope ${PHASE_NUMBER} — re-scope if unrelated issue" >&2
-    echo "     (c) --allow-orthogonal-hotfix override (log debt, hotfix ships without covering parent)" >&2
+    echo "     (a) Ensure hotfix edits files involved in each failed goal" >&2
+    echo "     (b) /vg:scope ${PHASE_NUMBER} — re-scope if truly unrelated" >&2
+    echo "     (c) --allow-orthogonal-hotfix override (debt logged, hotfix ships without per-goal coverage)" >&2
     if [[ ! "${ARGUMENTS}" =~ --allow-orthogonal-hotfix ]]; then
       exit 1
     fi
     source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
     type -t log_override_debt >/dev/null 2>&1 && \
-      log_override_debt "phaseP-delta-orthogonal" "${PHASE_NUMBER}" "hotfix doesn't touch parent files (${FAILED_COUNT} failed goals uncovered)" "${PHASE_DIR}"
+      log_override_debt "phaseP-delta-orthogonal" "${PHASE_NUMBER}" "${GOALS_ORTHOGONAL}/${FAILED_COUNT} failed goals uncovered per-goal" "${PHASE_DIR}"
   fi
+
+  # Preserve legacy OVERLAP_COUNT var for downstream consumers
+  OVERLAP_COUNT=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}'))['overlap_count'])" 2>/dev/null || echo 0)
 
   # 6. Write matrix with actual per-goal delta-overlap status
   ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PARENT_REF" "$COVERAGE_JSON" <<'PY'
@@ -788,12 +840,24 @@ overlap = cov.get("overlap_files", [])
 delta_count = cov.get("delta_files_count", 0)
 parent_files_count = cov.get("parent_files_count", 0)
 coverage_pct = cov.get("coverage_pct_of_parent", 0)
+per_goal = cov.get("per_goal", {})
+goals_covered = cov.get("goals_covered", 0)
+goals_orthogonal = cov.get("goals_orthogonal", 0)
+goals_no_commits = cov.get("goals_no_commits", 0)
 
-# Decide verdict
-if failed and not overlap:
-    verdict = "BLOCK (orthogonal — hotfix doesn't touch parent files)"
-elif failed and overlap:
-    verdict = f"PASS (delta touches {len(overlap)}/{parent_files_count} parent files; /vg:test re-verifies parent failed goals)"
+# Decide verdict using PER-GOAL coverage (CrossAI R6 fix).
+# Previously: any global overlap = PASS for all goals. Now: goals tracked
+# individually. BLOCK if any failed goal with known commits has no per-goal
+# overlap with delta.
+if failed and goals_orthogonal > 0:
+    verdict = (f"BLOCK ({goals_orthogonal}/{len(failed)} failed goals orthogonal — "
+               f"hotfix doesn't touch their files)")
+elif failed and goals_covered == 0 and goals_no_commits == len(failed):
+    verdict = (f"FLAG (all {len(failed)} failed goals have no parent commits — "
+               f"cannot verify per-goal coverage; /vg:test must re-verify each)")
+elif failed and goals_covered > 0:
+    verdict = (f"PASS ({goals_covered}/{len(failed)} failed goals have file overlap; "
+               f"{goals_no_commits} unmapped deferred to /vg:test)")
 elif not failed:
     verdict = "PASS (parent had no failed goals; delta review defers full goal re-check to /vg:test)"
 else:
@@ -807,17 +871,23 @@ lines = [
     f"**Source:** parent GOAL-COVERAGE-MATRIX + git delta vs HEAD~1  ",
     f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  ",
     "",
-    "## Parent failed goals",
+    "## Parent failed goals (per-goal overlap)",
     "",
 ]
 if failed:
-    lines.append("| Goal | Status | Delta-overlap |")
-    lines.append("|------|--------|---------------|")
+    lines.append("| Goal | Status | Parent files | Overlap | Verdict |")
+    lines.append("|------|--------|--------------|---------|---------|")
     for g in failed:
-        # Without per-goal file mapping we can't prove specific coverage;
-        # overall overlap serves as proxy
-        cov_mark = "Y (overall overlap)" if overlap else "N (orthogonal)"
-        lines.append(f"| {g} | BLOCKED/FAILED (parent) | {cov_mark} |")
+        pg = per_goal.get(g, {})
+        pf_count = pg.get("parent_files_count", 0)
+        ov_count = pg.get("overlap_count", 0)
+        if pg.get("covered"):
+            mark = f"COVERED ({ov_count}/{pf_count})"
+        elif pg.get("has_goal_commits"):
+            mark = f"ORTHOGONAL (0/{pf_count})"
+        else:
+            mark = "UNMAPPED (no parent commits cite goal)"
+        lines.append(f"| {g} | BLOCKED/FAILED (parent) | {pf_count} | {ov_count} | {mark} |")
 else:
     lines.append("_no parent failed/blocked goals found_")
 lines += [
@@ -844,7 +914,7 @@ print(f"✓ GOAL-COVERAGE-MATRIX.md written — verdict: {verdict.split(' (')[0]
 PY
 
   mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-  touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_delta" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_delta 2>/dev/null || true
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.phaseP_delta_verified" \
     --payload "{\"phase\":\"${PHASE_NUMBER}\",\"parent\":\"${PARENT_REF}\",\"overlap_count\":${OVERLAP_COUNT:-0},\"failed_count\":${FAILED_COUNT:-0}}" >/dev/null 2>&1 || true
@@ -981,7 +1051,7 @@ print(f"✓ GOAL-COVERAGE-MATRIX.md written — {verdict.split(' (')[0]}")
 PY
 
   mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-  touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_regression" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_regression 2>/dev/null || true
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.phaseP_regression_verified" \
     --payload "{\"phase\":\"${PHASE_NUMBER}\",\"bug_ref\":\"${BUG_REF}\",\"code_count\":${CODE_COUNT},\"test_count\":${TEST_COUNT},\"test_linked\":${TEST_MENTIONS_BUG}}" >/dev/null 2>&1 || true
@@ -1033,7 +1103,7 @@ lines = [
 open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (migration schema-verify)")
 PY
-  touch "${PHASE_DIR}/.step-markers/phaseP_schema_verify.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_schema_verify" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_schema_verify.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_schema_verify 2>/dev/null || true
   exit 0
 fi
@@ -1079,7 +1149,7 @@ lines = [
 open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (docs link-check)")
 PY
-  touch "${PHASE_DIR}/.step-markers/phaseP_link_check.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_link_check" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_link_check.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_link_check 2>/dev/null || true
   exit 0
 fi
@@ -1198,7 +1268,7 @@ if [ "$GRAPHIFY_ACTIVE" != "true" ]; then
   echo "ℹ Graphify not available — skipping Phase 1.5"
   echo "RIPPLE_SKIPPED=true" > "${PHASE_DIR}/uat-ripples.txt"
   echo "RIPPLE_SKIP_REASON=graphify-inactive" >> "${PHASE_DIR}/uat-ripples.txt"
-  touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase1_5_ripple_and_god_node" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase1_5_ripple_and_god_node 2>/dev/null || true
   # skip to Phase 2
 fi
@@ -1374,7 +1444,7 @@ Still write empty `RIPPLE-ANALYSIS.md` stub so Phase 4 doesn't error on missing 
 Graphify inactive. Enable for cross-module impact detection.
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase1_5_ripple_and_god_node" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"`
 </step>
 
 <step name="phase2_browser_discovery" profile="web-fullstack,web-frontend-only">
@@ -2468,7 +2538,7 @@ Counts actions + views + wall-time sau Phase 2 để phát hiện runaway discov
 RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
 if [ ! -f "$RUNTIME_MAP" ]; then
   echo "⚠ RUNTIME-MAP.json chưa tồn tại — bỏ qua limit check (Phase 2 có thể skipped hoặc failed)."
-  touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_exploration_limits" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2_exploration_limits 2>/dev/null || true
 else
   MAX_VIEW="${CONFIG_REVIEW_MAX_ACTIONS_PER_VIEW:-50}"
@@ -2560,7 +2630,7 @@ state.setdefault("metrics", {})["review_exploration"] = {
 state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 PY
 
-  touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_exploration_limits" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
 
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2_exploration_limits 2>/dev/null || true
 fi
@@ -2821,7 +2891,7 @@ Phase 2.5 Visual Integrity:
   MAJOR: {N} → Phase 3 fix loop | MINOR: {N} → logged
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_5_visual_checks" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
 </step>
 
 <step name="phase2_5_mobile_visual_checks" profile="mobile-*">
@@ -2923,7 +2993,7 @@ EOF
 
 MAJOR → handled in Phase 3 fix loop. MINOR → logged only.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase2_5_mobile_visual_checks.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_5_mobile_visual_checks" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_5_mobile_visual_checks.done"`
 </step>
 
 <step name="phase3_fix_loop">
@@ -4297,7 +4367,7 @@ Next steps (pick the matching path — DO NOT just re-run /vg:review blindly):
 ```bash
 # v2.2 — complete step marker + terminal emit + run-complete
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/complete.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/complete.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review complete 2>/dev/null || true
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0_parse_and_validate 2>/dev/null || true
 READY_COUNT=$(grep -c "READY" "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>/dev/null || echo 0)

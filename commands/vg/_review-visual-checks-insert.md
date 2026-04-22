@@ -326,7 +326,7 @@ Phase 2.5 Visual Integrity:
   Screenshots: ${VISUAL_SCREENSHOTS_DIR}/ ({screenshot_count} files)
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_5_visual_checks" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
 </step>
 ```
 

@@ -97,6 +97,26 @@ Output: `${PLANNING_DIR}/phases/{phase_dir}/SPECS.md`
 
 **Config:** Read .claude/commands/vg/_shared/config-loader.md first.
 
+**Context loading (was a separate step, now process preamble — OHOK Batch 1 A1).**
+
+Before any step below, read these files once to build context for the entire run:
+1. **ROADMAP.md** — Phase goal, success criteria, dependencies
+2. **PROJECT.md** — Project constraints, stack, architecture decisions
+3. **STATE.md** — Current progress, what's already done
+4. **Prior SPECS.md files** — `${PHASES_DIR}/*/SPECS.md` (1-2 most recent for style reference)
+
+Store: `phase_goal`, `phase_success_criteria`, `project_constraints`, `prior_phases_done`, `spec_style`.
+
+```bash
+# Register run with orchestrator
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:specs "${PHASE_NUMBER}" "${ARGUMENTS}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "specs.started" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+```
+
 <step name="parse_args">
 ## Step 1: Parse Arguments
 
@@ -105,141 +125,191 @@ Extract from `$ARGUMENTS`:
 - **--auto flag** — Optional. If present, skip interactive questions and AI-draft directly.
 
 **Validate:**
-1. Read `${PLANNING_DIR}/ROADMAP.md` — confirm the phase exists
-2. Extract the phase goal and success criteria from ROADMAP
-3. Determine the phase directory name (e.g., `07.4-some-slug`) by scanning `${PHASES_DIR}/`
-4. If phase dir doesn't exist, create it: `${PHASES_DIR}/{phase_dir}/`
 
-**Fail fast:** If phase not found in ROADMAP.md, tell user and stop.
+```bash
+# OHOK Batch 1 B2: phase existence gate (previously prose "fail fast", no enforcement).
+# Accepts both "Phase X" and bare "X" at line start in ROADMAP.md.
+if [ -z "${PHASE_NUMBER:-}" ]; then
+  echo "⛔ PHASE_NUMBER not set — argument required" >&2
+  exit 1
+fi
+
+ROADMAP="${PLANNING_DIR:-.planning}/ROADMAP.md"
+if [ ! -f "$ROADMAP" ]; then
+  echo "⛔ ROADMAP.md not found at ${ROADMAP}" >&2
+  echo "   Run /vg:roadmap first to derive phases from PROJECT.md." >&2
+  exit 1
+fi
+
+if ! grep -qE "(^##?\s+(Phase\s+)?${PHASE_NUMBER}[\s:|.-])|(^\|\s*${PHASE_NUMBER}[\s:|.-])|(^- \[.\]\s+\*\*Phase\s+${PHASE_NUMBER}[\s:.-])" "$ROADMAP" 2>/dev/null; then
+  echo "⛔ Phase ${PHASE_NUMBER} not found in ${ROADMAP}" >&2
+  echo "   Check phase number or add via /vg:add-phase." >&2
+  echo "   Accepted ROADMAP formats:" >&2
+  echo "     '## Phase N: ...'  |  '| N | ... |'  |  '- [x] **Phase N: ...**'" >&2
+  exit 1
+fi
+
+# Resolve phase dir (create if missing)
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/dev/null || true
+if type -t resolve_phase_dir >/dev/null 2>&1; then
+  PHASE_DIR=$(resolve_phase_dir "$PHASE_NUMBER" 2>/dev/null || echo "")
+fi
+if [ -z "${PHASE_DIR:-}" ]; then
+  # Bootstrap phase dir if totally new (extract slug from ROADMAP heading if possible)
+  PHASE_SLUG=$(grep -E "^##?\s+(Phase\s+)?${PHASE_NUMBER}\b" "$ROADMAP" \
+               | head -1 | sed -E 's/^##?\s+(Phase\s+)?[0-9.]+[\s:.-]+//; s/[[:space:]]+/-/g; s/[^a-zA-Z0-9-]//g' \
+               | tr '[:upper:]' '[:lower:]' | head -c 60)
+  [ -z "$PHASE_SLUG" ] && PHASE_SLUG="phase-${PHASE_NUMBER}"
+  PHASE_DIR="${PLANNING_DIR:-.planning}/phases/${PHASE_NUMBER}-${PHASE_SLUG}"
+  mkdir -p "$PHASE_DIR"
+fi
+
+export PHASE_DIR
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "parse_args" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/parse_args.done"
+```
 </step>
 
 <step name="check_existing">
 ## Step 2: Check Existing SPECS.md
 
-If `${PHASES_DIR}/{phase_dir}/SPECS.md` already exists:
+If `${PHASE_DIR}/SPECS.md` already exists:
 
-Ask user:
+Ask user via `AskUserQuestion`:
+- header: "SPECS.md exists — what next?"
+- question: "SPECS.md đã tồn tại cho Phase ${PHASE_NUMBER}. Chọn: View (xem), Edit (giữ + sửa từng section), Overwrite (ghi đè từ đầu)."
+- options:
+  - "View — hiển thị nội dung rồi hỏi lại"
+  - "Edit — giữ nguyên, sửa section cụ thể"
+  - "Overwrite — start fresh"
+
+Act on the response. If "View", show contents then re-ask. If "Edit", proceed to guided editing of specific sections. If "Overwrite", continue to next step.
+
+If SPECS.md does not exist, continue.
+
+```bash
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "check_existing" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/check_existing.done"
 ```
-SPECS.md already exists for Phase {N}.
-1. View — Show current contents
-2. Edit — Keep existing, modify specific sections
-3. Overwrite — Start fresh
-```
-
-Act on their choice. If "View", show contents then re-ask. If "Edit", proceed to guided editing of specific sections. If "Overwrite", continue to step 3.
-
-If SPECS.md does not exist, continue to step 3.
-</step>
-
-<step name="load_context">
-## Step 3: Load Context
-
-Read these files to build context for spec generation:
-
-1. **ROADMAP.md** — Phase goal, success criteria, dependencies
-2. **PROJECT.md** — Project constraints, stack, architecture decisions
-3. **STATE.md** — Current progress, what's already done
-4. **Prior SPECS.md files** — Scan `${PHASES_DIR}/*/SPECS.md` for style and depth reference (read 1-2 most recent)
-
-Store extracted context:
-- `phase_goal`: from ROADMAP
-- `phase_success_criteria`: from ROADMAP
-- `project_constraints`: from PROJECT.md
-- `prior_phases_done`: from STATE.md
-- `spec_style`: from prior SPECS.md files
 </step>
 
 <step name="choose_mode">
-## Step 4: Choose Mode
+## Step 3: Choose Mode
 
-If `--auto` flag is set, skip to step 6 (generate_draft).
-
-Otherwise, ask user:
-
-```
-Phase {N}: {phase_goal}
-
-Ban muon tao SPECS theo cach nao?
-1. AI Draft — Toi tu draft dua tren ROADMAP + PROJECT.md
-2. Guided — Toi hoi 4-5 cau de ban mo ta
+```bash
+AUTO_MODE=false
+if [[ "${ARGUMENTS:-}" =~ --auto ]]; then
+  AUTO_MODE=true
+fi
 ```
 
-- If "1" or "AI Draft" → go to step 6 (generate_draft)
-- If "2" or "Guided" → go to step 5 (guided_questions)
+If `$AUTO_MODE=true`, skip to step 5 (generate_draft).
+
+Otherwise, invoke `AskUserQuestion`:
+- header: "SPECS mode"
+- question: "Phase ${PHASE_NUMBER}: ${phase_goal}. Bạn muốn tạo SPECS theo cách nào?"
+- options:
+  - "AI Draft — tôi tự draft dựa trên ROADMAP + PROJECT"
+  - "Guided — tôi hỏi 4-5 câu để bạn mô tả"
+
+- If "AI Draft" → go to step 5 (generate_draft)
+- If "Guided" → go to step 4 (guided_questions)
+
+```bash
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "choose_mode" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/choose_mode.done"
+```
 </step>
 
 <step name="guided_questions">
-## Step 5: Guided Questions (User-Guided Mode)
+## Step 4: Guided Questions (User-Guided Mode only — skipped in --auto)
 
-Ask questions ONE AT A TIME. After each answer, save it immediately to avoid context loss.
+Ask questions ONE AT A TIME via `AskUserQuestion`. After each answer, save it immediately to avoid context loss.
 
-**Q1: Goal**
-```
-Muc tieu chinh cua phase nay la gi? (1-2 cau)
-(ROADMAP noi: "{phase_goal}")
-```
-Save answer → proceed.
+**Q1: Goal** — "Mục tiêu chính của phase này là gì? (1-2 câu). ROADMAP nói: ${phase_goal}"
 
-**Q2: Scope IN**
-```
-Nhung gi NAM TRONG scope? (liet ke features/tasks)
-```
-Save answer → proceed.
+**Q2: Scope IN** — "Những gì NẰM TRONG scope? (liệt kê features/tasks)"
 
-**Q3: Scope OUT**
-```
-Nhung gi KHONG lam trong phase nay? (exclusions ro rang)
-```
-Save answer → proceed.
+**Q3: Scope OUT** — "Những gì KHÔNG làm trong phase này? (exclusions rõ ràng)"
 
-**Q4: Constraints**
-```
-Rang buoc ky thuat hoac business nao can luu y?
-(VD: latency, compatibility, dependencies)
-```
-Save answer → proceed.
+**Q4: Constraints** — "Ràng buộc kỹ thuật hoặc business nào cần lưu ý? (VD: latency, compatibility, dependencies)"
 
-**Q5: Success Criteria**
+**Q5: Success Criteria** — "Làm sao biết phase này DONE? (tiêu chí đo lường được)"
+
+```bash
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "guided_questions" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/guided_questions.done"
 ```
-Lam sao biet phase nay DONE? (tieu chi do luong duoc)
-```
-Save answer → proceed to step 6 with user answers as primary input.
 </step>
 
 <step name="generate_draft">
-## Step 6: Generate Draft
+## Step 5: Generate Draft + Approval Gate
 
-**If AI Draft mode (--auto or user chose option 1):**
+**If AI Draft mode (`$AUTO_MODE=true` or user chose option 1):**
 - Generate SPECS.md content from ROADMAP phase goal + PROJECT.md constraints
-- Infer scope, constraints, and success criteria from available context
-- Match style of prior SPECS.md files if they exist
+- Infer scope, constraints, success criteria from available context
+- Match style of prior SPECS.md files if present
 
 **If Guided mode:**
-- Use user's answers from step 5 as primary content
-- Supplement with ROADMAP and PROJECT.md context where user answers are sparse
-- Do NOT override user's explicit answers with AI inference
+- Use user's answers from step 4 as primary content
+- Supplement with ROADMAP + PROJECT where answers sparse
+- Do NOT override explicit user answers with AI inference
 
-**Show the full draft to the user:**
+**⛔ BLOCKING APPROVAL GATE — user MUST approve before write (OHOK Batch 1 B3).**
+
+Render preview to user, then invoke `AskUserQuestion`:
+- header: "Approve SPECS.md draft?"
+- question: "Preview bên trên. Chọn Approve để ghi file, Edit để yêu cầu sửa, Discard để huỷ."
+- options:
+  - "Approve — write SPECS.md và tiếp tục"
+  - "Edit — nói cần sửa gì, tôi regenerate rồi hỏi lại"
+  - "Discard — dừng command, không tạo SPECS.md"
+
+```bash
+# OHOK Batch 1 B3: enforce explicit approval via $USER_APPROVAL env.
+# AI MUST set USER_APPROVAL based on AskUserQuestion response:
+#   "approve" → proceed to step 6
+#   "edit" → loop back (regenerate + re-gate)
+#   "discard" → exit 2 (clean halt, telemetry records decision)
+# Silence / ambiguous / empty = treat as unapproved.
+
+case "${USER_APPROVAL:-}" in
+  approve)
+    MODE_STR=$([ "${AUTO_MODE:-false}" = "true" ] && echo "auto" || echo "guided")
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "specs.approved" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"mode\":\"${MODE_STR}\"}" >/dev/null 2>&1 || true
+    ;;
+  edit)
+    echo "User requested edit — regenerate draft + re-gate" >&2
+    # AI loops back to regenerate; marker NOT touched until approve/discard terminal
+    exit 2
+    ;;
+  discard)
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "specs.rejected" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"reason\":\"user_discarded\"}" >/dev/null 2>&1 || true
+    echo "⛔ User discarded SPECS draft — halting /vg:specs (no file written)" >&2
+    # Log to override-debt so audit trail captures the reject
+    source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    if type -t log_override_debt >/dev/null 2>&1; then
+      log_override_debt "specs-user-discard" "${PHASE_NUMBER}" "user discarded draft at approval gate" "${PHASE_DIR}"
+    fi
+    exit 2
+    ;;
+  *)
+    echo "⛔ Approval gate not passed — USER_APPROVAL='${USER_APPROVAL:-<unset>}'" >&2
+    echo "   AI must invoke AskUserQuestion and set USER_APPROVAL ∈ {approve, edit, discard}." >&2
+    echo "   Silence / ambiguous answer = unapproved. No SPECS.md written." >&2
+    exit 2
+    ;;
+esac
+
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "generate_draft" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/generate_draft.done"
 ```
---- SPECS.md Preview ---
-{full content}
---- End Preview ---
 
-Approve? (y/edit/n)
-- y: Write file
-- edit: Tell me what to change
-- n: Discard
-```
-
-If "edit": ask what to change, regenerate, show again.
-If "n": stop.
-If "y": proceed to step 7.
+**Rationale:** previous wording "AI MUST stop, render preview, wait" was prose-only — AI could silent-skip and proceed to write. Now gate is bash-enforced: no write without `USER_APPROVAL=approve` env set by AI based on AskUserQuestion result.
 </step>
 
 <step name="write_specs">
-## Step 7: Write SPECS.md
+## Step 6: Write SPECS.md
 
-Write to `${PHASES_DIR}/{phase_dir}/SPECS.md` with this exact format:
+Write to `${PHASE_DIR}/SPECS.md` with this format:
 
 ```markdown
 ---
@@ -258,54 +328,73 @@ source: ai-draft|user-guided
 ### In Scope
 - {feature/task 1}
 - {feature/task 2}
-- ...
 
 ### Out of Scope
 - {exclusion 1}
 - {exclusion 2}
-- ...
 
 ## Constraints
 - {constraint 1}
-- {constraint 2}
-- ...
 
 ## Success Criteria
 - [ ] {measurable criterion 1}
 - [ ] {measurable criterion 2}
-- ...
 
 ## Dependencies
 - {dependency on prior phase or external system}
-- ...
 ```
 
-**source** field: `ai-draft` if --auto or user chose option 1, `user-guided` if user answered questions.
-**created** field: today's date in YYYY-MM-DD format.
+- **source**: `ai-draft` if --auto or user chose option 1, else `user-guided`
+- **created**: today's date YYYY-MM-DD
+
+```bash
+# Verify file actually written (catches silent write fail)
+if [ ! -s "${PHASE_DIR}/SPECS.md" ]; then
+  echo "⛔ SPECS.md write failed — file missing or empty at ${PHASE_DIR}/SPECS.md" >&2
+  exit 1
+fi
+
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "write_specs" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/write_specs.done"
+```
 </step>
 
 <step name="commit_and_next">
-## Step 8: Commit and Next Step
+## Step 7: Commit and Next Step
 
-1. Git add and commit:
-   ```
-   git add ${PHASES_DIR}/{phase_dir}/SPECS.md
-   git commit -m "specs({phase}): create SPECS.md for phase {N}"
-   ```
+```bash
+git add "${PHASE_DIR}/SPECS.md" || {
+  echo "⛔ git add failed — check permissions" >&2
+  exit 1
+}
+git commit -m "specs(${PHASE_NUMBER}): create SPECS.md for phase ${PHASE_NUMBER}" || {
+  echo "⛔ git commit failed — check pre-commit hooks" >&2
+  exit 1
+}
 
-2. Display completion:
-   ```
-   SPECS.md created for Phase {N}.
-   Next: /vg:scope {phase}
-   ```
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "commit_and_next" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/commit_and_next.done"
+
+# Orchestrator run-complete — validates runtime_contract + emits specs.completed
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ "$RUN_RC" -ne 0 ]; then
+  echo "⛔ specs run-complete BLOCK (rc=$RUN_RC) — see orchestrator output" >&2
+  exit $RUN_RC
+fi
+
+echo ""
+echo "✓ SPECS.md created for Phase ${PHASE_NUMBER}."
+echo "  Next: /vg:scope ${PHASE_NUMBER}"
+```
 </step>
 
 </process>
 
 <success_criteria>
-- SPECS.md written to `${PHASES_DIR}/{phase_dir}/SPECS.md`
+- SPECS.md written to `${PHASE_DIR}/SPECS.md`
 - Contains ALL sections: Goal, Scope (In/Out), Constraints, Success Criteria, Dependencies
 - Frontmatter includes phase, status, created, source fields
-- User explicitly approved the content before writing
-- Git committed
+- User explicitly approved (`USER_APPROVAL=approve`) before writing — silent / unset = BLOCK
+- All 7 step markers present under `.step-markers/` (guided_questions waived in --auto mode)
+- `specs.started` + `specs.approved` telemetry events emitted
+- Git committed + `run-complete` returned 0
 </success_criteria>

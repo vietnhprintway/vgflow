@@ -150,12 +150,30 @@ Every browser tool call = `{MCP_PREFIX}browser_navigate`, `{MCP_PREFIX}browser_s
 If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
 
 ```bash
-if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
+# v2.2 — T8 gate now routes through block_resolve. L1 auto-clears stale
+# file when all entries carry resolution markers. Only genuine conflicts BLOCK.
+if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh" ]; then
+  [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" ] && \
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh"
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh"
+  t8_gate_check "${PLANNING_DIR}" "test"
+  T8_RC=$?
+  [ "$T8_RC" -eq 2 ] && exit 2
+  [ "$T8_RC" -eq 1 ] && exit 1
+elif [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved — run /vg:reapply-patches --verify-gates first."
   exit 1
 fi
 ```
 </step>
+
+```bash
+# v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+# OHOK-8 round-4 Codex fix: parse PHASE_NUMBER BEFORE run-start
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:test "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 00_gate_integrity_precheck 2>/dev/null || true
+```
 
 <step name="00_session_lifecycle">
 **Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
@@ -240,18 +258,23 @@ If `--fix-only`: skip to 5c-fix section.
 </step>
 
 <step name="create_task_tracker">
-Create tasks for progress tracking:
+**Narrate step plan using markdown headers (NO TaskCreate — see NARRATION_POLICY).**
+
+Per NARRATION_POLICY at top of this file: /vg:test spawns Playwright runs + CrossAI agents that may take 20-60 min. TaskCreate items persist across sessions and hang if interrupted. Use markdown headers in text output instead.
+
+Before starting phase 5a, write this block verbatim so user sees plan:
 ```
-TaskCreate: "5a. Deploy to target"              (activeForm: "Deploying...")
-TaskCreate: "5b. Runtime contract verify"       (activeForm: "Verifying contracts...")
-TaskCreate: "5c. Independent smoke check"       (activeForm: "Spot-checking runtime map...")
-TaskCreate: "5c. Goal verification"             (activeForm: "Verifying goals...")
-TaskCreate: "5c. Minor fix loop"                (activeForm: "Fixing minor issues...")
-TaskCreate: "5c. Multi-page flows"              (activeForm: "Running flow tests...")
-TaskCreate: "5d. Codegen"                       (activeForm: "Generating .spec.ts...")
-TaskCreate: "5e. Regression run"                (activeForm: "Running Playwright tests...")
-TaskCreate: "5f. Security audit"                (activeForm: "Running security scan...")
+## ━━━ /vg:test step plan ━━━
+5a. Deploy to target
+5b. Runtime contract verify
+5c. Independent smoke + goal verify + minor fix loop + multi-page flows
+5d. Codegen .spec.ts from verified runtime map
+5e. Regression run (Playwright)
+5f. Security audit
 ```
+
+At start of each sub-step: `## ━━━ Running 5c: Goal verification (3/12 goals done) ━━━`.
+At end: `touch "${PHASE_DIR}/.step-markers/${sub_step}.done"`. Marker file is authoritative progress signal (consumed by step 9 post-exec check + /vg:next routing).
 </step>
 
 <step name="0_state_update">
@@ -373,7 +396,7 @@ Display:
   ran; test doesn't re-check size. Instead test step 5f security audit
   scans the signed binary for hardcoded secrets.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/5a_mobile_deploy.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5a_mobile_deploy" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5a_mobile_deploy.done"`
 </step>
 
 <step name="5b_runtime_contract_verify" profile="web-fullstack,web-backend-only">
@@ -509,6 +532,13 @@ Display:
   Fields: {matched}/{total}
   Idempotency (critical domains): {CRITICAL_COUNT} checked, {IDEMPOTENCY_FAILS} failures
   Result: {PASS|BLOCK}
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5b_runtime_contract_verify" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5b_runtime_contract_verify.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5b_runtime_contract_verify 2>/dev/null || true
 ```
 </step>
 
@@ -1104,7 +1134,71 @@ Per-goal commands (filled in dynamically for THIS phase):
 
 **Goal: avoid stopping at "gaps found" and making user manually stitch test → review → build. Auto-chain until PASSED or budget hit.**
 
-Loop counter: `TOTAL_ITER` (persisted in `${PHASE_DIR}/test-loop-state.json`, survives re-invocations).
+Loop counter: `TOTAL_ITER` (persisted in `${PHASE_DIR}/.fix-loop-state.json`, survives re-invocations).
+
+**OHOK Batch 5 B8 (2026-04-23): real counter bash.** Previously prose-only — no file was created / read / incremented. "Max 3 iterations" was fiction; each `/vg:test` run started fresh regardless of prior attempts. Now persistent across invocations.
+
+```bash
+# Load or initialize counter state
+FIX_LOOP_STATE="${PHASE_DIR}/.fix-loop-state.json"
+MAX_ITER=$(vg_config_get test.max_fix_loop_iterations 3 2>/dev/null || echo 3)
+
+if [ ! -f "$FIX_LOOP_STATE" ]; then
+  # First invocation — initialize
+  ${PYTHON_BIN:-python3} - <<PY > "$FIX_LOOP_STATE"
+import json
+from datetime import datetime
+print(json.dumps({
+    "iteration_count": 0,
+    "first_run_ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "last_run_ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "max_iterations": ${MAX_ITER},
+    "escalations": [],
+}, indent=2))
+PY
+  TOTAL_ITER=0
+else
+  TOTAL_ITER=$(${PYTHON_BIN:-python3} -c "
+import json; d=json.load(open('${FIX_LOOP_STATE}', encoding='utf-8'))
+print(d.get('iteration_count', 0))
+" 2>/dev/null || echo 0)
+fi
+
+echo "▸ Fix loop: iteration ${TOTAL_ITER}/${MAX_ITER}"
+
+# Budget enforcement — hard stop at MAX_ITER
+if [ "${TOTAL_ITER:-0}" -ge "${MAX_ITER:-3}" ]; then
+  echo "⛔ Auto-resolve budget exhausted (${TOTAL_ITER}/${MAX_ITER} iterations)." >&2
+  echo "   See FINAL GUIDANCE below for next actions." >&2
+
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "test.fix_loop_exhausted" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"iterations\":${TOTAL_ITER},\"max\":${MAX_ITER}}" >/dev/null 2>&1 || true
+
+  # Don't exit — let step continue to write SANDBOX-TEST.md verdict=GAPS_FOUND + REVIEW-FEEDBACK.md
+  # User must fix root cause + reset state manually:
+  #   rm ${PHASE_DIR}/.fix-loop-state.json && /vg:test ${PHASE_NUMBER}
+  BUDGET_EXHAUSTED=true
+fi
+
+# Increment counter (only if not at budget limit — will do actual loop body below)
+if [ "${BUDGET_EXHAUSTED:-false}" != "true" ]; then
+  TOTAL_ITER=$((TOTAL_ITER + 1))
+  ${PYTHON_BIN:-python3} - <<PY > "$FIX_LOOP_STATE"
+import json
+from datetime import datetime
+from pathlib import Path
+d = json.loads(Path("${FIX_LOOP_STATE}").read_text(encoding="utf-8"))
+d["iteration_count"] = ${TOTAL_ITER}
+d["last_run_ts"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+d.setdefault("escalations", []).append({
+    "iteration": ${TOTAL_ITER},
+    "ts": d["last_run_ts"],
+})
+print(json.dumps(d, indent=2))
+PY
+  echo "  Incremented → ${TOTAL_ITER}/${MAX_ITER}"
+fi
+```
 
 After 5c-fix completes:
 ```
@@ -1604,7 +1698,7 @@ the phase. This is the final strict gate — goals unbound here = /vg:test FAILS
 Mode from `config.build_gates.goal_test_binding_phase_end` (default: strict).
 
 ```bash
-GTB_MODE="${config.build_gates.goal_test_binding_phase_end:-strict}"
+GTB_MODE=$(vg_config_get build_gates.goal_test_binding_phase_end strict)
 if [ "$GTB_MODE" != "off" ]; then
   # Use full phase commit range as the wave-tag proxy — scan all phase commits
   PHASE_FIRST_COMMIT=$(git log --format="%H" --reverse --grep="${PHASE_NUMBER}-" | head -1)
@@ -1797,7 +1891,8 @@ FLOWS_DIR="${FLOWS_DIR:-${GENERATED_TESTS_DIR}/mobile}"
 FLOW_FILES=$(find "${REPO_ROOT}/${FLOWS_DIR}" -type f \( -name "*.maestro.yaml" -o -name "*.maestro.yml" \) 2>/dev/null | sort)
 if [ -z "$FLOW_FILES" ]; then
   echo "⚠ No Maestro flows found under ${FLOWS_DIR}. Run 5d_mobile_codegen first."
-  touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5c_mobile_flow" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_mobile_flow 2>/dev/null || true
   # Don't fail — codegen might be a no-op if goals are all UNREACHABLE
   exit 0
 fi
@@ -1848,7 +1943,9 @@ if [ $FAILED -gt 0 ]; then
   echo "⚠ Some flows failed — auto-fix loop handles via 5c_fix then 5e regression."
 fi
 
-touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5c_mobile_flow" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_mobile_flow 2>/dev/null || true
 ```
 </step>
 
@@ -1916,11 +2013,22 @@ fi
 
 For mỗi goal READY (đọc từ `$STATUS_JSON` step 5d codegen):
 
+**Bootstrap rule injection** — before spawn, render project rules targeting `test` step:
+```bash
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "test")
+vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "test" "${PHASE_NUMBER}"
+```
+
 ```
 Agent(subagent_type="general-purpose", model="sonnet",  # zero parent context, isolated
       name="deep-probe-{goal-id}"):
   prompt: |
     Generate 3 edge-case variants BEYOND happy path cho goal {goal-id}.
+
+    <bootstrap_rules>
+    ${BOOTSTRAP_RULES_BLOCK}
+    </bootstrap_rules>
 
     Input:
     - SPECS.md, CONTEXT.md, API-CONTRACTS.md, GOAL-COVERAGE-MATRIX.md
@@ -2015,7 +2123,7 @@ CI reader (step 18+) xử lý:
 
 Nếu `DEEP_PROBE_ENABLED=false` hoặc goal READY = 0 → step 5d-deep.* bỏ qua, phase tiếp tục sang 5e_regression.
 
-`touch "${PHASE_DIR}/.step-markers/5d_deep_probe.done"` dù skip hay chạy.
+`(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5d_deep_probe" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5d_deep_probe.done"` dù skip hay chạy.
 </step>
 
 <step name="5d_mobile_codegen" profile="mobile-*">
@@ -2038,7 +2146,8 @@ RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
 
 if [ ! -f "$RUNTIME_MAP" ]; then
   echo "⚠ RUNTIME-MAP.json missing — codegen needs discovery artifacts from /vg:review"
-  touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5d_mobile_codegen" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5d_mobile_codegen 2>/dev/null || true
   exit 0
 fi
 
@@ -2121,7 +2230,9 @@ done
 echo ""
 echo "5d Mobile Codegen: ${GENERATED} flow(s) generated → ${OUT_DIR}/"
 
-touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5d_mobile_codegen" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5d_mobile_codegen 2>/dev/null || true
 ```
 
 **Note on template quality:**
@@ -2166,7 +2277,9 @@ Two-tier check on phase-changed files.
 
 Get changed files for this phase:
 ```bash
-CHANGED_FILES=$(git diff --name-only HEAD~${COMMIT_COUNT} HEAD -- "${config.code_patterns.api_routes}" "${config.code_patterns.web_pages}" 2>/dev/null)
+API_ROUTES_PATTERN=$(vg_config_get code_patterns.api_routes "apps/api/**/*.ts")
+WEB_PAGES_PATTERN=$(vg_config_get code_patterns.web_pages "apps/web/**/*.tsx")
+CHANGED_FILES=$(git diff --name-only HEAD~${COMMIT_COUNT} HEAD -- "$API_ROUTES_PATTERN" "$WEB_PAGES_PATTERN" 2>/dev/null)
 ```
 
 Security patterns (generic, not stack-specific):
@@ -2236,8 +2349,9 @@ while IFS=$'\t' read -r ENDPOINT AUTH_LINE; do
 done < "${VG_TMP}/contract-auth-lines.txt"
 
 # Same for error response shape — verify FE reads error.message not statusText
-ERROR_SHAPE="${config.contract_format.error_response_shape:-{ error: { code: string, message: string } }}"
-CHANGED_FE=$(git diff --name-only HEAD~${COMMIT_COUNT:-5} HEAD -- "${config.code_patterns.web_pages}" 2>/dev/null)
+ERROR_SHAPE=$(vg_config_get contract_format.error_response_shape "{ error: { code: string, message: string } }")
+WEB_PAGES_PATTERN=$(vg_config_get code_patterns.web_pages "apps/web/**/*.tsx")
+CHANGED_FE=$(git diff --name-only HEAD~${COMMIT_COUNT:-5} HEAD -- "$WEB_PAGES_PATTERN" 2>/dev/null)
 if [ -n "$CHANGED_FE" ]; then
   # FE anti-pattern: toast.error(error.message) where error = AxiosError
   BAD_TOAST=$(echo "$CHANGED_FE" | xargs grep -l "toast.*error\.message\b\|toast.*err\.message\b" 2>/dev/null | \
@@ -2461,7 +2575,9 @@ else
   SECURITY_VERDICT="PASSED"
 fi
 
-touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5f_mobile_security_audit" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5f_mobile_security_audit 2>/dev/null || true
 ```
 
 **Scope limits (V2 deferred):**
@@ -2471,7 +2587,7 @@ touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
   requires device proxy setup — out of scope for automated gate.
 - No Frida / root-detection analysis. Advanced anti-tamper is V2+.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5f_mobile_security_audit" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"`
 </step>
 
 <step name="5g_performance_check" profile="web-fullstack,web-backend-only">
@@ -2903,6 +3019,21 @@ Test complete for Phase {N}.
   Security: {verdict}
   Verdict: {PASSED | GAPS_FOUND | FAILED}
   Next: /vg:accept {phase}
+```
+
+```bash
+# v2.2 — terminal emit + run-complete for /vg:test
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test complete 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 0_parse_and_validate 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "test.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ test run-complete BLOCK — review orchestrator output + fix" >&2
+  exit $RUN_RC
+fi
 ```
 </step>
 

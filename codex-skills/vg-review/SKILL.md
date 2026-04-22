@@ -165,12 +165,32 @@ on every claim — if still no slot free, it's genuinely contended. Do NOT manua
 If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
 
 ```bash
-if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
+# v2.2 — T8 gate now routes through block_resolve. L1 auto-clears stale
+# file when all entries carry resolution markers. Only genuine conflicts BLOCK.
+if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh" ]; then
+  [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" ] && \
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh"
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh"
+  t8_gate_check "${PLANNING_DIR}" "review"
+  T8_RC=$?
+  [ "$T8_RC" -eq 2 ] && exit 2
+  [ "$T8_RC" -eq 1 ] && exit 1
+elif [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved — run /vg:reapply-patches --verify-gates first."
   exit 1
 fi
 ```
 </step>
+
+```bash
+# v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+# OHOK-8 round-4 Codex fix: parse PHASE_NUMBER BEFORE run-start so the run
+# doesn't register against an empty phase (telemetry + runtime-contract
+# evidence attaches to "" instead of the actual phase).
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:review "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 00_gate_integrity_precheck 2>/dev/null || true
+```
 
 <step name="00_session_lifecycle">
 **Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
@@ -203,9 +223,9 @@ session_mark_step "0-parse-args"
 Parse `$ARGUMENTS`: phase_number, flags.
 
 Flags:
-- `--skip-scan` — skip Phase 1 (code scan), go directly to browser discovery
-- `--skip-discovery` — skip Phase 2 (browser discovery), use existing RUNTIME-MAP for Phase 4
-- `--fix-only` — skip to Phase 3 (requires RUNTIME-MAP with errors)
+- `--skip-scan` — skip Phase 1 (code scan), go directly to browser discovery. **Gated**: must pair with `--override-reason="<text>"` (logged to override-debt).
+- `--skip-discovery` — skip Phase 2 (browser discovery), use existing RUNTIME-MAP for Phase 4. **Gated**: must pair with `--override-reason="<text>"` (logged to override-debt).
+- `--fix-only` — skip to Phase 3 (requires RUNTIME-MAP with errors). **Gated**: listed in `forbidden_without_override` (line 34) — must combine with `--override-reason="<text>"` to run, otherwise hard BLOCK. Entry logged to override-debt register.
 - `--skip-crossai` — skip CrossAI review at end
 - `--evaluate-only` — skip Phase 1 + 2 (discovery already done by Codex/Gemini), read existing scan JSONs from ${PHASE_DIR}, go directly to Phase 2b-3 (collect + merge) → Phase 3 (fix) → Phase 4 (goal comparison). Requires: nav-discovery.json + scan-*.json already exist.
 - `--retry-failed` — skip Phase 1 + Phase 2 navigator, re-scan ONLY views mapped to failed/blocked goals in GOAL-COVERAGE-MATRIX.md. Requires: GOAL-COVERAGE-MATRIX.md + RUNTIME-MAP.json already exist. Use when: review already ran but goals < 100%, code was fixed, need targeted re-scan without full re-discovery.
@@ -328,13 +348,15 @@ p.write_text(json.dumps(s, indent=2))
 </step>
 
 <step name="0b_goal_coverage_gate">
-**MANDATORY GATE — every automated goal must have TS-XX binding in at least one test file.**
+**ADVISORY GATE (v2.2+) — warn on unbound automated goals, but don't BLOCK at review stage.**
 
-Prevents Phase 10 scenario: goals declared but tests never reference them, review marks "NOT_SCANNED" without root cause visible. Build post-mortem already runs this advisory; review enforces.
+Rationale: tests land in /vg:test (creates .spec.ts with TS-XX markers). Review runs BEFORE /vg:test → first-pass review always fails goal coverage → pipeline deadlock on backend-only phases.
+
+Fix (v2.2+): at review stage = WARN only. At /vg:test + /vg:accept stages = BLOCK (those are the right enforcement points).
 
 ```bash
 echo ""
-echo "━━━ Goal coverage gate ━━━"
+echo "━━━ Goal coverage gate (advisory at review) ━━━"
 ${PYTHON_BIN} .claude/scripts/verify-goal-coverage-phase.py \
   --phase-dir "${PHASE_DIR}" \
   --repo-root "${REPO_ROOT}"
@@ -342,48 +364,57 @@ GOAL_RC=$?
 
 if [ "$GOAL_RC" -eq 2 ]; then
   echo ""
-  echo "⛔ Review BLOCKED by goal coverage gate."
-  echo "   Every automated goal in TEST-GOALS.md must have a test case with matching TS-XX marker."
-  echo "   Either: add test referencing TS-XX, OR mark goal verification: deferred|manual."
+  echo "⚠ Goal coverage gap (advisory at review stage — will enforce at /vg:test):"
+  echo "   Some automated goals have no TS-XX binding. This is expected if /vg:test"
+  echo "   hasn't run yet. Tests will be added there."
   echo ""
-  echo "Override (NOT recommended, logs to OVERRIDE-DEBT register):"
-  echo "  /vg:review ${PHASE_NUMBER} --skip-goal-coverage"
-  if [[ ! "${ARGUMENTS}" =~ --skip-goal-coverage ]]; then
+  echo "To hard-enforce at review: /vg:review ${PHASE_NUMBER} --strict-goal-coverage"
+  if [[ "${ARGUMENTS}" =~ --strict-goal-coverage ]]; then
+    echo "⛔ --strict-goal-coverage set — BLOCK at review (legacy v1.14.4 behavior)."
     exit 1
   fi
-  # Override path: log as debt
+  # Log advisory to debt register for /vg:test + /vg:accept to enforce
   source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
   if type -t log_override_debt >/dev/null 2>&1; then
-    log_override_debt "review-goal-coverage" "${PHASE_NUMBER}" "unbound automated goals" "${PHASE_DIR}"
+    log_override_debt "review-goal-coverage-advisory" "${PHASE_NUMBER}" "unbound goals expected before /vg:test" "${PHASE_DIR}"
   fi
 fi
 
-touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || true
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "0b_goal_coverage_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || true
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0b_goal_coverage_gate 2>/dev/null || true
 ```
 </step>
 
 <step name="create_task_tracker">
-Create tasks for progress tracking — granular sub-steps so user sees exactly what's happening:
-```
-TaskCreate: "1a: Contract verify (grep)"            (activeForm: "Grepping BE routes vs contracts...")
-TaskCreate: "1b: Element inventory"                 (activeForm: "Counting UI elements per file...")
-TaskCreate: "1.5: Graphify ripple analysis"         (activeForm: "Scanning cross-module callers...")
-TaskCreate: "2a: Deploy + preflight"                (activeForm: "Deploying to {ENV}, checking health...")
-TaskCreate: "2b-1: Navigator discovers views"       (activeForm: "Haiku navigator scanning sidebar...")
-TaskCreate: "2b-2: Haiku scanners (per view)"       (activeForm: "Spawning {N} Haiku agents for {N} views...")
-TaskCreate: "2b-3: Merge + evaluate scan results"   (activeForm: "Merging Haiku results, evaluating coverage...")
-TaskCreate: "2.5: Visual integrity checks"          (activeForm: "Checking fonts, overflow, responsive...")
-TaskCreate: "3: Fix loop"                           (activeForm: "Fixing {N} issues, iteration {I}/3...")
-TaskCreate: "4a: Load goals + filter infra deps"    (activeForm: "Parsing {N} goals, checking infra availability...")
-TaskCreate: "4b: Map goals to RUNTIME-MAP"          (activeForm: "Mapping {N} goals to discovered views...")
-TaskCreate: "4c: Weighted gate evaluation"          (activeForm: "Evaluating gate: critical 100%, important 80%...")
-TaskCreate: "4d: Write GOAL-COVERAGE-MATRIX"        (activeForm: "Writing coverage matrix...")
-```
+**Narrate step plan using markdown headers (NO TaskCreate/TaskUpdate — see NARRATION_POLICY).**
 
-**Dynamic update rule:** As each sub-step runs, update activeForm with concrete values:
-- "2b-2: Spawning Haiku scanners" → "2b-2: Scanning /conversions as advertiser (3/7 views)"
-- "3: Fix loop" → "3: Fixing Bug #2: S2SSecretSection crash (iter 1/3)"
-- "4a: Load goals" → "4a: 38 goals loaded, 16 INFRA_PENDING (ClickHouse, pixel_server)"
+Per NARRATION_POLICY: review can spawn 5-20 Haiku scanners running in parallel (30+ min total). TaskCreate items would persist forever in Claude Code tail UI if the session interrupts mid-scan. Instead:
+
+1. Write this block verbatim in your text output before starting phase 1 so user sees the plan:
+   ```
+   ## ━━━ /vg:review step plan ━━━
+   1a:   Contract verify (grep BE routes vs contracts)
+   1b:   Element inventory (count UI elements per file)
+   1.5:  Graphify ripple analysis (cross-module callers)
+   2a:   Deploy + preflight (to {ENV}, health check)
+   2b-1: Navigator discovers views (Haiku scanning sidebar)
+   2b-2: Haiku scanners per view (N parallel agents)
+   2b-3: Merge + evaluate scan results
+   2.5:  Visual integrity checks
+   3:    Fix loop (max 3 iterations)
+   4a:   Load goals + filter infra deps
+   4b:   Map goals to RUNTIME-MAP
+   4c:   Weighted gate evaluation
+   4d:   Write GOAL-COVERAGE-MATRIX
+   ```
+2. Before each sub-step runs, narrate: `## ━━━ Running 2b-2: Scanning /conversions as advertiser (3/7 views) ━━━`.
+3. After each sub-step: `touch "${PHASE_DIR}/.step-markers/${sub_step}.done"`.
+
+**Dynamic header examples** (concrete values in headers, not in stale task items):
+- `## ━━━ 2b-2: Scanning /conversions as advertiser (3/7 views) ━━━`
+- `## ━━━ 3: Fixing Bug #2: S2SSecretSection crash (iter 1/3) ━━━`
+- `## ━━━ 4a: 38 goals loaded, 16 INFRA_PENDING (ClickHouse, pixel_server) ━━━`
 </step>
 
 <step name="phase_profile_branch">
@@ -584,7 +615,8 @@ PY
   fi
 
   echo "✓ Infra-smoke PASS (${READY_COUNT}/${TOTAL}) — phase provisioned as specified."
-  touch "${PHASE_DIR}/.step-markers/phaseP_infra_smoke.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_infra_smoke" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_infra_smoke.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_infra_smoke 2>/dev/null || true
   # Exit review early — subsequent steps (browser, goal comparison) N/A for infra profile.
   exit 0
 fi
@@ -592,19 +624,22 @@ fi
 </step>
 
 <step name="phaseP_delta">
-## Review mode: delta (P5, v1.9.2)
+## Review mode: delta (P5, v1.9.2 — OHOK Batch 2 B5: real verification)
 
 **Runs when `REVIEW_MODE=delta` (hotfix profile).**
 
-Logic: hotfix patches a parent phase. Review focuses on:
-- (a) parent phase's failed/blocked goals — re-verify they now pass
-- (b) delta changes — small surface, review only touched files + sibling regression
+**Previous behavior (performative):** wrote "Verdict: PASS" stub without actually verifying hotfix touches parent failures. Hotfix could ship completely untested. OHOK Batch 2 B5 replaces stub with per-goal verification loop.
+
+Logic: hotfix patches a parent phase. Review MUST:
+- (a) Find parent's failed/blocked goals in GOAL-COVERAGE-MATRIX
+- (b) For each failed goal, check if hotfix commits touch files that were implicated in the failure (via commit paths ∩ parent phase commits for that goal)
+- (c) Fail build if any critical failed goal is NOT covered by hotfix delta — ship would regress
 
 ```bash
 if [ "$REVIEW_MODE" != "delta" ]; then
   echo "↷ Skipping phaseP_delta (REVIEW_MODE=$REVIEW_MODE)"
 else
-  # 1. Find parent phase dir from SPECS
+  # 1. Resolve parent phase
   PARENT_REF=$(grep -E '^\*\*Parent phase:\*\*|^parent_phase:' "$PHASE_DIR/SPECS.md" 2>/dev/null | \
                sed -E 's/.*(Parent phase:\*\*|parent_phase:)\s*//' | awk '{print $1}' | head -1)
   if [ -z "$PARENT_REF" ]; then
@@ -612,98 +647,404 @@ else
     exit 1
   fi
   PARENT_DIR=$(ls -d "${PHASES_DIR}/${PARENT_REF}"* 2>/dev/null | head -1)
+  if [ -z "$PARENT_DIR" ]; then
+    echo "⛔ Parent phase dir not found for ref '${PARENT_REF}'" >&2
+    exit 1
+  fi
+  PARENT_MATRIX="${PARENT_DIR}/GOAL-COVERAGE-MATRIX.md"
   echo "▸ Delta review: parent=${PARENT_REF} → ${PARENT_DIR}"
 
-  # 2. If parent has GOAL-COVERAGE-MATRIX, extract failed/blocked goals
-  PARENT_MATRIX="${PARENT_DIR}/GOAL-COVERAGE-MATRIX.md"
+  # 2. Extract parent failed/blocked goals (actionable subset — UNREACHABLE/INFRA_PENDING
+  #    are parent-domain issues hotfix can't resolve, exclude from coverage gate)
+  FAILED_GOALS=""
   if [ -f "$PARENT_MATRIX" ]; then
-    FAILED_GOALS=$(grep -E '\| (BLOCKED|FAILED|INFRA_PENDING|UNREACHABLE) \|' "$PARENT_MATRIX" | \
-                   grep -oE 'G-[0-9]+|S-[0-9]+' | sort -u | head -100)
-    echo "▸ Parent failed goals: $(echo $FAILED_GOALS | tr '\n' ' ')"
+    FAILED_GOALS=$(grep -E '\|[[:space:]]*(BLOCKED|FAILED)[[:space:]]*\|' "$PARENT_MATRIX" | \
+                   grep -oE 'G-[0-9]+' | sort -u)
+    FAILED_COUNT=$([ -z "$FAILED_GOALS" ] && echo 0 || echo "$FAILED_GOALS" | wc -l | tr -d ' ')
+    echo "▸ Parent BLOCKED/FAILED goals (${FAILED_COUNT}): $(echo $FAILED_GOALS | tr '\n' ' ')"
   else
-    echo "⚠ Parent has no GOAL-COVERAGE-MATRIX — delta review will focus on delta changes only"
+    echo "⚠ Parent has no GOAL-COVERAGE-MATRIX — cannot verify delta coverage"
+    FAILED_COUNT=0
   fi
 
-  # 3. Write a compact GOAL-COVERAGE-MATRIX for hotfix showing:
-  #    - Parent failed goals re-checked status (best-effort — requires re-run of test)
-  #    - Delta change summary from git
-  DELTA_FILES=$(git diff --name-only HEAD~10 HEAD -- apps/ infra/ packages/ 2>/dev/null | head -20 || echo "")
-  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PARENT_REF" "$DELTA_FILES" <<'PY'
-import sys
+  # 3. Extract delta files (changes made in THIS phase — current commits only)
+  PHASE_COMMITS=$(git log --format=%H -- "${PHASE_DIR}" 2>/dev/null | head -1)
+  BASELINE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+  DELTA_FILES=$(git diff --name-only "${BASELINE_SHA}" HEAD -- \
+                'apps/**/src/**' 'packages/**/src/**' 'infra/**' 2>/dev/null | sort -u)
+  DELTA_COUNT=$([ -z "$DELTA_FILES" ] && echo 0 || echo "$DELTA_FILES" | wc -l | tr -d ' ')
+
+  if [ "$DELTA_COUNT" -eq 0 ]; then
+    echo "⛔ Hotfix phase has 0 code files changed (apps/**/src|packages/**/src|infra/**)" >&2
+    echo "   Hotfix must modify at least 1 code file to be meaningful." >&2
+    echo "   Override: --allow-empty-hotfix (log to override-debt)" >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-empty-hotfix ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-delta-empty-hotfix" "${PHASE_NUMBER}" "hotfix has no code delta" "${PHASE_DIR}"
+  fi
+
+  # 4. For each failed goal, check if delta files overlap with files parent modified
+  #    when the goal was recorded as failing. Proxy: grep parent commits mentioning G-XX
+  #    for file paths, check intersection with DELTA_FILES.
+  COVERAGE_JSON="${PHASE_DIR}/.delta-coverage.json"
+  ${PYTHON_BIN} - "$PARENT_DIR" "$PHASE_DIR" "$COVERAGE_JSON" "$PARENT_REF" <<'PY' || true
+import json, re, subprocess, sys
+from pathlib import Path
+
+parent_dir, phase_dir, out_path, parent_ref = sys.argv[1:5]
+matrix = Path(parent_dir) / "GOAL-COVERAGE-MATRIX.md"
+
+failed = []
+if matrix.exists():
+    for line in matrix.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.search(r'\|\s*(G-\d+)\s*\|.*\|\s*(BLOCKED|FAILED)\s*\|', line)
+        if m:
+            failed.append(m.group(1))
+
+# Delta files (current hotfix phase)
+try:
+    r = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD~1", "HEAD",
+         "--", "apps/**/src/**", "packages/**/src/**", "infra/**"],
+        capture_output=True, text=True, timeout=10,
+    )
+    delta_files = set(f.strip() for f in r.stdout.splitlines() if f.strip())
+except Exception:
+    delta_files = set()
+
+# Per-goal overlap (CrossAI R6 fix).
+# Previously: one global parent file set → any touched parent file false-PASSes
+# every failed goal. Now: for each failed goal, find files in parent commits
+# that cite that goal_id, compute overlap per-goal.
+def _files_for_goal(goal_id: str) -> set[str]:
+    """Files changed in parent commits whose message cites `goal_id`.
+
+    Proxy for "files involved in this goal's implementation/failure". Limits
+    by default to code paths. Falls back to empty set if grep yields nothing
+    (goal may have no associated commit — e.g., goal added but never worked on).
+    """
+    try:
+        r = subprocess.run(
+            ["git", "log", f"--grep={goal_id}", "--name-only", "--format=",
+             "--", str(parent_dir), "apps", "packages", "infra"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return {
+            ln.strip() for ln in r.stdout.splitlines()
+            if ln.strip() and any(
+                ln.startswith(p) for p in ("apps/", "packages/", "infra/")
+            )
+        }
+    except Exception:
+        return set()
+
+per_goal: dict[str, dict] = {}
+parent_files: set[str] = set()
+goals_covered = 0
+goals_orthogonal = 0
+
+for g in failed:
+    gf = _files_for_goal(g)
+    parent_files |= gf
+    ovl = sorted(gf & delta_files)
+    covered = bool(ovl)
+    if covered:
+        goals_covered += 1
+    elif gf:
+        # Goal has known files but none overlap with delta — orthogonal
+        goals_orthogonal += 1
+    per_goal[g] = {
+        "parent_files": sorted(gf),
+        "parent_files_count": len(gf),
+        "overlap_files": ovl,
+        "overlap_count": len(ovl),
+        "covered": covered,
+        "has_goal_commits": bool(gf),
+    }
+
+overlap = sorted(parent_files & delta_files)
+coverage_pct = (len(overlap) / len(parent_files) * 100) if parent_files else 0
+
+out = {
+    "parent_ref": parent_ref,
+    "failed_goals": failed,
+    "parent_files_count": len(parent_files),
+    "delta_files_count": len(delta_files),
+    "overlap_files": overlap,
+    "overlap_count": len(overlap),
+    "coverage_pct_of_parent": round(coverage_pct, 1),
+    "per_goal": per_goal,
+    "goals_covered": goals_covered,
+    "goals_orthogonal": goals_orthogonal,
+    "goals_no_commits": sum(1 for d in per_goal.values() if not d["has_goal_commits"]),
+}
+Path(out_path).write_text(json.dumps(out, indent=2))
+print(f"✓ delta coverage: {goals_covered}/{len(failed)} failed goals have file overlap "
+      f"({goals_orthogonal} orthogonal, {out['goals_no_commits']} unmapped); "
+      f"total overlap {len(overlap)}/{len(parent_files)} files")
+PY
+
+  # 5. Gate: per-goal coverage (CrossAI R6 fix).
+  # Previously: one global overlap → any touched parent file false-PASSed every
+  # goal. Now: each failed goal evaluated independently. Block if ANY failed
+  # goal with known commits has zero overlap with delta.
+  GOALS_COVERED=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}')).get('goals_covered',0))" 2>/dev/null || echo 0)
+  GOALS_ORTHOGONAL=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}')).get('goals_orthogonal',0))" 2>/dev/null || echo 0)
+  GOALS_UNMAPPED=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}')).get('goals_no_commits',0))" 2>/dev/null || echo 0)
+
+  if [ "${FAILED_COUNT:-0}" -gt 0 ] && [ "${GOALS_ORTHOGONAL:-0}" -gt 0 ]; then
+    echo "⛔ ${GOALS_ORTHOGONAL} of ${FAILED_COUNT} failed parent goal(s) have known commits but delta touches NONE of their files." >&2
+    echo "   Covered:   ${GOALS_COVERED}/${FAILED_COUNT}" >&2
+    echo "   Orthogonal: ${GOALS_ORTHOGONAL}/${FAILED_COUNT} ← hotfix does not address these" >&2
+    echo "   Unmapped:  ${GOALS_UNMAPPED}/${FAILED_COUNT} (no parent commits cite these goals)" >&2
+    echo "   Delta files: ${DELTA_COUNT}" >&2
+    echo "   Options:" >&2
+    echo "     (a) Ensure hotfix edits files involved in each failed goal" >&2
+    echo "     (b) /vg:scope ${PHASE_NUMBER} — re-scope if truly unrelated" >&2
+    echo "     (c) --allow-orthogonal-hotfix override (debt logged, hotfix ships without per-goal coverage)" >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-orthogonal-hotfix ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-delta-orthogonal" "${PHASE_NUMBER}" "${GOALS_ORTHOGONAL}/${FAILED_COUNT} failed goals uncovered per-goal" "${PHASE_DIR}"
+  fi
+
+  # Preserve legacy OVERLAP_COUNT var for downstream consumers
+  OVERLAP_COUNT=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}'))['overlap_count'])" 2>/dev/null || echo 0)
+
+  # 6. Write matrix with actual per-goal delta-overlap status
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PARENT_REF" "$COVERAGE_JSON" <<'PY'
+import json, sys
 from datetime import datetime
-out_path = sys.argv[1]
-phase = sys.argv[2]
-parent = sys.argv[3]
-delta_files = sys.argv[4].splitlines() if sys.argv[4] else []
+from pathlib import Path
+
+out_path, phase, parent_ref, cov_json = sys.argv[1:5]
+cov = json.loads(Path(cov_json).read_text(encoding="utf-8")) if Path(cov_json).exists() else {}
+
+failed = cov.get("failed_goals", [])
+overlap = cov.get("overlap_files", [])
+delta_count = cov.get("delta_files_count", 0)
+parent_files_count = cov.get("parent_files_count", 0)
+coverage_pct = cov.get("coverage_pct_of_parent", 0)
+per_goal = cov.get("per_goal", {})
+goals_covered = cov.get("goals_covered", 0)
+goals_orthogonal = cov.get("goals_orthogonal", 0)
+goals_no_commits = cov.get("goals_no_commits", 0)
+
+# Decide verdict using PER-GOAL coverage (CrossAI R6 fix).
+# Previously: any global overlap = PASS for all goals. Now: goals tracked
+# individually. BLOCK if any failed goal with known commits has no per-goal
+# overlap with delta.
+if failed and goals_orthogonal > 0:
+    verdict = (f"BLOCK ({goals_orthogonal}/{len(failed)} failed goals orthogonal — "
+               f"hotfix doesn't touch their files)")
+elif failed and goals_covered == 0 and goals_no_commits == len(failed):
+    verdict = (f"FLAG (all {len(failed)} failed goals have no parent commits — "
+               f"cannot verify per-goal coverage; /vg:test must re-verify each)")
+elif failed and goals_covered > 0:
+    verdict = (f"PASS ({goals_covered}/{len(failed)} failed goals have file overlap; "
+               f"{goals_no_commits} unmapped deferred to /vg:test)")
+elif not failed:
+    verdict = "PASS (parent had no failed goals; delta review defers full goal re-check to /vg:test)"
+else:
+    verdict = "PASS (no parent matrix found; /vg:test will handle regression)"
+
 lines = [
     f"# Goal Coverage Matrix — Phase {phase} (hotfix delta)",
     "",
     f"**Profile:** hotfix  ",
-    f"**Parent phase:** {parent}  ",
-    f"**Source:** parent_phase.TEST-GOALS (regression re-verify) + delta changes  ",
+    f"**Parent phase:** {parent_ref}  ",
+    f"**Source:** parent GOAL-COVERAGE-MATRIX + git delta vs HEAD~1  ",
     f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  ",
+    "",
+    "## Parent failed goals (per-goal overlap)",
+    "",
+]
+if failed:
+    lines.append("| Goal | Status | Parent files | Overlap | Verdict |")
+    lines.append("|------|--------|--------------|---------|---------|")
+    for g in failed:
+        pg = per_goal.get(g, {})
+        pf_count = pg.get("parent_files_count", 0)
+        ov_count = pg.get("overlap_count", 0)
+        if pg.get("covered"):
+            mark = f"COVERED ({ov_count}/{pf_count})"
+        elif pg.get("has_goal_commits"):
+            mark = f"ORTHOGONAL (0/{pf_count})"
+        else:
+            mark = "UNMAPPED (no parent commits cite goal)"
+        lines.append(f"| {g} | BLOCKED/FAILED (parent) | {pf_count} | {ov_count} | {mark} |")
+else:
+    lines.append("_no parent failed/blocked goals found_")
+lines += [
     "",
     "## Delta changes",
     "",
+    f"**Files changed (code paths):** {delta_count}",
+    f"**Overlap with parent files:** {len(overlap)}/{parent_files_count} ({coverage_pct:.1f}%)",
+    "",
 ]
-if delta_files:
-    for f in delta_files:
+if overlap:
+    lines.append("Sample overlapping files:")
+    for f in overlap[:10]:
         lines.append(f"- `{f}`")
-else:
-    lines.append("_no delta files detected_")
-lines += ["", "## Regression scope", "",
-          f"Re-verify parent phase ({parent}) failed/blocked goals in /vg:test step.",
-          "Delta review passes automatically if no delta is detected as breaking.",
-          "",
-          "## Gate", "",
-          "**Verdict:** PASS (delta review — regression verification deferred to /vg:test)", ""]
-open(out_path,'w',encoding='utf-8').write('\n'.join(lines) + '\n')
-print("✓ GOAL-COVERAGE-MATRIX.md written (hotfix delta)")
+lines += [
+    "",
+    "## Gate",
+    "",
+    f"**Verdict:** {verdict}",
+    "",
+]
+Path(out_path).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+print(f"✓ GOAL-COVERAGE-MATRIX.md written — verdict: {verdict.split(' (')[0]}")
 PY
 
-  touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_delta" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_delta 2>/dev/null || true
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.phaseP_delta_verified" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"parent\":\"${PARENT_REF}\",\"overlap_count\":${OVERLAP_COUNT:-0},\"failed_count\":${FAILED_COUNT:-0}}" >/dev/null 2>&1 || true
   exit 0
 fi
 ```
 </step>
 
 <step name="phaseP_regression">
-## Review mode: regression (P5, v1.9.2 — bugfix profile)
+## Review mode: regression (P5, v1.9.2 — bugfix profile, OHOK Batch 2 B5: real verification)
 
 **Runs when `REVIEW_MODE=regression`.**
+
+**Previous behavior (performative):** wrote "Verdict: PASS (regression handled at /vg:test)" stub without verifying (a) issue is referenced, (b) code was actually changed, or (c) regression test exists. Bugfix could ship with empty changeset.
+
+OHOK Batch 2 B5 enforces 3 real checks:
+1. Bug reference exists in SPECS (else BLOCK — bugfix must cite issue)
+2. Phase has ≥1 code commit (else BLOCK — fix must touch code)
+3. Phase introduces ≥1 test file or extends existing test with bug ID reference (else WARN — logged but doesn't block; /vg:test will discover gap if test truly missing)
 
 ```bash
 if [ "$REVIEW_MODE" != "regression" ]; then
   echo "↷ Skipping phaseP_regression (REVIEW_MODE=$REVIEW_MODE)"
 else
-  BUG_REF=$(grep -E '^\*\*issue_id\*\*:|^issue_id:|^\*\*bug_ref\*\*:|^bug_ref:|^\*\*Fixes bug\*\*:' "$PHASE_DIR/SPECS.md" 2>/dev/null | sed -E 's/.*://; s/^\s*//' | head -1)
-  echo "▸ Regression review (bugfix): issue_ref=${BUG_REF:-<unspecified>}"
-  echo "  Deferring actual regression tests to /vg:test (issue-specific suite)."
-  # Write stub matrix
-  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$BUG_REF" <<'PY'
+  # 1. Extract bug reference — MUST exist
+  BUG_REF=$(grep -E '^\*\*issue_id\*\*:|^issue_id:|^\*\*bug_ref\*\*:|^bug_ref:|^\*\*Fixes bug\*\*:' \
+            "$PHASE_DIR/SPECS.md" 2>/dev/null | sed -E 's/.*://; s/^\s*//' | head -1)
+  if [ -z "$BUG_REF" ]; then
+    echo "⛔ Bugfix profile requires issue_id/bug_ref in SPECS.md — no reference found" >&2
+    echo "   Add to SPECS frontmatter: issue_id: JIRA-123" >&2
+    echo "   or body: **Fixes bug**: GH#456" >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-no-bugref ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-regression-no-bugref" "${PHASE_NUMBER}" "bugfix without issue_id" "${PHASE_DIR}"
+    BUG_REF="<unspecified>"
+  fi
+  echo "▸ Regression review (bugfix): issue_ref=${BUG_REF}"
+
+  # 2. Phase must have ≥1 code commit — empty bugfix is meaningless
+  BASELINE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+  CODE_FILES=$(git diff --name-only "${BASELINE_SHA}" HEAD -- \
+               'apps/**/src/**' 'packages/**/src/**' 'infra/**' 2>/dev/null | sort -u)
+  CODE_COUNT=$([ -z "$CODE_FILES" ] && echo 0 || echo "$CODE_FILES" | wc -l | tr -d ' ')
+
+  if [ "$CODE_COUNT" -eq 0 ]; then
+    echo "⛔ Bugfix phase has 0 code files changed in apps|packages|infra" >&2
+    echo "   Bugfix must modify at least 1 production file." >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-empty-bugfix ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-regression-empty-bugfix" "${PHASE_NUMBER}" "bugfix has no code delta" "${PHASE_DIR}"
+  fi
+
+  # 3. Scan for regression test — WARN if missing (don't block; /vg:test catches real gaps)
+  TEST_FILES=$(git diff --name-only "${BASELINE_SHA}" HEAD -- \
+               '**/e2e/**/*.spec.ts' '**/__tests__/**' '**/*.test.ts' '**/*.test.js' \
+               '**/tests/**/*.py' 2>/dev/null | sort -u)
+  TEST_COUNT=$([ -z "$TEST_FILES" ] && echo 0 || echo "$TEST_FILES" | wc -l | tr -d ' ')
+  BUG_ID_SAFE=$(echo "$BUG_REF" | grep -oE '[A-Za-z0-9_-]+' | head -1)
+
+  # Look for test file mentioning the bug ID (by name or content)
+  TEST_MENTIONS_BUG=0
+  if [ -n "$BUG_ID_SAFE" ] && [ "$TEST_COUNT" -gt 0 ]; then
+    for f in $TEST_FILES; do
+      if [ -f "$f" ]; then
+        if grep -qiE "(${BUG_ID_SAFE}|regression|bugfix)" "$f" 2>/dev/null; then
+          TEST_MENTIONS_BUG=1
+          break
+        fi
+      fi
+    done
+  fi
+
+  if [ "$TEST_COUNT" -eq 0 ]; then
+    echo "⚠ Bugfix introduces no test files — /vg:test will attempt to generate regression coverage" >&2
+    REGRESSION_NOTE="no-test-added (WARN — /vg:test to generate)"
+  elif [ "$TEST_MENTIONS_BUG" -eq 0 ]; then
+    echo "⚠ Bugfix has ${TEST_COUNT} test files but none reference bug ID '${BUG_ID_SAFE}'" >&2
+    REGRESSION_NOTE="test-files-unlinked (WARN — consider adding bug ID comment to test)"
+  else
+    echo "✓ Bugfix has ${TEST_COUNT} test files, at least one references bug ID" >&2
+    REGRESSION_NOTE="test-linked (OK)"
+  fi
+
+  # 4. Write matrix with actual verification results
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$BUG_REF" \
+    "$CODE_COUNT" "$TEST_COUNT" "$TEST_MENTIONS_BUG" "$REGRESSION_NOTE" <<'PY'
 import sys
 from datetime import datetime
-out, phase, bug = sys.argv[1], sys.argv[2], sys.argv[3]
+out, phase, bug, code_count, test_count, test_mentions, note = sys.argv[1:8]
+code_count = int(code_count); test_count = int(test_count); test_mentions = int(test_mentions)
+
+if code_count == 0:
+    verdict = "BLOCK (empty bugfix — no code changes)"
+elif test_count > 0 and test_mentions:
+    verdict = f"PASS (bugfix has {code_count} code files + linked test; /vg:test re-verifies)"
+elif test_count > 0:
+    verdict = f"PASS-WARN (bugfix has {code_count} code files + {test_count} tests unlinked to bug)"
+else:
+    verdict = f"PASS-WARN (bugfix has {code_count} code files but 0 tests; /vg:test must generate)"
+
 lines = [
     f"# Goal Coverage Matrix — Phase {phase} (bugfix regression)",
     "",
     f"**Profile:** bugfix  ",
-    f"**Bug reference:** {bug or '_unspecified_'}  ",
-    f"**Source:** SPECS.fixes_bug  ",
+    f"**Bug reference:** {bug}  ",
+    f"**Source:** SPECS.md issue_id + git delta vs HEAD~1  ",
     f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}",
     "",
-    "## Regression gate",
+    "## Verification checks",
     "",
-    "Bugfix regression is verified by /vg:test `issue-specific` runner — this review step",
-    "passes automatically. Full regression sweep via /vg:regression after accept.",
+    "| Check | Status |",
+    "|-------|--------|",
+    f"| Bug reference present | {'✓' if bug != '<unspecified>' else '⛔ missing'} |",
+    f"| Code files changed | {code_count} |",
+    f"| Test files changed | {test_count} |",
+    f"| Tests reference bug ID | {'✓' if test_mentions else 'no'} |",
+    f"| Regression note | {note} |",
     "",
-    "**Verdict:** PASS (regression handled at /vg:test)",
+    "## Gate",
+    "",
+    f"**Verdict:** {verdict}",
+    "",
+    "**Next:** /vg:test runs issue-specific runner to re-verify bug is actually fixed.",
     "",
 ]
 open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
-print("✓ GOAL-COVERAGE-MATRIX.md written (bugfix regression stub)")
+print(f"✓ GOAL-COVERAGE-MATRIX.md written — {verdict.split(' (')[0]}")
 PY
-  touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
+
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_regression" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_regression 2>/dev/null || true
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.phaseP_regression_verified" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"bug_ref\":\"${BUG_REF}\",\"code_count\":${CODE_COUNT},\"test_count\":${TEST_COUNT},\"test_linked\":${TEST_MENTIONS_BUG}}" >/dev/null 2>&1 || true
   exit 0
 fi
 ```
@@ -752,7 +1093,8 @@ lines = [
 open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (migration schema-verify)")
 PY
-  touch "${PHASE_DIR}/.step-markers/phaseP_schema_verify.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_schema_verify" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_schema_verify.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_schema_verify 2>/dev/null || true
   exit 0
 fi
 ```
@@ -797,7 +1139,8 @@ lines = [
 open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
 print("✓ GOAL-COVERAGE-MATRIX.md written (docs link-check)")
 PY
-  touch "${PHASE_DIR}/.step-markers/phaseP_link_check.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phaseP_link_check" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phaseP_link_check.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_link_check 2>/dev/null || true
   exit 0
 fi
 ```
@@ -915,7 +1258,8 @@ if [ "$GRAPHIFY_ACTIVE" != "true" ]; then
   echo "ℹ Graphify not available — skipping Phase 1.5"
   echo "RIPPLE_SKIPPED=true" > "${PHASE_DIR}/uat-ripples.txt"
   echo "RIPPLE_SKIP_REASON=graphify-inactive" >> "${PHASE_DIR}/uat-ripples.txt"
-  touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase1_5_ripple_and_god_node" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase1_5_ripple_and_god_node 2>/dev/null || true
   # skip to Phase 2
 fi
 ```
@@ -1090,7 +1434,7 @@ Still write empty `RIPPLE-ANALYSIS.md` stub so Phase 4 doesn't error on missing 
 Graphify inactive. Enable for cross-module impact detection.
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase1_5_ripple_and_god_node" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"`
 </step>
 
 <step name="phase2_browser_discovery" profile="web-fullstack,web-frontend-only">
@@ -1625,8 +1969,8 @@ for h in sorted(hits): print(h)
 
    ## CONNECTION
    SESSION_ID="haiku-nav-{phase}-$$"
-   MCP_PREFIX=$(bash "~/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
-   trap "bash '~/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
+   MCP_PREFIX=$(bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
+   trap "bash '${HOME}/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
    Use returned $MCP_PREFIX as server for all browser tool calls.
 
    ## TASK
@@ -1648,7 +1992,7 @@ for h in sorted(hits): print(h)
         "actual_views": ["/sites", "/campaigns", "/audit-log", "/settings/roles", ...]
       }
    7. browser_close
-   8. bash "~/.claude/playwright-locks/playwright-lock.sh" release "haiku-nav-{phase}-$$"
+   8. bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" release "haiku-nav-{phase}-$$"
 
    ## INJECTED DATA
    REGISTERED_ROUTES = [{from step 2 above — list from code scan}]
@@ -1774,6 +2118,23 @@ the same schema; iteration logic is identical.
 
 **Spawn 1 Haiku agent per view** using Agent tool with `model="haiku"`.
 Each agent scans 1 view exhaustively with a FIXED workflow — no discretion to skip.
+
+**Bootstrap rules injection (v1.15.0+):** Before spawning each Haiku scanner,
+render + inject promoted project rules so scanners see project-specific checks
+(e.g. "verify data persists after mutation" rule L-050 will fire here):
+```bash
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "review")
+vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "review" "${PHASE_NUMBER}"
+```
+Then in each Haiku prompt body, include:
+```
+<bootstrap_rules>
+${BOOTSTRAP_RULES_BLOCK}
+</bootstrap_rules>
+```
+Position: after static `<scanner_workflow>` block, before `<view_assignment>`.
+Scanner skill treats rules as additional per-element checks on top of fixed protocol.
 
 IF --retry-failed:
   Normalize RETRY_VIEWS[] → view-assignments-retry.json (same schema as view-assignments.json):
@@ -2167,7 +2528,8 @@ Counts actions + views + wall-time sau Phase 2 để phát hiện runaway discov
 RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
 if [ ! -f "$RUNTIME_MAP" ]; then
   echo "⚠ RUNTIME-MAP.json chưa tồn tại — bỏ qua limit check (Phase 2 có thể skipped hoặc failed)."
-  touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_exploration_limits" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2_exploration_limits 2>/dev/null || true
 else
   MAX_VIEW="${CONFIG_REVIEW_MAX_ACTIONS_PER_VIEW:-50}"
   MAX_TOTAL="${CONFIG_REVIEW_MAX_ACTIONS_TOTAL:-200}"
@@ -2258,7 +2620,9 @@ state.setdefault("metrics", {})["review_exploration"] = {
 state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 PY
 
-  touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_exploration_limits" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_exploration_limits.done"
+
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2_exploration_limits 2>/dev/null || true
 fi
 ```
 
@@ -2517,7 +2881,7 @@ Phase 2.5 Visual Integrity:
   MAJOR: {N} → Phase 3 fix loop | MINOR: {N} → logged
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_5_visual_checks" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
 </step>
 
 <step name="phase2_5_mobile_visual_checks" profile="mobile-*">
@@ -2619,7 +2983,7 @@ EOF
 
 MAJOR → handled in Phase 3 fix loop. MINOR → logged only.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/phase2_5_mobile_visual_checks.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_5_mobile_visual_checks" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_5_mobile_visual_checks.done"`
 </step>
 
 <step name="phase3_fix_loop">
@@ -3169,9 +3533,16 @@ Goals không có UI surface đúng ra phải mark `infra_deps: [<no-ui tag>]` tr
 Trước khi chạy weighted gate, PHẢI resolve mọi `NOT_SCANNED` + `FAILED` thành 1 trong 4 kết luận.
 
 ```bash
-NOT_SCANNED_COUNT=$(count goals where status == "NOT_SCANNED")
-FAILED_COUNT=$(count goals where status == "FAILED")
+# OHOK-8 round-4 Codex fix: replace pseudocode with real bash grep.
+# Previously `count goals where status == "NOT_SCANNED"` was not executable
+# → gate couldn't run → NOT_SCANNED goals slipped through unresolved.
+MATRIX="${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
+NOT_SCANNED_COUNT=$(grep -cE '^\| G-[0-9]+.*\|[[:space:]]*NOT_SCANNED[[:space:]]*\|' "$MATRIX" 2>/dev/null || echo 0)
+FAILED_COUNT=$(grep -cE '^\| G-[0-9]+.*\|[[:space:]]*FAILED[[:space:]]*\|' "$MATRIX" 2>/dev/null || echo 0)
 INTERMEDIATE=$((NOT_SCANNED_COUNT + FAILED_COUNT))
+# Build the list of intermediate goal IDs (used later in override auto-convert)
+INTERMEDIATE_GOALS=$(grep -oE '^\| (G-[0-9]+)[^|]*\|[^|]*\|[^|]*\|[[:space:]]*(NOT_SCANNED|FAILED)[[:space:]]*\|' "$MATRIX" 2>/dev/null \
+  | grep -oE 'G-[0-9]+' | sort -u | tr '\n' ' ')
 
 if [ "$INTERMEDIATE" -gt 0 ]; then
   echo "⛔ Review cannot exit Phase 4 — ${INTERMEDIATE} intermediate goals:"
@@ -3228,9 +3599,16 @@ if [ "$INTERMEDIATE" -gt 0 ]; then
     if ! rationalization_guard_dispatch "$RATGUARD_RESULT" "not-scanned-defer" "--allow-intermediate" "$PHASE_NUMBER" "review.4c-pre" "${INTERMEDIATE} intermediate goals"; then
       exit 1
     fi
-    # Auto-convert intermediate → UNREACHABLE với audit trail
+    # OHOK-8 round-4 Codex fix: update_goal_status was undefined function.
+    # Replaced with real bash sed that rewrites matrix row in-place.
+    # Auto-convert intermediate → UNREACHABLE với audit trail.
+    TS=$(date -u +%FT%TZ)
     for gid in $INTERMEDIATE_GOALS; do
-      update_goal_status $gid "UNREACHABLE" --reason "review-skip-${original_status}"
+      # Match row `| G-XX |...|...|...| (NOT_SCANNED|FAILED) |`, replace
+      # status column only. Preserve other columns. Use | delimiter in sed
+      # to avoid conflicts with pipe chars in evidence.
+      sed -i -E "s|^(\| ${gid} \|[^|]+\|[^|]+\|[^|]+\|)[[:space:]]*(NOT_SCANNED\|FAILED)[[:space:]]*\|(.*)$|\1 UNREACHABLE |review-skip-\2 @${TS}\3|" \
+        "$MATRIX" 2>/dev/null || true
     done
     echo "intermediate-override: ${INTERMEDIATE} goals auto-converted UNREACHABLE ts=$(date -u +%FT%TZ)" \
       >> "${PHASE_DIR}/build-state.log"
@@ -3975,6 +4353,22 @@ Next steps (pick the matching path — DO NOT just re-run /vg:review blindly):
 4. **Closing MUST contain "Next:" block** with at least 2 labeled options (A/B/C...) when verdict ≠ PASS.
 5. **If executor cannot run something** (bash broken, no internet, missing creds), say so EXPLICITLY and tell user the manual command to run instead. Don't bury it in middle of output.
 
+
+```bash
+# v2.2 — complete step marker + terminal emit + run-complete
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review complete 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0_parse_and_validate 2>/dev/null || true
+READY_COUNT=$(grep -c "READY" "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>/dev/null || echo 0)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"goals_ready\":${READY_COUNT}}" >/dev/null
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ review run-complete BLOCK — review orchestrator output + fix before /vg:test" >&2
+  exit $RUN_RC
+fi
+```
 </step>
 
 </process>

@@ -358,6 +358,25 @@ fi
 ```
 </step>
 
+<step name="8b_data_migrations">
+**Auto-run data migrations (Batch 5b+) — convert legacy .vg/ artifacts to new schema.**
+
+v2.3 introduced content-schema step markers. Pre-2.3 empty markers are still
+accepted in lenient mode, but post-upgrade projects should run the migration
+once to get forgery-resistant content markers. Idempotent — skips already-migrated.
+
+```bash
+# Marker content schema migration (v2.3+)
+MIG_SCRIPT="${REPO_ROOT}/.claude/scripts/marker-migrate.py"
+if [ -f "$MIG_SCRIPT" ] && [ -d "${REPO_ROOT}/${PLANNING_DIR:-.vg}/phases" ]; then
+  echo ""
+  echo "Running data migration: marker content schema (Batch 5b)..."
+  python3 "$MIG_SCRIPT" --planning "${REPO_ROOT}/${PLANNING_DIR:-.vg}" 2>&1 | tail -3 \
+    || echo "(marker-migrate returned non-zero, continuing — legacy markers still work in lenient mode)"
+fi
+```
+</step>
+
 <step name="9_report">
 ```bash
 echo ""

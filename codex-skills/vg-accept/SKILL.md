@@ -112,12 +112,30 @@ Pipeline: specs → scope → blueprint → build → review → test → **acce
 If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. BLOCK (chặn) until resolved via `/vg:reapply-patches --verify-gates`.
 
 ```bash
-if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
+# v2.2 — T8 gate now routes through block_resolve. L1 auto-clears stale
+# file when all entries carry resolution markers. Only genuine conflicts BLOCK.
+if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh" ]; then
+  [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" ] && \
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh"
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh"
+  t8_gate_check "${PLANNING_DIR}" "accept"
+  T8_RC=$?
+  [ "$T8_RC" -eq 2 ] && exit 2
+  [ "$T8_RC" -eq 1 ] && exit 1
+elif [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved — run /vg:reapply-patches --verify-gates first."
   exit 1
 fi
 ```
 </step>
+
+```bash
+# v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+# OHOK-8 round-4 Codex fix: parse PHASE_NUMBER BEFORE run-start
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:accept "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 0_gate_integrity_precheck 2>/dev/null || true
+```
 
 <step name="0_load_config">
 Follow `.claude/commands/vg/_shared/config-loader.md`.
@@ -140,6 +158,10 @@ if [ -z "$PHASE_DIR" ]; then
 fi
 PHASE_NUMBER=$(basename "$PHASE_DIR" | grep -oE '^[0-9]+(\.[0-9]+)*')
 echo "Phase: $PHASE_NUMBER ($PHASE_DIR)"
+
+# v1.15.2 — register run so Stop hook can verify runtime_contract evidence
+type -t vg_run_start >/dev/null 2>&1 && \
+  vg_run_start "vg:accept" "${PHASE_NUMBER}" "${ARGUMENTS:-}"
 ```
 </step>
 
@@ -191,7 +213,12 @@ Profile determines which steps must have markers. Use `filter-steps.py` to compu
 MARKER_DIR="${PHASE_DIR}/.step-markers"
 mkdir -p "$MARKER_DIR"
 
+# Load marker schema library (OHOK Batch 5b / E1) — content-aware verify
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/marker-schema.sh" 2>/dev/null || true
+
 MISSED=""
+FORGED=""
+LEGACY=""
 for cmd in build review test; do
   CMD_FILE=".claude/commands/vg/${cmd}.md"
   [ -f "$CMD_FILE" ] || continue
@@ -199,8 +226,20 @@ for cmd in build review test; do
     --command "$CMD_FILE" --profile "$PROFILE" --output-ids 2>/dev/null)
   [ -z "$EXPECTED" ] && continue
   for step in $(echo "$EXPECTED" | tr ',' ' '); do
-    if [ ! -f "${MARKER_DIR}/${step}.done" ]; then
+    MARKER_FILE="${MARKER_DIR}/${step}.done"
+    if [ ! -f "$MARKER_FILE" ]; then
       MISSED="$MISSED ${cmd}:${step}"
+      continue
+    fi
+    # Content-aware verification (CrossAI R6 Batch 5b fix)
+    if type -t verify_marker >/dev/null 2>&1; then
+      verify_marker "$MARKER_FILE" "$PHASE_NUMBER" "$step" 30 2>/dev/null
+      rc=$?
+      case $rc in
+        0) : ;;  # valid
+        2) LEGACY="$LEGACY ${cmd}:${step}" ;;  # empty marker (pre-5b)
+        3|4|5|6|7) FORGED="$FORGED ${cmd}:${step}(rc=$rc)" ;;
+      esac
     fi
   done
 done
@@ -212,6 +251,38 @@ if [ -n "$(echo "$MISSED" | xargs)" ]; then
   echo "   Resume: /vg:next  (auto-detects which step to rerun)"
   exit 1
 fi
+
+# Batch 5b: hard-block on content integrity violations (forged/mismatched/stale)
+if [ -n "$(echo "$FORGED" | xargs)" ]; then
+  echo "⛔ Marker content integrity violations detected (forgery / mismatch / stale):" >&2
+  for m in $FORGED; do echo "   - $m" >&2; done
+  echo "" >&2
+  echo "   rc=3 schema, rc=4 phase mismatch, rc=5 step mismatch," >&2
+  echo "   rc=6 git_sha not ancestor of HEAD (likely forged via touch)," >&2
+  echo "   rc=7 marker older than 30 days (stale run state)." >&2
+  echo "" >&2
+  echo "   Re-run the affected step to emit a fresh valid marker." >&2
+  echo "   Override (NOT recommended): --allow-forged-markers (log debt)." >&2
+  if [[ ! "${ARGUMENTS:-}" =~ --allow-forged-markers ]]; then
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.marker_forgery_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"count\":$(echo $FORGED | wc -w)}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "accept-marker-forgery" "${PHASE_NUMBER}" \
+    "forged/mismatched/stale markers: $(echo $FORGED | xargs)" "${PHASE_DIR}"
+fi
+
+# Legacy empty markers — WARN only, nudge user to migrate
+if [ -n "$(echo "$LEGACY" | xargs)" ]; then
+  LEGACY_COUNT=$(echo $LEGACY | wc -w)
+  echo "⚠ ${LEGACY_COUNT} legacy empty markers (pre-Batch-5b format):" >&2
+  for m in $LEGACY; do echo "   - $m" >&2; done
+  echo "   Run once: python .claude/scripts/marker-migrate.py --planning ${PLANNING_DIR:-.vg}" >&2
+  echo "   Strict mode: export VG_MARKER_STRICT=1 to BLOCK on legacy markers." >&2
+fi
+
 echo "✓ All expected step markers present for profile: $PROFILE"
 ```
 </step>
@@ -221,7 +292,19 @@ echo "✓ All expected step markers present for profile: $PROFILE"
 
 ```bash
 SANDBOX=$(ls "${PHASE_DIR}"/*SANDBOX-TEST.md 2>/dev/null | head -1)
-VERDICT=$(grep -iE "^\s*\*\*Verdict:?\*\*|^\s*Verdict:" "$SANDBOX" | head -1 | grep -oiE "PASSED|GAPS_FOUND|FAILED" | tr '[:lower:]' '[:upper:]')
+# OHOK-8 round-4 Codex fix: accept emits verdict in 3 formats across versions.
+# Parser now accepts all:
+#   `**Verdict:** PASSED`           (bold inline)
+#   `Verdict: PASSED`                (plain prefix)
+#   `## Verdict: PASSED`             (markdown heading — test.md canonical)
+#   `status: passed` (YAML frontmatter, lowercased values)
+# Previous regex only matched the first two → test.md's heading format
+# produced a false BLOCK "verdict not parseable" after a valid /vg:test.
+VERDICT=$(grep -iE "^\s*#+\s*Verdict:?|^\s*\*\*Verdict:?\*\*|^\s*Verdict:|^\s*status:" "$SANDBOX" \
+  | head -1 \
+  | grep -oiE "PASSED|GAPS_FOUND|FAILED|passed|gaps_found|failed" \
+  | head -1 \
+  | tr '[:lower:]' '[:upper:]')
 
 case "$VERDICT" in
   PASSED|GAPS_FOUND)
@@ -698,6 +781,7 @@ case "$PROFILE" in
     fi
     ;;
 esac
+```
 
 ### Section E: Deliverables summary (from SUMMARY*.md — for spot-check only)
 
@@ -928,7 +1012,231 @@ AskUserQuestion:
    [d] DEFER — partial accept, revisit later (record open items)"
 ```
 
-Record all responses with timestamps in orchestrator memory for step 6.
+### Response persistence (OHOK Batch 3 B4 — REQUIRED for quorum gate)
+
+**AI MUST write each AskUserQuestion response to `${PHASE_DIR}/.uat-responses.json` immediately after the user answers.** This is the source of truth read by step `5_uat_quorum_gate` below. Without persistence, the quorum gate BLOCKs (treats unset state as "user skipped everything").
+
+Format:
+```json
+{
+  "decisions": {"pass": 0, "fail": 0, "skip": 0, "items": [{"id": "P7.D-01", "verdict": "p|f|s", "ts": "..."}]},
+  "goals": {"pass": 0, "fail": 0, "skip": 0, "items": [{"id": "G-01", "status_before": "READY", "verdict": "p|f|s", "ts": "..."}]},
+  "ripples": {"verdict": "y|n|s|acknowledged|risk-accepted", "ts": "..."},
+  "designs": {"pass": 0, "fail": 0, "skip": 0, "items": [{"ref": "sites-list.default", "verdict": "p|f|s", "ts": "..."}]},
+  "mobile_gates": {"verdict": "y|n|s", "ts": "..."},
+  "final": {"verdict": "ACCEPT|REJECT|DEFER", "ts": "..."}
+}
+```
+
+AI can write/update this JSON via Bash heredoc after each section completes. Missing sections that are N/A for this profile (e.g. mobile_gates for web) should be omitted or set to `{"verdict": "n/a"}`.
+
+```bash
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_interactive_uat" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_interactive_uat.done"
+```
+</step>
+
+<step name="5_uat_quorum_gate">
+**⛔ UAT QUORUM GATE (OHOK Batch 3 B4 — block theatre UAT).**
+
+Before Batch 3 UAT was pure theatre — every AskUserQuestion offered `[s] Skip`, user could skip decisions + goals + ripples + designs all via `[s]`, phase ships with "DEFERRED" verdict, next phase reads note and proceeds. No mechanism enforced minimum due diligence.
+
+This gate counts SKIPs on critical sections (A decisions, B READY goals) and BLOCKs if over threshold. Config-driven via `config.accept.max_uat_skips_critical` (default 0 — strict).
+
+```bash
+# Config thresholds (default strict: 0 critical skips allowed)
+MAX_CRIT_SKIPS=$(${PYTHON_BIN:-python3} - <<'PY' 2>/dev/null || echo 0
+import re
+from pathlib import Path
+p = Path(".claude/vg.config.md")
+if not p.exists():
+    print(0); exit()
+text = p.read_text(encoding="utf-8", errors="replace")
+m = re.search(r"^\s*accept\s*:\s*\n(?:\s+[a-z_]+:.*\n)*?\s+max_uat_skips_critical\s*:\s*(\d+)", text, re.MULTILINE)
+print(m.group(1) if m else "0")
+PY
+)
+
+RESP_JSON="${PHASE_DIR}/.uat-responses.json"
+
+# Gate 1: response file must exist with content
+if [ ! -s "$RESP_JSON" ]; then
+  echo "⛔ UAT quorum gate: .uat-responses.json missing or empty." >&2
+  echo "   AI must persist each AskUserQuestion response in step 5." >&2
+  echo "   Silence / verbal-only answers = BLOCK (prevents theatre UAT)." >&2
+  if [[ ! "${ARGUMENTS}" =~ --allow-empty-uat ]]; then
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.uat_quorum_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"reason\":\"no_response_json\"}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "accept-uat-empty" "${PHASE_NUMBER}" "UAT ran without persisted responses" "${PHASE_DIR}"
+fi
+
+# Gate 1b: response JSON coverage cross-check (CrossAI R6 fix).
+# Without this, attacker could write {"decisions":{"skip":0,"total":0}} and
+# pass quorum trivially. Now: responses must cover every expected decision
+# + READY goal derived from artifacts.
+COVERAGE_CHECK=$(${PYTHON_BIN:-python3} - "$RESP_JSON" "$PHASE_DIR" 2>/dev/null <<'PY' || echo "PARSE_ERROR"
+import json, re, sys
+from pathlib import Path
+
+resp_path = Path(sys.argv[1])
+phase_dir = Path(sys.argv[2])
+
+# Expected decisions = count of D-XX / P{phase}.D-XX headings in CONTEXT.md
+expected_dec = 0
+ctx = phase_dir / "CONTEXT.md"
+if ctx.exists():
+    t = ctx.read_text(encoding="utf-8", errors="replace")
+    expected_dec = len(re.findall(r'^###\s+(?:P[0-9.]+\.)?D-\d+', t, re.MULTILINE))
+
+# Expected READY goals = count of READY rows in GOAL-COVERAGE-MATRIX.md
+expected_goals = 0
+matrix = phase_dir / "GOAL-COVERAGE-MATRIX.md"
+if matrix.exists():
+    t = matrix.read_text(encoding="utf-8", errors="replace")
+    expected_goals = len(re.findall(r'\|\s*READY\s*\|', t))
+
+# Responses actually recorded
+try:
+    data = json.loads(resp_path.read_text(encoding="utf-8"))
+except Exception:
+    print(f"MALFORMED:expected_dec={expected_dec},expected_goals={expected_goals}")
+    sys.exit()
+
+dec_section = data.get("decisions") or {}
+goal_section = data.get("goals") or {}
+# Sum of all verdicts (a/y/s/n) in decisions — attacker can't shrink this
+# without removing items. Use items[] if present, else summed counters.
+dec_items = dec_section.get("items") or []
+dec_covered = len(dec_items) if dec_items else sum(
+    int(dec_section.get(k, 0)) for k in ("accept", "edit", "skip", "reject", "a", "y", "s", "n")
+)
+goal_items = goal_section.get("items") or []
+goal_covered = len(goal_items) if goal_items else sum(
+    int(goal_section.get(k, 0)) for k in ("a", "y", "s", "n", "accept", "skip")
+)
+
+missing_dec = max(0, expected_dec - dec_covered)
+missing_goal = max(0, expected_goals - goal_covered)
+print(f"expected_dec={expected_dec},dec_covered={dec_covered},missing_dec={missing_dec},"
+      f"expected_goals={expected_goals},goal_covered={goal_covered},missing_goal={missing_goal}")
+PY
+)
+
+# Parse coverage output
+MISSING_DEC=$(echo "$COVERAGE_CHECK" | sed -n 's/.*missing_dec=\([0-9]*\).*/\1/p')
+MISSING_GOAL=$(echo "$COVERAGE_CHECK" | sed -n 's/.*missing_goal=\([0-9]*\).*/\1/p')
+MISSING_DEC=${MISSING_DEC:-0}
+MISSING_GOAL=${MISSING_GOAL:-0}
+
+if [ "${MISSING_DEC:-0}" -gt 0 ] || [ "${MISSING_GOAL:-0}" -gt 0 ]; then
+  echo "⛔ UAT coverage gate: responses don't cover all expected items" >&2
+  echo "   $COVERAGE_CHECK" >&2
+  echo "   Missing decisions=${MISSING_DEC}, Missing READY goals=${MISSING_GOAL}" >&2
+  echo "   AI must ask + record ONE response per expected item. Partial-coverage" >&2
+  echo "   JSON = attacker bypass, rejected." >&2
+  if [[ ! "${ARGUMENTS}" =~ --allow-empty-uat ]]; then
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.uat_coverage_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"missing_dec\":${MISSING_DEC},\"missing_goal\":${MISSING_GOAL}}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "accept-uat-undercoverage" "${PHASE_NUMBER}" \
+    "responses missing: dec=${MISSING_DEC}, goals=${MISSING_GOAL}" "${PHASE_DIR}"
+fi
+
+# Gate 2: count critical skips (decisions + READY goals)
+CRITICAL_SKIPS=$(${PYTHON_BIN:-python3} - "$RESP_JSON" 2>/dev/null <<'PY' || echo 999
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+if not p.exists():
+    print(0); exit()
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    print(999); exit()  # malformed = treat as max skips
+
+dec_skip = (data.get("decisions") or {}).get("skip", 0)
+# Only count READY-goal skips as critical; BLOCKED/UNREACHABLE goals aren't asked
+goal_items = (data.get("goals") or {}).get("items", [])
+goal_skip_ready = sum(
+    1 for it in goal_items
+    if it.get("verdict") == "s" and it.get("status_before") == "READY"
+)
+# Fallback: if items[] not populated, use overall skip count
+if not goal_items:
+    goal_skip_ready = (data.get("goals") or {}).get("skip", 0)
+
+print(int(dec_skip) + int(goal_skip_ready))
+PY
+)
+
+TOTAL_SKIPS=$(${PYTHON_BIN:-python3} - "$RESP_JSON" 2>/dev/null <<'PY' || echo 0
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+if not p.exists():
+    print(0); exit()
+try:
+    data = json.loads(p.read_text(encoding="utf-8"))
+except Exception:
+    print(0); exit()
+total = 0
+for section in ("decisions", "goals", "designs"):
+    total += (data.get(section) or {}).get("skip", 0)
+print(total)
+PY
+)
+
+echo "▸ UAT quorum: critical skips=${CRITICAL_SKIPS} (threshold=${MAX_CRIT_SKIPS}), total skips=${TOTAL_SKIPS}"
+
+if [ "${CRITICAL_SKIPS:-0}" -gt "${MAX_CRIT_SKIPS:-0}" ]; then
+  echo "⛔ UAT quorum FAILED: ${CRITICAL_SKIPS} critical skips > ${MAX_CRIT_SKIPS} (max)." >&2
+  echo "" >&2
+  echo "Critical = decisions (A) + READY goals (B). These MUST be verified, not skipped." >&2
+  echo "" >&2
+  echo "Options:" >&2
+  echo "  (a) Re-run /vg:accept ${PHASE_NUMBER} and actually verify the [s]-skipped items" >&2
+  echo "  (b) Raise threshold in config: accept.max_uat_skips_critical: N" >&2
+  echo "  (c) --allow-uat-skips override (logs to debt, DEFERRED verdict forced)" >&2
+
+  if [[ ! "${ARGUMENTS}" =~ --allow-uat-skips ]]; then
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.uat_quorum_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"critical_skips\":${CRITICAL_SKIPS},\"threshold\":${MAX_CRIT_SKIPS}}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "accept-uat-quorum" "${PHASE_NUMBER}" \
+    "${CRITICAL_SKIPS} critical UAT skips (threshold ${MAX_CRIT_SKIPS})" "${PHASE_DIR}"
+
+  echo "⚠ --allow-uat-skips — proceeding, forced DEFERRED verdict (not ACCEPTED)" >&2
+  # Rewrite final verdict to DEFER so downstream /vg:next still blocks
+  ${PYTHON_BIN:-python3} - "$RESP_JSON" <<'PY'
+import json, sys
+from datetime import datetime
+from pathlib import Path
+p = Path(sys.argv[1])
+d = json.loads(p.read_text(encoding="utf-8"))
+d.setdefault("final", {})
+d["final"]["verdict"] = "DEFER"
+d["final"]["forced_by"] = "uat_quorum_override"
+d["final"]["ts"] = datetime.utcnow().isoformat() + "Z"
+p.write_text(json.dumps(d, indent=2))
+PY
+fi
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.uat_quorum_passed" \
+  --payload "{\"phase\":\"${PHASE_NUMBER}\",\"critical_skips\":${CRITICAL_SKIPS},\"total_skips\":${TOTAL_SKIPS}}" >/dev/null 2>&1 || true
+
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_uat_quorum_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_uat_quorum_gate.done"
+```
 </step>
 
 <step name="6_write_uat_md">
@@ -1050,7 +1358,19 @@ _Generated by /vg:accept — data-driven UAT over VG artifacts._
 
 Touch marker:
 ```bash
-touch "${PHASE_DIR}/.step-markers/accept.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "accept" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/accept.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept accept 2>/dev/null || true
+# v1.15.2 — fulfill runtime_contract markers declared in frontmatter
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "1_artifact_precheck" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/1_artifact_precheck.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 1_artifact_precheck 2>/dev/null || true
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2_marker_precheck" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2_marker_precheck.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 2_marker_precheck 2>/dev/null || true
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "3_sandbox_verdict_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/3_sandbox_verdict_gate.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 3_sandbox_verdict_gate 2>/dev/null || true
+
+# (OHOK-3 2026-04-22) Legacy `vg_run_complete` bash helper call removed —
+# canonical `python vg-orchestrator run-complete` runs at step 7 below.
+# One path only; no dual lifecycle.
 ```
 </step>
 
@@ -1263,6 +1583,20 @@ Phase {PHASE_NUMBER} DEFERRED — partial accept.
    
 Resume with: /vg:accept ${PHASE_NUMBER} --resume  (reopens deferred items only)
 Force-advance (NOT RECOMMENDED): /vg:next --allow-deferred
+```
+
+```bash
+# v2.2 — terminal emit + run-complete for /vg:accept
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "7_post_accept_actions" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/7_post_accept_actions.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 7_post_accept_actions 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ accept run-complete BLOCK — review orchestrator output + fix" >&2
+  exit $RUN_RC
+fi
 ```
 </step>
 

@@ -103,7 +103,10 @@ List pending candidates. With `<id>`, show full evidence + dry-run preview.
 
 **Without `<id>`** — list all:
 ```bash
-grep -E '^- id: L-' .vg/bootstrap/CANDIDATES.md | head -20
+# Candidates are fenced ```yaml blocks starting with `id: L-XXX` at column 0
+# (top-level mapping, not list-style — list-style would collide with YAML
+# sequence semantics inside the fence).
+grep -nE '^id: L-' .vg/bootstrap/CANDIDATES.md | head -20
 ```
 
 For each candidate, show: id, title, type, scope, confidence, created_at.

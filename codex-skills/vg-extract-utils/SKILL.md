@@ -422,10 +422,17 @@ Short report (under 150 words):
 
 For each name in SELECTED:
 1. NARRATE: `## Extracting {name} ({copy_count} callers)...`
-2. Spawn Agent (subagent_type=general-purpose, model=${MODEL_EXECUTOR or sonnet})
-3. Wait for completion (foreground — sequential, not parallel)
-4. Parse report; collect commit SHA
-5. If failure → log + skip (don't block other extractions)
+2. **Bootstrap rule injection** — render + emit before spawn:
+   ```bash
+   source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+   BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "build")
+   vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "build" "${PHASE_NUMBER:-extract-utils}"
+   ```
+   Include `<bootstrap_rules>${BOOTSTRAP_RULES_BLOCK}</bootstrap_rules>` block in the spawned Agent's prompt alongside extraction instructions.
+3. Spawn Agent (subagent_type=general-purpose, model=${MODEL_EXECUTOR or sonnet})
+4. Wait for completion (foreground — sequential, not parallel)
+5. Parse report; collect commit SHA
+6. If failure → log + skip (don't block other extractions)
 
 Sequential (not parallel) because:
 - Parallel extractions can conflict on `index.ts` (both add export → git merge conflict)

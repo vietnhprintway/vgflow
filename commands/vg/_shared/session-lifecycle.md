@@ -71,6 +71,11 @@ session_start() {
   type -t vg_run_start >/dev/null 2>&1 && \
     vg_run_start "vg:${cmd}" "${phase}" "${ARGUMENTS:-}"
 
+  # OHOK Batch 5b (E1): source marker-schema so step bodies can use
+  # mark_step for forgery-resistant content markers. Individual touch calls
+  # have been rewritten to prefer mark_step when available.
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/marker-schema.sh" 2>/dev/null || true
+
   # EXIT trap emits termination marker no matter how command ends
   # (normal exit, error, Ctrl+C, SIGTERM from parent)
   trap 'session_exit_banner' EXIT INT TERM

@@ -341,7 +341,7 @@ Display:
   ran; test doesn't re-check size. Instead test step 5f security audit
   scans the signed binary for hardcoded secrets.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/5a_mobile_deploy.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5a_mobile_deploy" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5a_mobile_deploy.done"`
 </step>
 
 <step name="5b_runtime_contract_verify" profile="web-fullstack,web-backend-only">
@@ -482,7 +482,7 @@ Display:
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/5b_runtime_contract_verify.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5b_runtime_contract_verify" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5b_runtime_contract_verify.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5b_runtime_contract_verify 2>/dev/null || true
 ```
 </step>
@@ -1836,7 +1836,7 @@ FLOWS_DIR="${FLOWS_DIR:-${GENERATED_TESTS_DIR}/mobile}"
 FLOW_FILES=$(find "${REPO_ROOT}/${FLOWS_DIR}" -type f \( -name "*.maestro.yaml" -o -name "*.maestro.yml" \) 2>/dev/null | sort)
 if [ -z "$FLOW_FILES" ]; then
   echo "⚠ No Maestro flows found under ${FLOWS_DIR}. Run 5d_mobile_codegen first."
-  touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5c_mobile_flow" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_mobile_flow 2>/dev/null || true
   # Don't fail — codegen might be a no-op if goals are all UNREACHABLE
   exit 0
@@ -1888,7 +1888,7 @@ if [ $FAILED -gt 0 ]; then
   echo "⚠ Some flows failed — auto-fix loop handles via 5c_fix then 5e regression."
 fi
 
-touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5c_mobile_flow" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5c_mobile_flow.done"
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_mobile_flow 2>/dev/null || true
 ```
@@ -2068,7 +2068,7 @@ CI reader (step 18+) xử lý:
 
 Nếu `DEEP_PROBE_ENABLED=false` hoặc goal READY = 0 → step 5d-deep.* bỏ qua, phase tiếp tục sang 5e_regression.
 
-`touch "${PHASE_DIR}/.step-markers/5d_deep_probe.done"` dù skip hay chạy.
+`(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5d_deep_probe" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5d_deep_probe.done"` dù skip hay chạy.
 </step>
 
 <step name="5d_mobile_codegen" profile="mobile-*">
@@ -2091,7 +2091,7 @@ RUNTIME_MAP="${PHASE_DIR}/RUNTIME-MAP.json"
 
 if [ ! -f "$RUNTIME_MAP" ]; then
   echo "⚠ RUNTIME-MAP.json missing — codegen needs discovery artifacts from /vg:review"
-  touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5d_mobile_codegen" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5d_mobile_codegen 2>/dev/null || true
   exit 0
 fi
@@ -2175,7 +2175,7 @@ done
 echo ""
 echo "5d Mobile Codegen: ${GENERATED} flow(s) generated → ${OUT_DIR}/"
 
-touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5d_mobile_codegen" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5d_mobile_codegen.done"
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5d_mobile_codegen 2>/dev/null || true
 ```
@@ -2520,7 +2520,7 @@ else
   SECURITY_VERDICT="PASSED"
 fi
 
-touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5f_mobile_security_audit" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5f_mobile_security_audit 2>/dev/null || true
 ```
@@ -2532,7 +2532,7 @@ touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"
   requires device proxy setup — out of scope for automated gate.
 - No Frida / root-detection analysis. Advanced anti-tamper is V2+.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5f_mobile_security_audit" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5f_mobile_security_audit.done"`
 </step>
 
 <step name="5g_performance_check" profile="web-fullstack,web-backend-only">
@@ -2969,7 +2969,7 @@ Test complete for Phase {N}.
 ```bash
 # v2.2 — terminal emit + run-complete for /vg:test
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/complete.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/complete.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test complete 2>/dev/null || true
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 0_parse_and_validate 2>/dev/null || true
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "test.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null

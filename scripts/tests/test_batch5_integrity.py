@@ -201,13 +201,39 @@ def test_b9_validator_passes_verified_event_id(tmp_path):
     assert out["verdict"] == "PASS"
 
 
-def test_b9_validator_accepts_legacy_entries_without_event_id(tmp_path):
-    """legacy:true pre-v1.8.0 entries allowed without event_id."""
+def test_b9_validator_accepts_legacy_entries_with_reason(tmp_path):
+    """legacy:true + legacy_reason → PASS (CrossAI R6: reason now required)."""
     register = tmp_path / "OVERRIDE-DEBT.md"
     register.write_text("""\
 # Override Debt Register
 
 ## Entry OD-003
+- gate_id: old-gate
+- status: RESOLVED
+- resolved_by_event_id:
+- legacy: true
+- legacy_reason: pre-v1.8.0 telemetry not emitted
+""", encoding="utf-8")
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    telemetry.write_text(json.dumps({"event_type": "x", "event_id": "some-uuid"}) + "\n",
+                         encoding="utf-8")
+
+    r = subprocess.run(
+        [sys.executable, str(VALIDATOR),
+         "--register", str(register),
+         "--telemetry", str(telemetry),
+         "--events-db", str(tmp_path / "nonexistent.db")],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0, f"legacy+reason should PASS, got {r.returncode}"
+
+
+def test_b9_validator_blocks_legacy_without_reason(tmp_path):
+    """legacy:true alone (no legacy_reason) → BLOCK (CrossAI R6 fix)."""
+    register = tmp_path / "OVERRIDE-DEBT.md"
+    register.write_text("""\
+## Entry OD-LEG-NR
 - gate_id: old-gate
 - status: RESOLVED
 - resolved_by_event_id:
@@ -225,14 +251,59 @@ def test_b9_validator_accepts_legacy_entries_without_event_id(tmp_path):
          "--events-db", str(tmp_path / "nonexistent.db")],
         capture_output=True, text=True, encoding="utf-8",
     )
-    assert r.returncode == 0, f"legacy entries should PASS, got {r.returncode}"
+    assert r.returncode == 1, f"legacy without reason should BLOCK, got {r.returncode}"
+    out = json.loads(r.stdout)
+    assert any(e.get("type") == "legacy_without_reason" for e in out["evidence"])
+
+
+def test_b9_validator_blocks_gate_id_mismatch(tmp_path):
+    """resolved_by_event_id event's gate_id must match override's gate_id.
+
+    CrossAI R6 critical finding: without this, any unrelated real event
+    could "resolve" any override. Per-gate binding required.
+    """
+    register = tmp_path / "OVERRIDE-DEBT.md"
+    register.write_text("""\
+## Entry OD-MM
+- gate_id: review-goal-coverage
+- status: RESOLVED
+- resolved_by_event_id: real-event-from-different-gate
+- legacy: false
+""", encoding="utf-8")
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    telemetry.write_text(
+        json.dumps({
+            "event_type": "override_resolved",
+            "event_id": "real-event-from-different-gate",
+            "gate_id": "accept-uat-quorum",  # different gate
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    r = subprocess.run(
+        [sys.executable, str(VALIDATOR),
+         "--register", str(register),
+         "--telemetry", str(telemetry),
+         "--events-db", str(tmp_path / "nonexistent.db")],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 1, f"gate_id mismatch should BLOCK, got {r.returncode}"
+    out = json.loads(r.stdout)
+    assert any(e.get("type") == "gate_id_mismatch" for e in out["evidence"]), (
+        f"expected gate_id_mismatch evidence, got: {[e.get('type') for e in out['evidence']]}"
+    )
 
 
 def test_b9_validator_reads_events_db_too(tmp_path):
-    """v2.2 orchestrator stores events in sqlite — validator must read both."""
+    """v2.2 orchestrator stores events in sqlite — validator must read both.
+
+    DB schema with payload column so gate_id can be extracted for binding check.
+    """
     register = tmp_path / "OVERRIDE-DEBT.md"
     register.write_text("""\
 ## Entry OD-004
+- gate_id: some-gate
 - status: RESOLVED
 - resolved_by_event_id: hash-abc-from-db
 - legacy: false
@@ -241,18 +312,22 @@ def test_b9_validator_reads_events_db_too(tmp_path):
     # Empty jsonl
     (tmp_path / "telemetry.jsonl").write_text("", encoding="utf-8")
 
-    # events.db with the hash
+    # events.db with payload carrying gate_id
     db_path = tmp_path / "events.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute("""
         CREATE TABLE events (
             id INTEGER PRIMARY KEY,
             this_hash TEXT,
-            event_type TEXT
+            event_type TEXT,
+            payload TEXT
         )
     """)
-    conn.execute("INSERT INTO events(this_hash, event_type) VALUES (?, ?)",
-                 ("hash-abc-from-db", "override_resolved"))
+    conn.execute(
+        "INSERT INTO events(this_hash, event_type, payload) VALUES (?, ?, ?)",
+        ("hash-abc-from-db", "override_resolved",
+         json.dumps({"gate_id": "some-gate", "phase": "10"})),
+    )
     conn.commit()
     conn.close()
 

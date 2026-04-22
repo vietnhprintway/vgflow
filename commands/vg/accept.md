@@ -183,7 +183,12 @@ Profile determines which steps must have markers. Use `filter-steps.py` to compu
 MARKER_DIR="${PHASE_DIR}/.step-markers"
 mkdir -p "$MARKER_DIR"
 
+# Load marker schema library (OHOK Batch 5b / E1) — content-aware verify
+source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/marker-schema.sh" 2>/dev/null || true
+
 MISSED=""
+FORGED=""
+LEGACY=""
 for cmd in build review test; do
   CMD_FILE=".claude/commands/vg/${cmd}.md"
   [ -f "$CMD_FILE" ] || continue
@@ -191,8 +196,20 @@ for cmd in build review test; do
     --command "$CMD_FILE" --profile "$PROFILE" --output-ids 2>/dev/null)
   [ -z "$EXPECTED" ] && continue
   for step in $(echo "$EXPECTED" | tr ',' ' '); do
-    if [ ! -f "${MARKER_DIR}/${step}.done" ]; then
+    MARKER_FILE="${MARKER_DIR}/${step}.done"
+    if [ ! -f "$MARKER_FILE" ]; then
       MISSED="$MISSED ${cmd}:${step}"
+      continue
+    fi
+    # Content-aware verification (CrossAI R6 Batch 5b fix)
+    if type -t verify_marker >/dev/null 2>&1; then
+      verify_marker "$MARKER_FILE" "$PHASE_NUMBER" "$step" 30 2>/dev/null
+      rc=$?
+      case $rc in
+        0) : ;;  # valid
+        2) LEGACY="$LEGACY ${cmd}:${step}" ;;  # empty marker (pre-5b)
+        3|4|5|6|7) FORGED="$FORGED ${cmd}:${step}(rc=$rc)" ;;
+      esac
     fi
   done
 done
@@ -204,6 +221,38 @@ if [ -n "$(echo "$MISSED" | xargs)" ]; then
   echo "   Resume: /vg:next  (auto-detects which step to rerun)"
   exit 1
 fi
+
+# Batch 5b: hard-block on content integrity violations (forged/mismatched/stale)
+if [ -n "$(echo "$FORGED" | xargs)" ]; then
+  echo "⛔ Marker content integrity violations detected (forgery / mismatch / stale):" >&2
+  for m in $FORGED; do echo "   - $m" >&2; done
+  echo "" >&2
+  echo "   rc=3 schema, rc=4 phase mismatch, rc=5 step mismatch," >&2
+  echo "   rc=6 git_sha not ancestor of HEAD (likely forged via touch)," >&2
+  echo "   rc=7 marker older than 30 days (stale run state)." >&2
+  echo "" >&2
+  echo "   Re-run the affected step to emit a fresh valid marker." >&2
+  echo "   Override (NOT recommended): --allow-forged-markers (log debt)." >&2
+  if [[ ! "${ARGUMENTS:-}" =~ --allow-forged-markers ]]; then
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.marker_forgery_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"count\":$(echo $FORGED | wc -w)}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "accept-marker-forgery" "${PHASE_NUMBER}" \
+    "forged/mismatched/stale markers: $(echo $FORGED | xargs)" "${PHASE_DIR}"
+fi
+
+# Legacy empty markers — WARN only, nudge user to migrate
+if [ -n "$(echo "$LEGACY" | xargs)" ]; then
+  LEGACY_COUNT=$(echo $LEGACY | wc -w)
+  echo "⚠ ${LEGACY_COUNT} legacy empty markers (pre-Batch-5b format):" >&2
+  for m in $LEGACY; do echo "   - $m" >&2; done
+  echo "   Run once: python .claude/scripts/marker-migrate.py --planning ${PLANNING_DIR:-.vg}" >&2
+  echo "   Strict mode: export VG_MARKER_STRICT=1 to BLOCK on legacy markers." >&2
+fi
+
 echo "✓ All expected step markers present for profile: $PROFILE"
 ```
 </step>
@@ -953,7 +1002,7 @@ AI can write/update this JSON via Bash heredoc after each section completes. Mis
 
 ```bash
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/5_interactive_uat.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_interactive_uat" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_interactive_uat.done"
 ```
 </step>
 
@@ -993,6 +1042,81 @@ if [ ! -s "$RESP_JSON" ]; then
   source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
   type -t log_override_debt >/dev/null 2>&1 && \
     log_override_debt "accept-uat-empty" "${PHASE_NUMBER}" "UAT ran without persisted responses" "${PHASE_DIR}"
+fi
+
+# Gate 1b: response JSON coverage cross-check (CrossAI R6 fix).
+# Without this, attacker could write {"decisions":{"skip":0,"total":0}} and
+# pass quorum trivially. Now: responses must cover every expected decision
+# + READY goal derived from artifacts.
+COVERAGE_CHECK=$(${PYTHON_BIN:-python3} - "$RESP_JSON" "$PHASE_DIR" 2>/dev/null <<'PY' || echo "PARSE_ERROR"
+import json, re, sys
+from pathlib import Path
+
+resp_path = Path(sys.argv[1])
+phase_dir = Path(sys.argv[2])
+
+# Expected decisions = count of D-XX / P{phase}.D-XX headings in CONTEXT.md
+expected_dec = 0
+ctx = phase_dir / "CONTEXT.md"
+if ctx.exists():
+    t = ctx.read_text(encoding="utf-8", errors="replace")
+    expected_dec = len(re.findall(r'^###\s+(?:P[0-9.]+\.)?D-\d+', t, re.MULTILINE))
+
+# Expected READY goals = count of READY rows in GOAL-COVERAGE-MATRIX.md
+expected_goals = 0
+matrix = phase_dir / "GOAL-COVERAGE-MATRIX.md"
+if matrix.exists():
+    t = matrix.read_text(encoding="utf-8", errors="replace")
+    expected_goals = len(re.findall(r'\|\s*READY\s*\|', t))
+
+# Responses actually recorded
+try:
+    data = json.loads(resp_path.read_text(encoding="utf-8"))
+except Exception:
+    print(f"MALFORMED:expected_dec={expected_dec},expected_goals={expected_goals}")
+    sys.exit()
+
+dec_section = data.get("decisions") or {}
+goal_section = data.get("goals") or {}
+# Sum of all verdicts (a/y/s/n) in decisions — attacker can't shrink this
+# without removing items. Use items[] if present, else summed counters.
+dec_items = dec_section.get("items") or []
+dec_covered = len(dec_items) if dec_items else sum(
+    int(dec_section.get(k, 0)) for k in ("accept", "edit", "skip", "reject", "a", "y", "s", "n")
+)
+goal_items = goal_section.get("items") or []
+goal_covered = len(goal_items) if goal_items else sum(
+    int(goal_section.get(k, 0)) for k in ("a", "y", "s", "n", "accept", "skip")
+)
+
+missing_dec = max(0, expected_dec - dec_covered)
+missing_goal = max(0, expected_goals - goal_covered)
+print(f"expected_dec={expected_dec},dec_covered={dec_covered},missing_dec={missing_dec},"
+      f"expected_goals={expected_goals},goal_covered={goal_covered},missing_goal={missing_goal}")
+PY
+)
+
+# Parse coverage output
+MISSING_DEC=$(echo "$COVERAGE_CHECK" | sed -n 's/.*missing_dec=\([0-9]*\).*/\1/p')
+MISSING_GOAL=$(echo "$COVERAGE_CHECK" | sed -n 's/.*missing_goal=\([0-9]*\).*/\1/p')
+MISSING_DEC=${MISSING_DEC:-0}
+MISSING_GOAL=${MISSING_GOAL:-0}
+
+if [ "${MISSING_DEC:-0}" -gt 0 ] || [ "${MISSING_GOAL:-0}" -gt 0 ]; then
+  echo "⛔ UAT coverage gate: responses don't cover all expected items" >&2
+  echo "   $COVERAGE_CHECK" >&2
+  echo "   Missing decisions=${MISSING_DEC}, Missing READY goals=${MISSING_GOAL}" >&2
+  echo "   AI must ask + record ONE response per expected item. Partial-coverage" >&2
+  echo "   JSON = attacker bypass, rejected." >&2
+  if [[ ! "${ARGUMENTS}" =~ --allow-empty-uat ]]; then
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.uat_coverage_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"missing_dec\":${MISSING_DEC},\"missing_goal\":${MISSING_GOAL}}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "accept-uat-undercoverage" "${PHASE_NUMBER}" \
+    "responses missing: dec=${MISSING_DEC}, goals=${MISSING_GOAL}" "${PHASE_DIR}"
 fi
 
 # Gate 2: count critical skips (decisions + READY goals)
@@ -1081,7 +1205,7 @@ fi
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.uat_quorum_passed" \
   --payload "{\"phase\":\"${PHASE_NUMBER}\",\"critical_skips\":${CRITICAL_SKIPS},\"total_skips\":${TOTAL_SKIPS}}" >/dev/null 2>&1 || true
 
-touch "${PHASE_DIR}/.step-markers/5_uat_quorum_gate.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_uat_quorum_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_uat_quorum_gate.done"
 ```
 </step>
 
@@ -1204,14 +1328,14 @@ _Generated by /vg:accept — data-driven UAT over VG artifacts._
 
 Touch marker:
 ```bash
-touch "${PHASE_DIR}/.step-markers/accept.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "accept" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/accept.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept accept 2>/dev/null || true
 # v1.15.2 — fulfill runtime_contract markers declared in frontmatter
-touch "${PHASE_DIR}/.step-markers/1_artifact_precheck.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "1_artifact_precheck" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/1_artifact_precheck.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 1_artifact_precheck 2>/dev/null || true
-touch "${PHASE_DIR}/.step-markers/2_marker_precheck.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2_marker_precheck" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2_marker_precheck.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 2_marker_precheck 2>/dev/null || true
-touch "${PHASE_DIR}/.step-markers/3_sandbox_verdict_gate.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "3_sandbox_verdict_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/3_sandbox_verdict_gate.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 3_sandbox_verdict_gate 2>/dev/null || true
 
 # (OHOK-3 2026-04-22) Legacy `vg_run_complete` bash helper call removed —
@@ -1434,7 +1558,7 @@ Force-advance (NOT RECOMMENDED): /vg:next --allow-deferred
 ```bash
 # v2.2 — terminal emit + run-complete for /vg:accept
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/7_post_accept_actions.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "7_post_accept_actions" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/7_post_accept_actions.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 7_post_accept_actions 2>/dev/null || true
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "accept.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete

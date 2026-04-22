@@ -266,9 +266,15 @@ Run steps sequentially. **For each step:**
 
 **Fast-path (AI-recommended):**
 Before starting, assess scope complexity:
-- Small change (1-2 files, no new pages) → recommend skip review: "Phase scope is small. Recommend: specs → scope → blueprint → build → test → accept (skip review). Approve?"
-- If approved: `TaskUpdate: taskId=TASK_REVIEW, status="completed"` (mark skipped)
-- Medium/large change → full pipeline
+- Small change (1-2 files, no new pages) → **⛔ forced user pause** (review skip = fewer gates, higher risk of missed drift):
+  Invoke `AskUserQuestion`:
+    - header: "Skip review step?"
+    - question: "Phase scope nhỏ (1-2 files). Recommend bỏ qua /vg:review → chạy: specs → scope → blueprint → build → test → accept. Review giúp phát hiện runtime drift, bỏ qua nhanh hơn nhưng rủi ro hơn. Approve skip?"
+    - options:
+      - "Yes — skip review (phase nhỏ, ít drift risk)"
+      - "No — chạy full pipeline có review (safer)"
+  Không auto-skip. Nếu user chọn Yes → `TaskUpdate: taskId=TASK_REVIEW, status="completed"` (mark skipped + log reason to override-debt: "user-approved skip for small scope").
+- Medium/large change → full pipeline (không hỏi, review luôn chạy)
 </step>
 
 <step name="4_complete">

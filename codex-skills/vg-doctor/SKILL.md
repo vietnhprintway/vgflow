@@ -114,8 +114,14 @@ VERB=""
 FWD_ARGS=""
 for arg in $ARGUMENTS; do
   case "$arg" in
-    health|integrity|gate-stats|recover|help)
+    health|integrity|gate-stats|recover|stack|wired|dist|ohok|help)
       [ -z "$VERB" ] && VERB="$arg" || FWD_ARGS="${FWD_ARGS} ${arg}"
+      ;;
+    --dist|--distribution)
+      VERB="dist"
+      ;;
+    --wired)
+      VERB="wired"
       ;;
     --integrity)
       echo "⚠ DEPRECATED: --integrity flag. Use /vg:integrity instead." >&2
@@ -153,7 +159,13 @@ The shell block above resolves `VERB` and `FWD_ARGS`. The outer model reads the 
 | `integrity`   | `Skill(skill="vg:integrity", args=FWD_ARGS)` |
 | `gate-stats`  | `Skill(skill="vg:gate-stats", args=FWD_ARGS)` |
 | `recover`     | `Skill(skill="vg:recover", args=FWD_ARGS)` |
+| `stack`       | run `python .claude/scripts/vg-stack-health.py` inline (no sub-skill) |
+| `wired`       | run `python .claude/scripts/vg-wired-check.py ${FWD_ARGS}` inline — WIRED-OR-NOTHING 3-check for validators/hooks/commands (OHOK v2 Day 6) |
+| `dist`        | run `python .claude/scripts/distribution-check.py --verify ${FWD_ARGS}` inline — compare script+validator hashes vs `.distribution-manifest.json` baseline (detects local drift / tampering). Use `--generate` to rewrite baseline after intentional edits. |
+| `ohok`        | run `python .claude/scripts/vg-ohok-metrics.py ${FWD_ARGS}` inline — **behavioral truth measurement** (OHOK-4). Reads events.db, computes true OHOK rate (% runs finishing PASS with 0 overrides + 0 manual promotions), per-command breakdown, override pressure top-N, promote-manual quota usage, validator BLOCK distribution. Accepts `--since 30d`, `--command build`, `--json`. |
 | `help` / ""   | print menu below, exit 0 |
+
+For `stack` verb: executes the v2.2 stack diagnostic — orchestrator reachable, events.db integrity, schemas valid, validators present, hooks wired, bootstrap consistent. Exit 0 healthy, 1 warnings, 2 blocking issues.
 
 ```bash
 if [ -z "$VERB" ] || [ "$VERB" = "help" ]; then
@@ -167,6 +179,10 @@ This command is a thin dispatcher. Use the sub-commands directly for clarity:
   /vg:integrity [phase]           Hash-validate artifacts across all (or one) phase
   /vg:gate-stats [--gate-id=X]    Gate event counts + override pressure
   /vg:recover {phase} [--apply]   Classify corruption + print recovery commands
+  /vg:doctor stack                v2.2 stack diagnostic (orch + DB + schemas)
+  /vg:doctor wired                WIRED-OR-NOTHING validators/hooks/commands check
+  /vg:doctor dist [--generate]    Distribution integrity (sha256 manifest drift)
+  /vg:doctor ohok [--since 30d]   Behavioral OHOK rate from events.db
 
 Legacy flags (DEPRECATED, still routed):
   /vg:doctor --integrity          → /vg:integrity

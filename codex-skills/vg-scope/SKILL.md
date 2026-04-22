@@ -98,6 +98,23 @@ If argument-hint in source frontmatter is not empty and user provides no args, a
 6. **DISCUSSION-LOG.md is APPEND-ONLY** — never overwrite, never delete existing content. Only append new sessions.
 7. **Pipeline names** — use V5 names: `/vg:blueprint` (not plan), `/vg:build` (not execute).
 8. **5 rounds, then loop** — every round locks decisions. No round is skippable (except Round 4 UI/UX for backend-only profile).
+9. **Ngôn ngữ câu hỏi — loại người, không loại máy (OHOK-9, 2026-04-22)** — khi hỏi user trong 5 rounds, MUST dùng ngôn ngữ tự nhiên của con người diễn đạt ngữ cảnh. Tuyệt đối không hỏi kiểu technical/machine language (schema-like, enum-list, code-identifier) vì user không phải AI/dev technical, họ không biết giải thích theo ngôn ngữ đó. Áp dụng cả Round 1 (scope/goal), Round 2 (multi-surface + endpoints), Round 3 (auth/data), Round 4 (UI/UX), Round 5 (edge cases).
+
+   **Nguyên tắc**:
+   - **Mô tả ngữ cảnh** bằng câu chuyện thực tế ("publisher mở dashboard, bấm vào sites, cần thấy gì?") thay vì yêu cầu giá trị field ("list fields for sites table: id/name/status/...?")
+   - **Dùng ví dụ cụ thể** ("như khi user login vào gmail, nếu sai password hiện gì?") thay vì abstract pattern ("define error handling strategy for auth failure")
+   - **Cho lựa chọn** (a/b/c) với mô tả hành vi quan sát được, không phải technical enum
+   - **Giải thích trước khi hỏi** — nêu background 1-2 câu, rồi mới đặt câu hỏi để user hiểu tại sao mình đang quyết định
+   - **Tiếng Việt tự nhiên** — "trong lúc chạy cái này, bạn muốn system hành xử thế nào khi..." thay vì "specify expected behavior for <edge_case_N>"
+   - **Glossary inline** — thuật ngữ EN (graphify, CrossAI, ORG dimension, quota, override-debt) phải kèm giải thích ngắn trong ngoặc lần đầu xuất hiện
+
+   **Ví dụ SAI** (ngôn ngữ máy — không dùng):
+   > "Round 2: specify endpoints for this phase. For each: method, path, request schema, response schema, auth level."
+
+   **Ví dụ ĐÚNG** (ngôn ngữ người):
+   > "Round 2 — về các API cho phase này: bạn hình dung ở các màn hình user sẽ chạm vào những chức năng gì? Ví dụ lúc bấm nút Save, hệ thống có gọi server để lưu không, lưu những gì, và nếu fail thì hiện lỗi gì cho user thấy? Tôi sẽ tự suy ra method/path/schema sau từ mô tả của bạn — chỉ cần bạn kể scenario."
+
+   **Enforcement**: nếu Opus hỏi câu technical-schema mà user trả lời "không hiểu ý" / "hỏi gì khó hiểu" / "không biết giải thích kiểu đó" → treat là user_pushback, rewrite câu hỏi dạng conversational, RE-ASK. Log bug-detection event với pattern `scope_question_too_technical`.
 </rules>
 
 <objective>
@@ -132,6 +149,17 @@ PROMPT=$(challenge_answer "$user_answer" "round-$ROUND" "phase-scope" "$accumula
 
 Orchestrator MUST:
 1. Capture fd 3 via `3>&1 1>/dev/null 2>/dev/null` pattern → `$PROMPT` contains full inline content
+1b. **Inject bootstrap rules** into prompt so promoted rules apply to subagent reasoning:
+    ```bash
+    source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+    BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope")
+    vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope" "${PHASE_NUMBER}"
+    PROMPT="${PROMPT}
+
+    <bootstrap_rules>
+    ${BOOTSTRAP_RULES_BLOCK}
+    </bootstrap_rules>"
+    ```
 2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.adversarial_model:-opus}` — v1.9.3 default Opus, zero parent context) with `prompt=$PROMPT` parameter
 3. Parse subagent stdout (one JSON line)
 4. Call `challenger_dispatch "$subagent_json" "round-$ROUND" "phase-scope" "$PHASE_NUMBER"`
@@ -159,6 +187,17 @@ PROMPT=$(expand_dimensions "$ROUND" "$ROUND_TOPIC" "$accumulated" "${PLANNING_DI
 
 Orchestrator MUST:
 1. Capture fd 3 via `3>&1 1>/dev/null 2>/dev/null` → `$PROMPT` = full inline prompt content
+1b. **Inject bootstrap rules** (same pattern as challenger — rules match `target_step=scope` fire here):
+    ```bash
+    source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
+    BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope")
+    vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "scope" "${PHASE_NUMBER}"
+    PROMPT="${PROMPT}
+
+    <bootstrap_rules>
+    ${BOOTSTRAP_RULES_BLOCK}
+    </bootstrap_rules>"
+    ```
 2. Dispatch Task tool (subagent_type=general-purpose, model=`${config.scope.dimension_expand_model:-opus}`, zero parent context) with `prompt=$PROMPT`
 3. Parse subagent stdout (one JSON line)
 4. Call `expander_dispatch "$subagent_json" "round-$ROUND" "$PHASE_NUMBER"`
@@ -183,14 +222,51 @@ Skip dimension-expander when `config.scope.dimension_expand_check: false` (rapid
 PHASE_NUMBER=""
 SKIP_CROSSAI=false
 AUTO_MODE=false
+UPDATE_MODE=false       # OHOK Day 5 — incremental delta-diff instead of wipe
+DEEPEN_DECISION=""      # OHOK Day 5 — targeted drill-down on one D-XX
 
 for arg in $ARGUMENTS; do
   case "$arg" in
     --skip-crossai) SKIP_CROSSAI=true ;;
     --auto) AUTO_MODE=true ;;
+    --update) UPDATE_MODE=true ;;
+    --deepen=*) DEEPEN_DECISION="${arg#*=}" ;;
+    --deepen) ;;  # next token is decision id — simple parse below
     *) PHASE_NUMBER="$arg" ;;
   esac
 done
+
+# --update mode: read existing CONTEXT.md + DISCUSSION-LOG.md, spawn Haiku
+# delta-diff subagent to compute proposed delta vs user's new input, present
+# interactive y/n/e per delta. Does NOT wipe existing decisions (opposite
+# of default re-discuss flow). Requires CONTEXT.md present.
+#
+# --deepen=D-XX: skip rounds 1-5, run targeted sub-decision exploration for
+# the named decision. Appends D-XX.1, D-XX.2, ... as sub-decisions resolving
+# branching. Requires CONTEXT.md with D-XX present.
+#
+# Both flags are mutually exclusive with --auto (incremental updates need
+# user per-delta confirmation by definition).
+if [ "$UPDATE_MODE" = "true" ] && [ "$AUTO_MODE" = "true" ]; then
+  echo "⛔ --update incompatible with --auto (incremental mode needs user confirmation)" >&2
+  exit 1
+fi
+if [ -n "$DEEPEN_DECISION" ] && [ "$AUTO_MODE" = "true" ]; then
+  echo "⛔ --deepen incompatible with --auto" >&2
+  exit 1
+fi
+
+# v1.15.2 — register run so Stop hook can verify runtime_contract evidence
+# v2.2 — direct orchestrator call replaces bash-function indirection.
+# No fail-open: if orchestrator missing, skill cannot proceed. This is
+# the "AI can't skip init" contract — wrapper outside LLM rationalization.
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start \
+    vg:scope "${PHASE_NUMBER}" "${ARGUMENTS}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 0_parse_and_validate 2>/dev/null || true
 ```
 
 **Validate:**
@@ -287,21 +363,37 @@ AI reads SPECS.md goal + in-scope items. Pre-analyze:
 
 Present analysis, then ask:
 
+**Conversational preamble (R9 rule):**
+
+> "Vòng 1 (Domain & Business — bối cảnh nghiệp vụ) chốt **ai làm gì trong phase này và tại sao**: user story (kịch bản người dùng), role (vai trò — advertiser/publisher/admin/dsp-partner), và business rule (quy tắc nghiệp vụ — vd: chỉ publisher mới approve được inventory của chính họ). Đây là nền tảng cho 4 vòng còn lại — nếu sai ở đây, kỹ thuật + API + UI + test đều lệch theo.
+>
+> Tôi đã đọc SPECS.md và phân tích sơ bộ. Bạn review, chỉnh chỗ nào AI đoán sai, hoặc bổ sung context nếu thiếu."
+
 ```
 AskUserQuestion:
-  header: "Round 1 — Domain & Business"
+  header: "Round 1 — Bối cảnh nghiệp vụ"
   question: |
-    Based on SPECS.md, here's my understanding:
+    Dựa trên SPECS.md, đây là hiểu biết của tôi:
 
-    **Goal:** {extracted goal}
-    **User stories I see:**
+    **Mục tiêu phase:** {extracted goal}
+
+    **User stories (kịch bản người dùng — ai muốn làm gì):**
     - US-1: {story}
     - US-2: {story}
 
-    **Roles involved:** {roles}
-    **Business rules:** {rules}
+    Ví dụ đã điền:
+    - US-1: DSP partner muốn tạo deal mới với publisher để chạy campaign direct (không qua auction)
+    - US-2: SSP admin muốn review + approve/reject deal trước khi nó active
 
-    Confirm, edit, or add more context?
+    **Roles (vai trò — ai có quyền làm):** {roles}
+    Ví dụ: dsp-partner (tạo deal), ssp-admin (approve/reject), publisher (xem deal về inventory của mình)
+
+    **Business rule (quy tắc nghiệp vụ — luật bắt buộc):** {rules}
+    Ví dụ:
+    - Deal mới luôn start ở state 'pending', chỉ ssp-admin đổi sang 'approved'/'rejected'
+    - Publisher chỉ thấy deal về inventory của chính họ, không thấy deal khác
+
+    Câu trả lời: "ok" hoặc chỉnh cụ thể ("role X nên thêm quyền Y", "business rule Z chưa đầy đủ vì...").
   (open text)
 ```
 
@@ -390,25 +482,38 @@ AI pre-analyzes existing code via `config.code_patterns` paths. Identify:
 
 Present analysis with code status table:
 
+**Conversational preamble (R9 rule — ngôn ngữ loại người):**
+
+Trước khi show bảng, narrate 2-3 câu giải thích context + mục tiêu round này:
+
+> "Vòng 2 (Technical Approach — cách làm kỹ thuật) chốt **ai làm gì** trong code base: module nào cần sửa, cần table mới trong database không, và helper (hàm tiện ích dùng chung) nào phải thêm vào `packages/utils` trước khi business logic đụng tới. Lý do gộp vào vòng này: phase sau không sửa kiến trúc được, nên ta phải thấy đúng hình dạng code ngay bây giờ.
+>
+> Tôi đã quét codebase và thấy [tóm tắt 1-2 câu hiện trạng]. Đề xuất của tôi bên dưới. Bạn đọc, chỉnh chỗ nào AI đoán sai, hoặc nói 'ok' nếu ổn."
+
 ```
 AskUserQuestion:
-  header: "Round 2 — Technical Approach"
+  header: "Round 2 — Cách làm kỹ thuật"
   question: |
-    **Architecture analysis:**
-    | Component | Status | Recommendation |
-    |-----------|--------|----------------|
-    | {module} | {exists/new/partial} | {what to do} |
+    **Kiến trúc (architecture — cấu trúc các module phối hợp):**
 
-    **Database:** {collections needed}
-    **Dependencies:** {external deps}
+    | Module | Hiện trạng | Đề xuất |
+    |--------|-----------|---------|
+    | {module tên thật} | {đã có / làm mới / cần mở rộng} | {sửa gì cụ thể — 1 dòng} |
 
-    **Shared utility usage (prevent duplicate helpers):**
-    | Helper needed | Canonical? | Action |
-    |---------------|-----------|--------|
-    | formatCurrency | ✓ @vollxssp/utils | REUSE |
-    | formatDealState | ✗ not in contract | NEW — add task "extend @vollxssp/utils with formatDealState" BEFORE business tasks |
+    Ví dụ đã điền:
+    | `apps/api/src/modules/deals` | đã có (CRUD cơ bản) | thêm endpoint bulk-update state, sửa index mongo `deals_by_publisher_state` |
 
-    Confirm or adjust?
+    **Database (storage layer):** {collection/table mới + index cần thiết}
+    **External deps (thư viện bên ngoài):** {npm/cargo packages mới, nếu có}
+
+    **Shared utilities (helper dùng chung — tránh duplicate):**
+
+    | Helper cần | Đã có trong `packages/utils`? | Hành động |
+    |-----------|------------------------------|-----------|
+    | formatCurrency | ✓ có rồi | REUSE (dùng lại) |
+    | formatDealState | ✗ chưa có | NEW — thêm vào `packages/utils/src/deals.ts` TRƯỚC khi task business dùng |
+
+    Câu trả lời của bạn có thể là: "ok đề xuất trên" — hoặc chỉnh cụ thể: "module X nên làm Y thay vì Z vì..."
   (open text)
 ```
 
@@ -426,25 +531,34 @@ Lock decisions D-XX+1.. (category: technical, including `P{phase}.D-utilities` i
 
 AI SUGGESTS endpoints derived from locked decisions. **v1.14.0+ — bắt buộc hỏi về `depends_on_phase` khi endpoint chạm view/data phase khác:**
 
+**Conversational preamble (R9 rule):**
+
+> "Vòng 3 (API Design — hợp đồng request/response giữa frontend và backend) chốt **hình dạng endpoint**: đường dẫn (path), method (GET/POST/PUT/DELETE), ai được gọi (auth role — vai trò xác thực), và input/output shape. Sau vòng này, blueprint sẽ tự sinh code Zod schema từ những gì bạn chốt ở đây, nên bây giờ càng cụ thể càng tốt.
+>
+> Nếu có endpoint chỉ test được khi phase khác đã xong (vd: conversion event cần pixel server ship trước), note cột 'phụ thuộc phase nào' để review sau không mark FAILED oan."
+
 ```
 AskUserQuestion:
   header: "Round 3 — API Design"
   question: |
-    Based on decisions so far, I suggest these endpoints:
+    Từ các quyết định vòng 1-2, tôi đề xuất các endpoint sau:
 
-    | # | Endpoint | Method | Auth | Purpose | From Decision | Depends on phase? |
-    |---|----------|--------|------|---------|---------------|-------------------|
-    | 1 | /api/v1/{resource} | POST | {role} | {purpose} | D-{XX} | _(no / X.Y)_ |
-    | 2 | /api/v1/{resource} | GET | {role} | {purpose} | D-{XX} | _(no / X.Y)_ |
-    ...
+    | # | Endpoint | Method | Ai gọi được (auth) | Mục đích | Từ quyết định | Phụ thuộc phase nào? |
+    |---|----------|--------|--------------------|----------|---------------|----------------------|
+    | 1 | /api/v1/{tên resource} | POST | {role} | {mô tả ngắn} | D-{XX} | _(không / X.Y)_ |
+    | 2 | /api/v1/{tên resource} | GET  | {role} | {mô tả ngắn} | D-{XX} | _(không / X.Y)_ |
 
-    **Request/response shapes (high level):**
-    - POST /api/v1/{resource}: body {fields} -> 201 {response}
-    - GET /api/v1/{resource}: query {params} -> 200 [{items}]
+    Ví dụ đã điền:
+    | 1 | /api/v1/deals | POST | dsp-partner | tạo deal mới từ DSP bidder | D-03 | không |
+    | 2 | /api/v1/deals/:id/state | PUT | ssp-admin | publisher approve/reject deal | D-04 | không |
 
-    **v1.14.0+ Cross-phase tag** — nếu endpoint chỉ verify được KHI phase khác đã ship (vd: conversion event endpoint phụ thuộc pixel server từ phase 7.12), điền cột **"Depends on phase?"** với số phase target (vd: `7.12`). Goal gắn tag này sẽ được mark DEFERRED ở review thay vì BLOCKED (xem spec v1.14.0+ A.4).
+    **Request/response shape (hình dạng dữ liệu):**
+    - POST /api/v1/deals: body `{ publisherId, creativeSpec, floorCpm }` → 201 `{ id, state: 'pending' }`
+    - PUT /api/v1/deals/:id/state: body `{ state: 'approved' | 'rejected', reason? }` → 200 `{ id, state, updatedAt }`
 
-    Confirm, edit, or add endpoints?
+    **Cột "Phụ thuộc phase nào"** — giải thích: nếu endpoint chỉ verify được khi phase khác đã ship (vd: conversion event endpoint phụ thuộc pixel server từ phase 7.12), điền số phase target (vd: `7.12`). Goal gắn tag này sẽ được mark DEFERRED (hoãn, không FAIL) ở review.
+
+    Câu trả lời của bạn: "ok" hoặc chỉnh endpoint cụ thể ("endpoint 2 nên dùng POST không PUT vì...").
   (open text)
 ```
 
@@ -492,23 +606,37 @@ fi
 3. **Create from scratch** — `/vg:design-system --create --role=<role>` → guided discussion tạo DESIGN.md custom.
 4. **Skip (not recommended)** — UI phase without design standards → flag "design-debt" trong CONTEXT.md.
 
-AI suggests pages/components from decisions + endpoint notes:
+**Conversational preamble (R9 rule):**
+
+> "Vòng 4 (UI/UX — giao diện người dùng) chốt **những trang và component** frontend cần build, dựa trên endpoint đã có ở vòng 3. Một endpoint POST /api/v1/deals thường cần 1 form tạo + 1 bảng list + 1 modal chi tiết — vòng này ta quyết định cụ thể trang nào, layout sao, trong dashboard nào (advertiser / publisher / admin).
+>
+> Nếu có design asset (Figma link, screenshot, Pencil mockup) thì load bây giờ — build sau sẽ reference trực tiếp thay vì đoán mò."
+
+AI đề xuất pages/components từ decisions + endpoint notes:
 
 ```
 AskUserQuestion:
   header: "Round 4 — UI/UX"
   question: |
-    **Pages/views needed:**
-    | Page | Components | Maps to Endpoints |
-    |------|-----------|-------------------|
-    | {PageName} | {component list} | GET/POST /api/... |
+    **Trang/view cần thiết:**
 
-    **Key components:**
-    - {ComponentName}: {description}
+    | Trang | Dashboard | Component chính | Map sang endpoint |
+    |-------|-----------|-----------------|-------------------|
+    | {tên trang} | {advertiser/publisher/admin} | {component list} | GET/POST /api/... |
 
-    **Design refs available?** {yes/no — check ${PHASE_DIR}/ for design assets}
+    Ví dụ đã điền:
+    | Deals list | SSP Admin | DataTable, StatusBadge, FilterBar | GET /api/v1/deals |
+    | Deal detail | SSP Admin | DealForm, ApprovalActions | GET /api/v1/deals/:id, PUT /api/v1/deals/:id/state |
 
-    Confirm or adjust?
+    **Key component (những component mới cần build — không tính component đã tái dùng):**
+    - `DealForm`: form tạo deal với validate floor CPM + creative spec
+    - `ApprovalActions`: 2 nút Approve/Reject + modal nhập lý do nếu Reject
+
+    **Design reference (mockup tham khảo):**
+    - Nếu có ảnh/Figma link: paste đường dẫn hoặc reference `${PHASE_DIR}/design-*.png` — build sẽ load làm guide
+    - Nếu chưa có: tôi sẽ suggest layout dựa trên component cùng dashboard đang có
+
+    Câu trả lời: "ok" hoặc chỉnh ("trang X đặt trong dashboard Y, không phải Z vì...").
   (open text)
 ```
 
@@ -516,29 +644,46 @@ Lock UI COMPONENT NOTES embedded within existing decisions.
 
 ### Round 5 — Test Scenarios
 
-AI derives test scenarios from decisions + endpoints + UI components. **v1.14.0+ — bắt buộc hỏi `verification_strategy` per goal khi scenario không auto-test được:**
+**Conversational preamble (R9 rule):**
+
+> "Vòng 5 (Test Scenarios — kịch bản kiểm thử) là vòng cuối: chốt **khi nào phase này coi là DONE thật**. Mỗi scenario mô tả một hành động cụ thể user làm + kết quả mong đợi. Review sau sẽ check từng cái chạy được chưa — nên càng quan sát được (observable) càng dễ verify.
+>
+> Quan trọng: đánh dấu scenario nào **automated** (Playwright tự verify được) vs **manual** (cần người thật bấm trong UAT — vd: CAPTCHA, payment UI thật, SMS OTP). Nếu label sai (manual mà gắn automated), review sẽ mark PASSED oan → bug lọt production."
 
 ```
 AskUserQuestion:
-  header: "Round 5 — Test Scenarios"
+  header: "Round 5 — Kịch bản kiểm thử"
   question: |
-    **Happy path scenarios:**
-    | ID | Scenario | Endpoint | Expected | Decision | Verification strategy |
-    |----|----------|----------|----------|----------|-----------------------|
-    | TS-01 | {user does X} | POST /api/... | 201 + {result} | D-{XX} | automated |
-    | TS-02 | {user does Y} | GET /api/... | 200 + {list} | D-{XX} | automated |
+    AI đề xuất scenarios từ decision + endpoint + component đã chốt. Bạn review + chỉnh.
 
-    **Edge cases:**
-    | ID | Scenario | Expected | Verification strategy |
-    |----|----------|----------|-----------------------|
-    | TS-{N} | {what can go wrong} | {error code + message} | automated |
+    **Happy path (luồng chính user làm thành công):**
 
-    **Mutation evidence:**
-    | Action | Verify Where |
-    |--------|-------------|
-    | Create {X} | Appears in list + DB |
-    | Update {X} | Updated fields visible |
-    | Delete {X} | Removed from list + DB |
+    | ID | Kịch bản (user làm gì + expect gì) | Endpoint | Status + Output | Từ quyết định | Cách verify |
+    |----|------------------------------------|----------|-----------------|---------------|-------------|
+    | TS-01 | {user gõ gì, bấm gì, thấy gì} | POST /api/... | 201 + {field trả về} | D-{XX} | automated |
+    | TS-02 | {user mở trang, xem gì} | GET /api/... | 200 + {list item} | D-{XX} | automated |
+
+    Ví dụ đã điền:
+    | TS-01 | DSP partner bấm "Create Deal", nhập publisher ID + floor CPM + creative, bấm Submit | POST /api/v1/deals | 201 + `{ id, state: 'pending' }` | D-03 | automated |
+    | TS-02 | SSP Admin vào trang Deals, thấy deal vừa tạo ở đầu bảng với badge "Pending" | GET /api/v1/deals | 200 + list chứa deal mới | D-04 | automated |
+
+    **Edge case (lỗi hoặc trường hợp bất thường):**
+
+    | ID | Kịch bản | Expect | Cách verify |
+    |----|----------|--------|-------------|
+    | TS-{N} | {điều gì sai có thể xảy ra} | {error code + message cụ thể} | automated |
+
+    Ví dụ đã điền:
+    | TS-05 | DSP partner nhập floor CPM = -1 (số âm) | 400 + `{ error: 'floorCpm must be ≥ 0' }` | automated |
+    | TS-06 | DSP partner tạo deal nhưng publisher ID không tồn tại | 404 + `{ error: 'publisher not found' }` | automated |
+
+    **Mutation evidence (dữ liệu thay đổi, verify ở đâu):**
+
+    | Hành động | Verify ở chỗ nào |
+    |-----------|------------------|
+    | Create deal | Deal mới xuất hiện trong list + DB (mongo collection `deals`) + trạng thái "pending" |
+    | Approve deal | Badge đổi "Pending" → "Approved" + `state` trong DB đổi + updatedAt cập nhật |
+    | Reject deal | Badge đổi "Rejected" + modal hỏi lý do đã save vào `reason` field |
 
     **v1.14.0+ Verification strategy** (bắt buộc per scenario):
     - `automated` — E2E/Playwright verify được (happy path thông thường)
@@ -613,6 +758,10 @@ AskUserQuestion:
 **When exhausted (no more gray areas):**
 AI states: "I've analyzed all {N} decisions for conflicts, edge cases, and gaps. {M} gray areas resolved through probes. Proceeding to artifact generation."
 → Proceed to Step 2. No confirmation question needed — AI decides when scope is thorough enough.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 1_deep_discussion 2>/dev/null || true
+```
 </step>
 
 <step name="2_artifact_generation">
@@ -685,7 +834,8 @@ source .claude/commands/vg/_shared/lib/namespace-validator.sh
 STAGED="${PHASE_DIR}/CONTEXT.md.staged"
 if ! validate_d_xx_namespace "$STAGED" "phase:${PHASE_NUMBER}"; then
   echo ""
-  echo "⛔ Scope gate chặn: CONTEXT.md.staged còn chứa bare D-XX. Sửa hết rồi chạy lại /vg:scope ${PHASE_NUMBER} --continue."
+  echo "⛔ Scope gate chặn: CONTEXT.md.staged còn chứa bare D-XX."
+  echo "   Sửa bare D-XX thành P${PHASE_NUMBER}.D-XX trong file .staged, rồi chạy lại /vg:scope ${PHASE_NUMBER}."
   exit 1
 fi
 mv "$STAGED" "${PHASE_DIR}/CONTEXT.md"
@@ -735,6 +885,10 @@ Append to `${PHASE_DIR}/DISCUSSION-LOG.md`:
 ```
 
 **If file already exists (re-scope):** Read existing content, then append new session with incremented session label. Preserve all previous sessions verbatim.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 2_artifact_generation 2>/dev/null || true
+```
 </step>
 
 <step name="3_completeness_validation">
@@ -785,8 +939,8 @@ case $rc in
   2) echo "⚠ Completeness checks warn only — proceeding" ;;
   *)
     echo "⛔ Completeness gate FAILED. Resolve blockers before blueprint."
-    echo "   Fix: /vg:scope ${PHASE_NUMBER} --continue  (adds missing test scenarios / decisions)"
-    echo "   Or:  edit CONTEXT.md manually, then re-run /vg:scope ${PHASE_NUMBER} --validate-only"
+    echo "   Fix: /vg:scope ${PHASE_NUMBER}  (re-run discussion to add missing test scenarios / decisions)"
+    echo "   Or:  edit CONTEXT.md manually, then /vg:blueprint ${PHASE_NUMBER} (blueprint re-validates)"
     exit 1
     ;;
 esac
@@ -796,6 +950,10 @@ esac
 Previous inline substring match missed inflections — "QPS throttling" (SPECS) vs "QPS throttle" (decision title). Script now stems both sides (strips -ing/-tion/-ed/-s/...) + applies prefix-tolerance match so "throttl" ↔ "throttle" count as same root. Reduces false-negative unmatched spec items.
 
 Check B and D still WARN (softer signals). Check A and C are structural — block downstream errors.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 3_completeness_validation 2>/dev/null || true
+```
 </step>
 
 <step name="4_crossai_review">
@@ -856,6 +1014,10 @@ Read and follow `.claude/commands/vg/_shared/crossai-invoke.md`.
   If "Re-discuss" -> open free-form round focused on that finding, then re-run validation (Step 3) on updated CONTEXT.md.
   If "Note" -> append to CONTEXT.md ## Deferred Ideas section.
   If "Ignore" -> log in DISCUSSION-LOG.md as "CrossAI finding ignored: {reason}".
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 4_crossai_review 2>/dev/null || true
+```
 </step>
 
 <step name="4_5_bootstrap_reflection">
@@ -879,6 +1041,10 @@ fi
 ```
 
 See `.claude/commands/vg/_shared/reflection-trigger.md` for full spawn template and interactive flow.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 4_5_bootstrap_reflection 2>/dev/null || true
+```
 </step>
 
 <step name="5_commit_and_next">
@@ -894,6 +1060,20 @@ TEST_SCENARIO_COUNT=$(grep -c '^\- TS-' "${PHASE_DIR}/CONTEXT.md" || echo 0)
 
 git add "${PHASE_DIR}/CONTEXT.md" "${PHASE_DIR}/DISCUSSION-LOG.md" "${PHASE_DIR}/PIPELINE-STATE.json"
 git commit -m "scope(${PHASE_NUMBER}): ${DECISION_COUNT} decisions, ${ENDPOINT_COUNT} endpoints, ${TEST_SCENARIO_COUNT} test scenarios"
+
+# v2.2: mark final step + emit completion event + invoke run-complete.
+# Orchestrator runs phase-exists + context-structure validators, emits
+# run.completed or run.blocked based on contract check. No bash catch-up
+# needed — individual steps mark as they finish (see _mark calls above).
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 5_commit_and_next 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "scope.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"decisions\":${DECISION_COUNT},\"endpoints\":${ENDPOINT_COUNT},\"scenarios\":${TEST_SCENARIO_COUNT}}" >/dev/null
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ scope run-complete BLOCK — review orchestrator output + fix before /vg:blueprint" >&2
+  exit $RUN_RC
+fi
 ```
 
 **Display summary:**

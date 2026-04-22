@@ -253,7 +253,7 @@ fi
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/1_parse_args.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "1_parse_args" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/1_parse_args.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 1_parse_args 2>/dev/null || true
 ```
 </step>
@@ -791,12 +791,12 @@ else
 fi
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "4_load_contracts_and_context" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"`
 
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "4_load_contracts_and_context" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 4_load_contracts_and_context 2>/dev/null || true
 ```
 </step>
@@ -818,10 +818,13 @@ case "$BRANCH_STRATEGY" in
       BRANCH_NAME="milestone/${MILESTONE_NUM}"
     fi
 
-    # Pre-flight: no uncommitted changes that would block checkout
-    if ! git diff --quiet 2>/dev/null; then
-      echo "⛔ Uncommitted changes in working tree — cannot checkout ${BRANCH_NAME}" >&2
-      echo "   Commit or stash first: git stash save 'pre-build-${PHASE_NUMBER}'" >&2
+    # Pre-flight: no uncommitted changes that would block checkout.
+    # Check BOTH worktree AND staged (index) changes — `git diff --quiet` alone
+    # ignores staged-only files (CrossAI Round 6 finding).
+    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+      echo "⛔ Uncommitted changes (worktree or staged) — cannot checkout ${BRANCH_NAME}" >&2
+      git status --short 2>/dev/null | head -10 >&2
+      echo "   Commit or stash first: git stash save --include-untracked 'pre-build-${PHASE_NUMBER}'" >&2
       exit 1
     fi
 
@@ -851,7 +854,7 @@ case "$BRANCH_STRATEGY" in
 esac
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/5_handle_branching.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_handle_branching" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_handle_branching.done"
 ```
 </step>
 
@@ -872,7 +875,7 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/6_validate_phase.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "6_validate_phase" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/6_validate_phase.done"`
 </step>
 
 <step name="7_discover_plans">
@@ -884,12 +887,12 @@ PLAN_INDEX=$(ls -1 "${PHASE_DIR}"/PLAN*.md 2>/dev/null)
 Filter: skip `has_summary: true`. If `--gaps-only`: skip non-gap_closure. If `--wave N`: skip non-matching.
 Report execution plan table.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "7_discover_plans" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"`
 
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "7_discover_plans" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 7_discover_plans 2>/dev/null || true
 ```
 </step>
@@ -2124,7 +2127,7 @@ Only proceed to next wave if `$FAILED_GATE` empty.
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/8_execute_waves.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "8_execute_waves" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/8_execute_waves.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 8_execute_waves 2>/dev/null || true
 ```
 </step>
@@ -2703,7 +2706,7 @@ git commit -m "build({phase}): {completed}/{total} plans executed"
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/9_post_execution.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "9_post_execution" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/9_post_execution.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 9_post_execution 2>/dev/null || true
 ```
 </step>
@@ -2774,13 +2777,13 @@ if [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
   fi
 fi
 
-touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "10_postmortem_sanity" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
 ```
 
 ```bash
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "10_postmortem_sanity" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 10_postmortem_sanity 2>/dev/null || true
 ```
 
@@ -2934,7 +2937,7 @@ No way to skip via "promise" — events.db evidence required (OHOK-7/8).
 ```
 
 ```bash
-touch "${PHASE_DIR}/.step-markers/11_crossai_build_verify_loop.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "11_crossai_build_verify_loop" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/11_crossai_build_verify_loop.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 11_crossai_build_verify_loop 2>/dev/null || true
 ```
 </step>

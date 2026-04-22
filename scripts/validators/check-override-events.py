@@ -37,11 +37,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _common import Evidence, Output, emit_and_exit, timer
 
 
-def _extract_event_ids_from_jsonl(path: Path) -> set[str]:
-    """Parse telemetry.jsonl for event_id values (any event type)."""
-    event_ids: set[str] = set()
+def _extract_events_from_jsonl(path: Path) -> dict[str, dict]:
+    """Parse telemetry.jsonl into {event_id: {gate_id, event_type, phase}}.
+
+    Returns dict keyed by event_id so validator can verify event's gate_id
+    matches the override entry's gate_id (CrossAI R6 finding: without this,
+    any unrelated real event can "resolve" any override).
+    """
+    events: dict[str, dict] = {}
     if not path.exists():
-        return event_ids
+        return events
     try:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
@@ -52,29 +57,65 @@ def _extract_event_ids_from_jsonl(path: Path) -> set[str]:
             except json.JSONDecodeError:
                 continue
             eid = evt.get("event_id") or evt.get("id")
-            if eid:
-                event_ids.add(str(eid))
+            if not eid:
+                continue
+            payload = evt.get("payload") or {}
+            if not isinstance(payload, dict):
+                payload = {}
+            events[str(eid)] = {
+                "gate_id": str(evt.get("gate_id") or payload.get("gate_id") or ""),
+                "event_type": str(evt.get("event_type") or evt.get("type") or ""),
+                "phase": str(evt.get("phase") or payload.get("phase") or ""),
+            }
     except OSError:
         pass
-    return event_ids
+    return events
 
 
-def _extract_event_ids_from_db(path: Path) -> set[str]:
-    """Parse events.db (sqlite) for event_id values. v2.2+ orchestrator
-    stores events in a hash-chained SQLite table instead of jsonl."""
-    event_ids: set[str] = set()
+def _extract_events_from_db(path: Path) -> dict[str, dict]:
+    """Parse events.db (sqlite) — v2.2 hash-chained table.
+
+    Schema: events(id PK, this_hash TEXT, event_type TEXT, payload TEXT json).
+    'this_hash' is the canonical event_id. gate_id is extracted from payload json.
+    """
+    events: dict[str, dict] = {}
     if not path.exists():
-        return event_ids
+        return events
     try:
         conn = sqlite3.connect(str(path))
-        # Schema: events(id INTEGER PK, this_hash TEXT, ...). The 'this_hash'
-        # serves as the canonical event_id in v2.2 schema.
-        for row in conn.execute("SELECT this_hash FROM events WHERE this_hash IS NOT NULL"):
-            event_ids.add(str(row[0]))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+        select_cols = ["this_hash"]
+        if "event_type" in cols:
+            select_cols.append("event_type")
+        if "payload" in cols:
+            select_cols.append("payload")
+        q = f"SELECT {', '.join(select_cols)} FROM events WHERE this_hash IS NOT NULL"
+        for row in conn.execute(q):
+            this_hash = str(row[0])
+            event_type = ""
+            gate_id = ""
+            phase = ""
+            idx = 1
+            if "event_type" in cols:
+                event_type = str(row[idx] or "")
+                idx += 1
+            if "payload" in cols and row[idx] is not None:
+                try:
+                    p = json.loads(row[idx])
+                    if isinstance(p, dict):
+                        gate_id = str(p.get("gate_id") or "")
+                        phase = str(p.get("phase") or "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            events[this_hash] = {
+                "gate_id": gate_id,
+                "event_type": event_type,
+                "phase": phase,
+            }
         conn.close()
     except sqlite3.Error:
         pass
-    return event_ids
+    return events
 
 
 def _parse_override_debt(path: Path) -> list[dict]:
@@ -158,11 +199,14 @@ def main() -> None:
             entries = [e for e in entries if args.phase in e.get("heading", "")
                        or e.get("phase", "") == args.phase]
 
-        # Collect all known event IDs (union of jsonl + db)
-        known_ids = _extract_event_ids_from_jsonl(telemetry)
-        known_ids |= _extract_event_ids_from_db(events_db)
+        # Collect events into indexed dict (union jsonl + db).
+        # Each event: {gate_id, event_type, phase} — gate_id used for binding check.
+        known_events: dict[str, dict] = {}
+        known_events.update(_extract_events_from_jsonl(telemetry))
+        # DB takes precedence on conflict (v2.2 canonical store)
+        known_events.update(_extract_events_from_db(events_db))
 
-        if not known_ids and entries:
+        if not known_events and entries:
             out.warn(Evidence(
                 type="missing_file",
                 message="No telemetry source readable — cannot verify "
@@ -175,20 +219,40 @@ def main() -> None:
             return
 
         phantom_count = 0
+        mismatch_count = 0
         legacy_count = 0
+        legacy_violations = 0
         verified_count = 0
         for entry in entries:
             status = str(entry.get("status", "")).upper()
             event_id = str(entry.get("resolved_by_event_id", "")).strip()
             legacy = bool(entry.get("legacy", False))
+            entry_gate = str(entry.get("gate_id", "")).strip()
+            legacy_reason = str(entry.get("legacy_reason", "")).strip()
 
             # Only RESOLVED entries need event verification
             if status != "RESOLVED":
                 continue
 
             if legacy:
-                legacy_count += 1
-                continue  # Legacy entries allowed without event_id
+                # CrossAI R6: legacy:true was unconditional bypass. Now requires
+                # non-empty legacy_reason explaining why (e.g., "pre-v1.8.0
+                # telemetry not emitted", "manual migration from gsd-legacy").
+                if not legacy_reason:
+                    legacy_violations += 1
+                    out.add(Evidence(
+                        type="legacy_without_reason",
+                        message=f"legacy:true entry missing legacy_reason: "
+                                f"{entry.get('heading', '<unknown>')}",
+                        file=str(register),
+                        expected="- legacy_reason: <text explaining why no event_id>",
+                        fix_hint="Add `- legacy_reason: <reason>` field. Accepted "
+                                 "reasons: 'pre-v1.8.0', 'migration from gsd', "
+                                 "or specific incident reference.",
+                    ))
+                else:
+                    legacy_count += 1
+                continue
 
             if not event_id:
                 out.add(Evidence(
@@ -197,11 +261,12 @@ def main() -> None:
                             f"{entry.get('heading', '<unknown>')}",
                     file=str(register),
                     fix_hint="Resolved overrides must cite the gate re-run "
-                             "event. Mark legacy:true if pre-v1.8.0.",
+                             "event. Mark legacy:true + legacy_reason if "
+                             "pre-v1.8.0.",
                 ))
                 continue
 
-            if event_id not in known_ids:
+            if event_id not in known_events:
                 phantom_count += 1
                 out.add(Evidence(
                     type="phantom_event",
@@ -212,18 +277,52 @@ def main() -> None:
                     expected="event in telemetry.jsonl or events.db",
                     actual=f"event_id={event_id} absent",
                     fix_hint="Either (a) re-run the gate so it emits a real "
-                             "override_resolved event, (b) mark legacy:true if "
-                             "pre-v1.8.0 entry, or (c) revert status to UNRESOLVED.",
+                             "override_resolved event, (b) mark legacy:true + "
+                             "legacy_reason if pre-v1.8.0 entry, or (c) revert "
+                             "status to UNRESOLVED.",
                 ))
+                continue
+
+            # Event exists — verify gate_id binding (CrossAI R6 critical fix).
+            # Without this check, ANY unrelated real event could "resolve"
+            # ANY override. Now: override's gate_id must match event's gate_id.
+            evt = known_events[event_id]
+            evt_gate = evt.get("gate_id", "")
+            if entry_gate and evt_gate and entry_gate != evt_gate:
+                mismatch_count += 1
+                out.add(Evidence(
+                    type="gate_id_mismatch",
+                    message=f"Override '{entry.get('heading')}' gate_id="
+                            f"'{entry_gate}' but resolved_by_event_id "
+                            f"'{event_id}' is for gate_id='{evt_gate}'",
+                    file=str(register),
+                    expected=f"event with gate_id={entry_gate}",
+                    actual=f"event gate_id={evt_gate}",
+                    fix_hint="Re-run the correct gate to emit matching event, "
+                             "or cite the right event_id. Cross-gate event "
+                             "reuse is not valid resolution.",
+                ))
+            elif entry_gate and not evt_gate:
+                # Event has no gate_id — ambiguous. WARN + count as verified
+                # (weak but not fraud).
+                out.warn(Evidence(
+                    type="gate_id_unverified",
+                    message=f"Event '{event_id}' has no gate_id metadata — "
+                            f"cannot verify binding to override "
+                            f"'{entry.get('heading')}' (gate={entry_gate})",
+                    file=str(register),
+                    fix_hint="Ensure gate emitters include gate_id in payload.",
+                ))
+                verified_count += 1
             else:
                 verified_count += 1
 
-        if phantom_count == 0:
-            # No phantoms detected — PASS. Add summary evidence for audit.
+        total_blocks = phantom_count + mismatch_count + legacy_violations
+        if total_blocks == 0:
             out.evidence.append(Evidence(
                 type="summary",
                 message=f"verified={verified_count}, legacy={legacy_count}, "
-                        f"phantom=0",
+                        f"phantom=0, mismatch=0, legacy_violations=0",
             ))
 
     emit_and_exit(out)

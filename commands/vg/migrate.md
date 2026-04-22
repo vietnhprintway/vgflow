@@ -22,7 +22,7 @@ allowed-tools:
 3. **Idempotent** — running migrate twice on same phase produces same result. Skip already-converted artifacts.
 4. **Config-driven** — all format decisions from vg.config.md (contract_format, scan_patterns, etc.)
 5. **No hardcoded project values** — endpoint paths, file locations, domain names all from config or code scan.
-6. **Profile enforcement** — `touch "${PHASE_DIR}/.step-markers/migrate.done"` at end.
+6. **Profile enforcement** — `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "migrate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/migrate.done"` at end.
 </rules>
 
 <objective>
@@ -767,7 +767,7 @@ print(f"✓ Linkage: {linked_tasks} tasks linked to goals, {orphan_tasks} marked
 PY
 fi
 
-touch "${PHASE_DIR}/.step-markers/6_5_link_plan_goals.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "6_5_link_plan_goals" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/6_5_link_plan_goals.done"
 ```
 </step>
 
@@ -1279,7 +1279,7 @@ Next steps:
   3. Or: /vg:next (auto-detects review as next step)
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/migrate.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "migrate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/migrate.done"`
 </step>
 
 </process>

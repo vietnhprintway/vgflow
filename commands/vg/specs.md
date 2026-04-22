@@ -89,9 +89,11 @@ if [ ! -f "$ROADMAP" ]; then
   exit 1
 fi
 
-if ! grep -qE "^(##?\s+(Phase\s+)?|\|\s*)${PHASE_NUMBER}[\s:|.-]" "$ROADMAP" 2>/dev/null; then
+if ! grep -qE "(^##?\s+(Phase\s+)?${PHASE_NUMBER}[\s:|.-])|(^\|\s*${PHASE_NUMBER}[\s:|.-])|(^- \[.\]\s+\*\*Phase\s+${PHASE_NUMBER}[\s:.-])" "$ROADMAP" 2>/dev/null; then
   echo "⛔ Phase ${PHASE_NUMBER} not found in ${ROADMAP}" >&2
   echo "   Check phase number or add via /vg:add-phase." >&2
+  echo "   Accepted ROADMAP formats:" >&2
+  echo "     '## Phase N: ...'  |  '| N | ... |'  |  '- [x] **Phase N: ...**'" >&2
   exit 1
 fi
 
@@ -112,7 +114,7 @@ fi
 
 export PHASE_DIR
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
-touch "${PHASE_DIR}/.step-markers/parse_args.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "parse_args" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/parse_args.done"
 ```
 </step>
 
@@ -134,7 +136,7 @@ Act on the response. If "View", show contents then re-ask. If "Edit", proceed to
 If SPECS.md does not exist, continue.
 
 ```bash
-touch "${PHASE_DIR}/.step-markers/check_existing.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "check_existing" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/check_existing.done"
 ```
 </step>
 
@@ -161,7 +163,7 @@ Otherwise, invoke `AskUserQuestion`:
 - If "Guided" → go to step 4 (guided_questions)
 
 ```bash
-touch "${PHASE_DIR}/.step-markers/choose_mode.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "choose_mode" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/choose_mode.done"
 ```
 </step>
 
@@ -181,7 +183,7 @@ Ask questions ONE AT A TIME via `AskUserQuestion`. After each answer, save it im
 **Q5: Success Criteria** — "Làm sao biết phase này DONE? (tiêu chí đo lường được)"
 
 ```bash
-touch "${PHASE_DIR}/.step-markers/guided_questions.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "guided_questions" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/guided_questions.done"
 ```
 </step>
 
@@ -218,8 +220,9 @@ Render preview to user, then invoke `AskUserQuestion`:
 
 case "${USER_APPROVAL:-}" in
   approve)
+    MODE_STR=$([ "${AUTO_MODE:-false}" = "true" ] && echo "auto" || echo "guided")
     "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "specs.approved" \
-      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"mode\":\"${AUTO_MODE:+auto}${AUTO_MODE:-guided}\"}" >/dev/null 2>&1 || true
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"mode\":\"${MODE_STR}\"}" >/dev/null 2>&1 || true
     ;;
   edit)
     echo "User requested edit — regenerate draft + re-gate" >&2
@@ -245,7 +248,7 @@ case "${USER_APPROVAL:-}" in
     ;;
 esac
 
-touch "${PHASE_DIR}/.step-markers/generate_draft.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "generate_draft" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/generate_draft.done"
 ```
 
 **Rationale:** previous wording "AI MUST stop, render preview, wait" was prose-only — AI could silent-skip and proceed to write. Now gate is bash-enforced: no write without `USER_APPROVAL=approve` env set by AI based on AskUserQuestion result.
@@ -299,7 +302,7 @@ if [ ! -s "${PHASE_DIR}/SPECS.md" ]; then
   exit 1
 fi
 
-touch "${PHASE_DIR}/.step-markers/write_specs.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "write_specs" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/write_specs.done"
 ```
 </step>
 
@@ -316,7 +319,7 @@ git commit -m "specs(${PHASE_NUMBER}): create SPECS.md for phase ${PHASE_NUMBER}
   exit 1
 }
 
-touch "${PHASE_DIR}/.step-markers/commit_and_next.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "commit_and_next" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/commit_and_next.done"
 
 # Orchestrator run-complete — validates runtime_contract + emits specs.completed
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete

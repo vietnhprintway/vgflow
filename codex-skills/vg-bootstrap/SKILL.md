@@ -149,21 +149,32 @@ grep '"rule_id":"L-042"' "${PLANNING_DIR}/telemetry.jsonl" | python -m json.tool
 
 Run bootstrap fixture regression tests in `.vg/bootstrap/tests/*.yml`.
 
+```bash
+${PYTHON_BIN} .claude/scripts/bootstrap-test-runner.py
+```
+
+Exit codes:
+- 0 — all runnable fixtures pass
+- 1 — at least one FAIL
+- 2 — runner error
+
+Phase A fixture status:
+- `scenario-3-portability-empty-zone` — PASS (empty `.vg/bootstrap/` merges onto vanilla config without crash)
+- `scenario-1-playwright-lazy-propagation` — SKIP (needs Phase C override re-validation)
+- `scenario-2-toast-fake-success-mutation-verify` — SKIP (needs Phase B reflector)
+
 Each fixture YAML declares:
 ```yaml
-name: "scenario-1-playwright"
+name: "scenario-3-portability-empty-zone"
 given:
-  phase_metadata:
-    surfaces: [api]
-  override:
-    id: OD-X
-    scope: "phase.surfaces does_not_contain 'web'"
+  bootstrap_zone_state: "empty"
+  phase_metadata: {phase: "01", surfaces: ["web"]}
 when:
-  phase_changes_to:
-    surfaces: [web]
+  config_loader_runs: true
 then:
-  override_status: EXPIRED
-  gate_active: true
+  overlay_count: 0
+  rules_matched: 0
+  crashed: false
 ```
 
 ### `/vg:bootstrap --export`

@@ -140,7 +140,19 @@ Key difference from V4 execute: executors read API-CONTRACTS.md to ensure BE rou
 If `${PLANNING_DIR}/vgflow-patches/gate-conflicts.md` exists, a prior `/vg:update` detected that the 3-way merge (gộp) altered one or more HARD gate blocks. Until a human resolves them via `/vg:reapply-patches --verify-gates`, the pipeline cannot trust its own enforcement logic — so we BLOCK (chặn).
 
 ```bash
-if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
+# v2.2 — T8 gate now routes through block_resolve. L1 auto-clears stale
+# file if every entry carries a resolution marker ([resolved-upstream|
+# resolved-merged|skipped|manual-review]). Only genuinely unresolved
+# conflicts BLOCK. Helper unavailable → fall through to original hard exit.
+if [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh" ]; then
+  [ -f "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" ] && \
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh"
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/t8-gate-check.sh"
+  t8_gate_check "${PLANNING_DIR}" "build"
+  T8_RC=$?
+  [ "$T8_RC" -eq 2 ] && exit 2
+  [ "$T8_RC" -eq 1 ] && exit 1
+elif [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
   echo "⛔ Gate integrity conflicts unresolved."
   echo "   File: ${PLANNING_DIR}/vgflow-patches/gate-conflicts.md"
   echo "   Cause: /vg:update 3-way merge altered hard-gate (cổng cứng) blocks."
@@ -149,6 +161,19 @@ if [ -f "${PLANNING_DIR}/vgflow-patches/gate-conflicts.md" ]; then
 fi
 ```
 </step>
+
+```bash
+# v2.2 — register run with orchestrator (idempotent if UserPromptSubmit hook fired)
+# OHOK-8 round-4 Codex fix: parse phase BEFORE run-start (was registering
+# empty phase because PHASE_ARG/PHASE_NUMBER not set until step 1 below).
+[ -z "${PHASE_ARG:-}" ] && PHASE_ARG=$(echo "${ARGUMENTS}" | awk '{print $1}')
+PHASE_NUMBER="${PHASE_NUMBER:-$PHASE_ARG}"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:build "${PHASE_NUMBER:-${PHASE_ARG}}" "${ARGUMENTS}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 0_gate_integrity_precheck 2>/dev/null || true
+```
 
 <step name="0_session_lifecycle">
 **Session lifecycle (tightened 2026-04-17) — clean tail UI across runs.**
@@ -218,10 +243,16 @@ fi
 RESET_QUEUE=false
 STATUS_ONLY=false
 ONLY_TASKS=""
+WAVE_FILTER=""
 [[ "${ARGUMENTS:-}" =~ --reset-queue ]] && RESET_QUEUE=true
 [[ "${ARGUMENTS:-}" =~ --status ]] && STATUS_ONLY=true
 if [[ "${ARGUMENTS:-}" =~ --only[[:space:]]*=?[[:space:]]*([0-9,]+) ]]; then
   ONLY_TASKS="${BASH_REMATCH[1]}"
+fi
+# --wave N → WAVE_FILTER (declared in flag list line 157, gate-used at step 8 line 796)
+if [[ "${ARGUMENTS:-}" =~ --wave[[:space:]]*=?[[:space:]]*([0-9]+) ]]; then
+  WAVE_FILTER="${BASH_REMATCH[1]}"
+  export WAVE_FILTER
 fi
 
 # --status is a read-only shortcut — print progress + exit before doing any work
@@ -235,6 +266,13 @@ if [ "$STATUS_ONLY" = "true" ]; then
   vg_build_progress_status "$PHASE_DIR_LOOKUP"
   exit 0
 fi
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "1_parse_args" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/1_parse_args.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 1_parse_args 2>/dev/null || true
 ```
 </step>
 
@@ -341,26 +379,29 @@ else
 fi
 ```
 
-### Step 1: Create tasks ONLY for applicable steps
+### Step 1: Narrate step plan (NO TaskCreate — see NARRATION_POLICY above)
 
-Create one task per step in `$EXPECTED_STEPS` (comma-separated). Use the step name as task subject.
-Do NOT create tasks for steps excluded by profile filter.
+Per NARRATION_POLICY (`⛔ DO NOT USE TodoWrite / TaskCreate / TaskUpdate`), progress tracking in /vg:build uses `.step-markers/*.done` files as the authoritative signal, NOT a task list. Before proceeding:
 
-```
-For each stepId in EXPECTED_STEPS:
-  TaskCreate: subject=stepId, activeForm="Running ${stepId}..."
-```
+1. Write a markdown header in your text output listing the expected step plan:
+   ```
+   ## ━━━ /vg:build step plan (profile=$PROFILE, $EXPECTED_COUNT steps) ━━━
+   - ${stepId_1}
+   - ${stepId_2}
+   - ...
+   ```
+2. Run each step in order. At start: write `## ━━━ Running ${stepId} ━━━` header. At end: `touch "${PHASE_DIR}/.step-markers/${stepId}.done"`.
 
-### Step 2: Task count assertion
+### Step 2: Marker directory sanity check (replaces task count assertion)
 
-After task creation, verify count matches:
+Confirm marker dir is empty on fresh build (or populated as expected on resume):
 ```bash
-ACTUAL_COUNT=$(gsd-tools task-list --count 2>/dev/null || echo "0")
-if [ "$ACTUAL_COUNT" != "$EXPECTED_COUNT" ]; then
-  echo "⛔ Task tracker mismatch: expected $EXPECTED_COUNT for profile $PROFILE, got $ACTUAL_COUNT"
-  echo "   Missing or extra tasks indicate profile filter was ignored."
+EXISTING_COUNT=$(ls "$MARKER_DIR"/*.done 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! "$ARGUMENTS" =~ --resume ]] && [ "$EXISTING_COUNT" -ne 0 ]; then
+  echo "⛔ Fresh build but ${EXISTING_COUNT} stale markers in ${MARKER_DIR}. Run with --reset-queue or manually clean."
   exit 1
 fi
+echo "▸ Step plan: $EXPECTED_COUNT steps for profile=$PROFILE. Progress tracked via ${MARKER_DIR}/*.done."
 ```
 
 **Rule for subsequent steps:** every `<step>` body MUST, as its FINAL action, write a marker:
@@ -369,7 +410,7 @@ touch "${PHASE_DIR}/.step-markers/{STEP_NAME}.done"
 ```
 Post-execution check (step 9) compares markers vs EXPECTED_STEPS. Missing marker = step skipped silently = BLOCK.
 
-Each sub-step should: `TaskUpdate: status="in_progress"` at start, `status="completed"` at end, AND write marker at end.
+Each sub-step: write narration header at start, marker file at end. No TaskCreate/TaskUpdate invocation anywhere in /vg:build.
 </step>
 
 <step name="2_initialize">
@@ -529,7 +570,7 @@ Read `${PHASE_DIR}/API-CONTRACTS.md`. Per plan task, extract only endpoint secti
 
 ```bash
 # Resolve DESIGN_OUTPUT_DIR from config (fallback to default)
-DESIGN_OUTPUT_DIR="${config.design_assets.output_dir:-${PLANNING_DIR}/design-normalized}"
+DESIGN_OUTPUT_DIR=$(vg_config_get design_assets.output_dir "${PLANNING_DIR}/design-normalized")  # OHOK-9 round-4
 DESIGN_MANIFEST="${DESIGN_OUTPUT_DIR}/manifest.json"
 
 # If any task has <design-ref>, classify each as SLUG vs DESCRIPTIVE:
@@ -636,9 +677,14 @@ fi
 
 **Run `find-siblings.py` for each task with file-path:**
 
+OHOK Batch 4 B7 (2026-04-22): subprocess failure now exits build. Previously
+script failure was silent — executor got empty sibling context without
+orchestrator knowing.
+
 ```bash
 mkdir -p "${PHASE_DIR}/.wave-context"
 
+SIBLINGS_FAILED=()
 for task in "${WAVE_TASKS[@]}"; do
   # task iteration gives TASK_NUM + TASK_FILE_PATH
   SIBLING_OUT="${PHASE_DIR}/.wave-context/siblings-task-${TASK_NUM}.json"
@@ -648,13 +694,29 @@ for task in "${WAVE_TASKS[@]}"; do
     GRAPHIFY_FLAG="--graphify-graph $GRAPHIFY_GRAPH_PATH"
   fi
 
-  ${PYTHON_BIN} .claude/scripts/find-siblings.py \
-    --file "$TASK_FILE_PATH" \
-    --config .claude/vg.config.md \
-    --top-n 3 \
-    $GRAPHIFY_FLAG \
-    --output "$SIBLING_OUT"
+  if ! ${PYTHON_BIN} .claude/scripts/find-siblings.py \
+       --file "$TASK_FILE_PATH" \
+       --config .claude/vg.config.md \
+       --top-n 3 \
+       $GRAPHIFY_FLAG \
+       --output "$SIBLING_OUT" 2>&1; then
+    # Non-fatal per-task — new modules legitimately have no siblings.
+    # But track + emit telemetry so pattern surfacing on a whole wave triggers review.
+    SIBLINGS_FAILED+=("${TASK_NUM}:${TASK_FILE_PATH}")
+    # Write stub so downstream 8c doesn't crash on missing JSON
+    echo '{"siblings":[],"source":"find-siblings-failed"}' > "$SIBLING_OUT"
+  fi
 done
+
+# If ALL tasks failed, something is systemically wrong — BLOCK.
+if [ "${#SIBLINGS_FAILED[@]}" -gt 0 ] && \
+   [ "${#SIBLINGS_FAILED[@]}" -eq "${#WAVE_TASKS[@]}" ]; then
+  echo "⛔ find-siblings.py failed for ALL ${#WAVE_TASKS[@]} tasks in wave — systemic issue" >&2
+  echo "   Failures: ${SIBLINGS_FAILED[@]}" >&2
+  echo "   Check: (a) find-siblings.py exists + executable, (b) config valid," >&2
+  echo "          (c) graphify graph path correct if GRAPHIFY_ACTIVE=true" >&2
+  exit 1
+fi
 ```
 
 ### Output format (`.wave-context/siblings-task-{N}.json`)
@@ -698,7 +760,7 @@ Build or refresh `.callers.json` — maps each task's `<edits-*>` symbols to dow
 Output schema is identical regardless of source (graphify vs grep) — commit-msg hook reads same fields. Add `source: "graphify" | "grep"` field for traceability.
 
 ```bash
-if [ "${config.semantic_regression.enabled:-true}" = "true" ]; then
+if [ "$(vg_config_get semantic_regression.enabled true)" = "true" ]; then  # OHOK-9 round-4
   CALLER_GRAPH="${PHASE_DIR}/.callers.json"
 
   # Regenerate if missing OR any PLAN*.md newer than graph
@@ -747,13 +809,71 @@ else
 fi
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "4_load_contracts_and_context" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"`
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "4_load_contracts_and_context" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 4_load_contracts_and_context 2>/dev/null || true
+```
 </step>
 
 <step name="5_handle_branching">
-Check `branching_strategy` from init. If "phase" or "milestone": checkout branch.
+**OHOK Batch 4 B6 (2026-04-22):** replace prose "checkout branch" with real bash.
+Previously step had ZERO code — marker touched blindly regardless of whether
+branch existed, checkout succeeded, or git was in conflicted state. Now gated.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/5_handle_branching.done"`
+```bash
+BRANCH_STRATEGY=$(vg_config_get branching_strategy "none" 2>/dev/null || echo "none")
+
+case "$BRANCH_STRATEGY" in
+  phase|milestone)
+    BRANCH_NAME="phase/${PHASE_NUMBER}"
+    if [ "$BRANCH_STRATEGY" = "milestone" ]; then
+      # milestone strategy → branch per milestone (first phase of milestone creates, others reuse)
+      MILESTONE_NUM=$(echo "$PHASE_NUMBER" | cut -d. -f1)
+      BRANCH_NAME="milestone/${MILESTONE_NUM}"
+    fi
+
+    # Pre-flight: no uncommitted changes that would block checkout.
+    # Check BOTH worktree AND staged (index) changes — `git diff --quiet` alone
+    # ignores staged-only files (CrossAI Round 6 finding).
+    if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+      echo "⛔ Uncommitted changes (worktree or staged) — cannot checkout ${BRANCH_NAME}" >&2
+      git status --short 2>/dev/null | head -10 >&2
+      echo "   Commit or stash first: git stash save --include-untracked 'pre-build-${PHASE_NUMBER}'" >&2
+      exit 1
+    fi
+
+    CURRENT=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [ "$CURRENT" = "$BRANCH_NAME" ]; then
+      echo "✓ Already on ${BRANCH_NAME}"
+    elif git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+      if ! git checkout "${BRANCH_NAME}" 2>&1; then
+        echo "⛔ git checkout ${BRANCH_NAME} failed" >&2
+        exit 1
+      fi
+      echo "✓ Checked out existing branch ${BRANCH_NAME}"
+    else
+      if ! git checkout -b "${BRANCH_NAME}" 2>&1; then
+        echo "⛔ git checkout -b ${BRANCH_NAME} failed" >&2
+        exit 1
+      fi
+      echo "✓ Created + checked out new branch ${BRANCH_NAME}"
+    fi
+    ;;
+  none|"")
+    echo "↷ branching_strategy=none — staying on current branch ($(git rev-parse --abbrev-ref HEAD 2>/dev/null))"
+    ;;
+  *)
+    echo "⚠ Unknown branching_strategy='${BRANCH_STRATEGY}' — skipping (expected: phase|milestone|none)" >&2
+    ;;
+esac
+
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_handle_branching" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_handle_branching.done"
+```
 </step>
 
 <step name="6_validate_phase">
@@ -773,7 +893,7 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 ```
 
-Final action: `touch "${PHASE_DIR}/.step-markers/6_validate_phase.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "6_validate_phase" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/6_validate_phase.done"`
 </step>
 
 <step name="7_discover_plans">
@@ -785,11 +905,27 @@ PLAN_INDEX=$(ls -1 "${PHASE_DIR}"/PLAN*.md 2>/dev/null)
 Filter: skip `has_summary: true`. If `--gaps-only`: skip non-gap_closure. If `--wave N`: skip non-matching.
 Report execution plan table.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"`
+Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "7_discover_plans" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"`
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "7_discover_plans" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/7_discover_plans.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 7_discover_plans 2>/dev/null || true
+```
 </step>
 
 <step name="8_execute_waves">
-For each wave:
+
+**⚠ WAVE_FILTER gate (v2.2):** If `WAVE_FILTER` is set (from `--wave N`), execute **ONLY** that wave. After Wave N completes + commits successfully, skip all subsequent waves and proceed directly to step 9_post_execution. Use for incremental testing on large phases (8+ waves).
+
+```bash
+if [ -n "${WAVE_FILTER:-}" ]; then
+  echo "▸ --wave ${WAVE_FILTER} mode: orchestrator will execute ONLY Wave ${WAVE_FILTER} then exit to step 9."
+fi
+```
+
+For each wave (subject to WAVE_FILTER gate above):
 
 ### 8a: Generate wave-context.md (BEFORE spawning executors)
 
@@ -1119,9 +1255,9 @@ Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
     </bootstrap_rules>
 
     <build_config>
-    typecheck_cmd: ${config.build_gates.typecheck_cmd}
-    build_cmd: ${config.build_gates.build_cmd}
-    generated_types_path: ${config.contract_format.generated_types_path}
+    typecheck_cmd: ${TYPECHECK_CMD_RESOLVED:-$(vg_config_get build_gates.typecheck_cmd pnpm\ typecheck)}
+    build_cmd: ${BUILD_CMD_RESOLVED:-$(vg_config_get build_gates.build_cmd pnpm\ build)}
+    generated_types_path: ${GENERATED_TYPES_PATH_RESOLVED:-$(vg_config_get contract_format.generated_types_path packages/api-types)}
     phase: ${PHASE_NUMBER}
     plan: ${PLAN_NUM}
     </build_config>
@@ -1539,26 +1675,32 @@ if type -t vg_typecheck_adaptive >/dev/null 2>&1; then
     vg_typecheck_adaptive "$pkg" "${WAVE_TAG}" || GATE1_FAIL=$((GATE1_FAIL + 1))
   done
   [ "$GATE1_FAIL" -gt 0 ] && FAILED_GATE="typecheck"
-elif [ -n "${config.build_gates.typecheck_cmd}" ]; then
-  # Fallback when lib unavailable (older install)
-  echo "Gate 1/4: Running ${config.build_gates.typecheck_cmd} (non-adaptive)..."
-  if ! eval "${config.build_gates.typecheck_cmd}"; then
-    FAILED_GATE="typecheck"
+else
+  # Fallback when lib unavailable (older install) — use vg_config_get helper
+  TYPECHECK_CMD=$(vg_config_get build_gates.typecheck_cmd "")
+  if [ -n "$TYPECHECK_CMD" ]; then
+    echo "Gate 1/4: Running ${TYPECHECK_CMD} (non-adaptive)..."
+    if ! eval "$TYPECHECK_CMD"; then
+      FAILED_GATE="typecheck"
+    fi
   fi
 fi
 
 # Gate 2: Build (mandatory)
-if [ -z "$FAILED_GATE" ] && [ -n "${config.build_gates.build_cmd}" ]; then
-  echo "Gate 2/4: Running ${config.build_gates.build_cmd}..."
-  if ! eval "${config.build_gates.build_cmd}"; then
-    FAILED_GATE="build"
+if [ -z "$FAILED_GATE" ]; then
+  BUILD_CMD=$(vg_config_get build_gates.build_cmd "")
+  if [ -n "$BUILD_CMD" ]; then
+    echo "Gate 2/4: Running ${BUILD_CMD}..."
+    if ! eval "$BUILD_CMD"; then
+      FAILED_GATE="build"
+    fi
   fi
 fi
 
 # Gate 3: Unit tests — affected subset only (mandatory if test_unit_required=true)
 if [ -z "$FAILED_GATE" ]; then
-  UNIT_CMD="${config.build_gates.test_unit_cmd}"
-  UNIT_REQ="${config.build_gates.test_unit_required:-true}"
+  UNIT_CMD=$(vg_config_get build_gates.test_unit_cmd "")
+  UNIT_REQ=$(vg_config_get build_gates.test_unit_required "true")
 
   # Check test infrastructure presence
   if [ -z "$UNIT_CMD" ]; then
@@ -1626,10 +1768,13 @@ if [ -z "$FAILED_GATE" ]; then
 fi
 
 # Gate 4: Contract verify (grep built code vs API-CONTRACTS.md)
-if [ -z "$FAILED_GATE" ] && [ -n "${config.build_gates.contract_verify_grep}" ]; then
-  echo "Gate 4/5: Running contract verify grep..."
-  if ! eval "${config.build_gates.contract_verify_grep}"; then
-    FAILED_GATE="contract_verify"
+if [ -z "$FAILED_GATE" ]; then
+  CONTRACT_VERIFY_CMD=$(vg_config_get build_gates.contract_verify_grep "")
+  if [ -n "$CONTRACT_VERIFY_CMD" ]; then
+    echo "Gate 4/5: Running contract verify grep..."
+    if ! eval "$CONTRACT_VERIFY_CMD"; then
+      FAILED_GATE="contract_verify"
+    fi
   fi
 fi
 
@@ -1637,7 +1782,7 @@ fi
 # a test file referencing the goal id or a success-criteria keyword).
 # Mode from config.build_gates.goal_test_binding: strict | warn | off
 if [ -z "$FAILED_GATE" ]; then
-  GTB_MODE="${config.build_gates.goal_test_binding:-warn}"
+  GTB_MODE=$(vg_config_get build_gates.goal_test_binding "warn")
   if [ "$GTB_MODE" != "off" ]; then
     echo "Gate 5/5: Goal-test binding (mode=${GTB_MODE})..."
     GTB_LOG="${PHASE_DIR}/build-state.log"
@@ -1913,12 +2058,12 @@ while [ "$FAILED_GATE" ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 
       ${AGENT_SKILLS}
 
-  # Re-run failed gate only
+  # Re-run failed gate only (vg_config_get for bash-safe dotted path lookup)
   case "$FAILED_GATE" in
-    typecheck) CMD="${config.build_gates.typecheck_cmd}" ;;
-    build) CMD="${config.build_gates.build_cmd}" ;;
-    test_unit) CMD="${config.build_gates.test_unit_cmd}" ;;
-    contract_verify) CMD="${config.build_gates.contract_verify_grep}" ;;
+    typecheck) CMD=$(vg_config_get build_gates.typecheck_cmd "") ;;
+    build) CMD=$(vg_config_get build_gates.build_cmd "") ;;
+    test_unit) CMD=$(vg_config_get build_gates.test_unit_cmd "") ;;
+    contract_verify) CMD=$(vg_config_get build_gates.contract_verify_grep "") ;;
     goal_test_binding)
       CMD="${PYTHON_BIN} .claude/scripts/verify-goal-test-binding.py --phase-dir ${PHASE_DIR} --wave-tag ${WAVE_TAG} --wave-number ${N}"
       ;;
@@ -1996,6 +2141,13 @@ echo "wave-${N}: ${FAILED_GATE:-passed} (retries: ${RETRY_COUNT})" >> "${PHASE_D
 ```
 
 Only proceed to next wave if `$FAILED_GATE` empty.
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "8_execute_waves" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/8_execute_waves.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 8_execute_waves 2>/dev/null || true
+```
 </step>
 
 <step name="8_5_bootstrap_reflection_per_wave">
@@ -2317,14 +2469,16 @@ fi
 **Final gate (all waves combined) — BLOCK on fail:**
 
 ```bash
+FINAL_TYPECHECK=$(vg_config_get build_gates.typecheck_cmd "")
+FINAL_BUILD=$(vg_config_get build_gates.build_cmd "")
 echo "Final gate: full-repo typecheck..."
-if ! eval "${config.build_gates.typecheck_cmd}"; then
+if [ -n "$FINAL_TYPECHECK" ] && ! eval "$FINAL_TYPECHECK"; then
   echo "⛔ Final typecheck failed"
   exit 1
 fi
 
 echo "Final gate: full-repo build..."
-if ! eval "${config.build_gates.build_cmd}"; then
+if [ -n "$FINAL_BUILD" ] && ! eval "$FINAL_BUILD"; then
   echo "⛔ Final build failed"
   exit 1
 fi
@@ -2332,8 +2486,8 @@ fi
 # Full unit test suite (catches cross-wave regression)
 # ⛔ HARD GATE (tightened 2026-04-17): --allow-no-tests replaced with --override-reason= requirement.
 # Cannot silently skip final unit suite — must cite reason and log to build-state.
-UNIT_CMD="${config.build_gates.test_unit_cmd}"
-UNIT_REQ="${config.build_gates.test_unit_required:-true}"
+UNIT_CMD=$(vg_config_get build_gates.test_unit_cmd "")
+UNIT_REQ=$(vg_config_get build_gates.test_unit_required "true")
 if [ -n "$UNIT_CMD" ]; then
   echo "Final gate: full unit suite..."
   if ! eval "$UNIT_CMD"; then
@@ -2485,9 +2639,19 @@ fi
 # 1. Verify all plans have SUMMARY — HARD BLOCK (tightened 2026-04-17)
 # Missing SUMMARY = agent silently skipped documentation → orphan commits → review misses scope.
 MISSING_SUMMARIES=""
-for plan in ${PHASE_DIR}/*-PLAN*.md; do
-  PLAN_NUM=$(basename "$plan" | grep -oE '^[0-9]+')
-  SUMMARY="${PHASE_DIR}/${PLAN_NUM}-SUMMARY*.md"
+# Canonical: blueprint writes single `PLAN.md` → expect `SUMMARY.md`.
+# Legacy (GSD-migrated): `{N}-PLAN*.md` pairs with `{N}-SUMMARY*.md`.
+# Glob handles both; [ ! -e "$plan" ] skips unexpanded literal when no match.
+for plan in ${PHASE_DIR}/PLAN*.md ${PHASE_DIR}/*-PLAN*.md; do
+  [ ! -e "$plan" ] && continue
+  plan_base=$(basename "$plan")
+  if [[ "$plan_base" =~ ^([0-9]+)-PLAN ]]; then
+    PLAN_NUM="${BASH_REMATCH[1]}"
+    SUMMARY="${PHASE_DIR}/${PLAN_NUM}-SUMMARY*.md"
+  else
+    PLAN_NUM="canonical"
+    SUMMARY="${PHASE_DIR}/SUMMARY*.md"
+  fi
   if ! ls $SUMMARY 1>/dev/null 2>&1; then
     echo "⛔ Plan ${PLAN_NUM} has no SUMMARY"
     MISSING_SUMMARIES="${MISSING_SUMMARIES} ${PLAN_NUM}"
@@ -2555,6 +2719,13 @@ Commit summaries:
 ```bash
 git add ${PHASE_DIR}/SUMMARY*.md ${PLANNING_DIR}/STATE.md ${PLANNING_DIR}/ROADMAP.md
 git commit -m "build({phase}): {completed}/{total} plans executed"
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "9_post_execution" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/9_post_execution.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 9_post_execution 2>/dev/null || true
 ```
 </step>
 
@@ -2624,7 +2795,181 @@ if [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
   fi
 fi
 
-touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "10_postmortem_sanity" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+```
+
+```bash
+# v2.2 — step marker for runtime contract
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "10_postmortem_sanity" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 10_postmortem_sanity 2>/dev/null || true
+```
+
+```bash
+# v2.2 — terminal emit
+SUMMARY_COUNT=$(ls "${PHASE_DIR}"/SUMMARY*.md 2>/dev/null | wc -l | tr -d " ")
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "build.completed" --payload "{\"phase\":\"${PHASE_NUMBER:-${PHASE_ARG}}\",\"summaries\":${SUMMARY_COUNT}}" >/dev/null
+```
+</step>
+
+<step name="11_crossai_build_verify_loop">
+## Step 11: OHOK-7 MANDATORY CrossAI build verification loop
+
+After wave execution + post-mortem, we MUST verify the build actually
+completed against its 4 source-of-truth artifacts (API-CONTRACTS.md,
+TEST-GOALS.md, CONTEXT.md decisions, PLAN.md tasks). This is ENFORCED
+by `build-crossai-required.py` validator at run-complete — no "promise"
+path; events.db evidence required.
+
+**Flow**:
+
+```
+for iteration in 1..5:
+  Run: python .claude/scripts/vg-build-crossai-loop.py \
+          --phase ${PHASE_NUMBER} --iteration ${iter} --max-iterations 5
+
+  Exit code 0 (CLEAN):
+    - Both Codex + Gemini report no BLOCK findings
+    - Emit build.crossai_loop_complete → BREAK out of loop
+    - Build done
+  Exit code 1 (BLOCKS_FOUND):
+    - Read ${PHASE_DIR}/crossai-build-verify/findings-iter${iter}.json
+    - Spawn Sonnet Task subagent:
+      * description: "Fix CrossAI BLOCK findings iter ${iter}"
+      * prompt: findings JSON + artifact paths + "fix each BLOCK, commit
+                with feat(${phase}-${iter}.fixN): subject"
+    - After subagent returns, continue to iter+1
+  Exit code 2 (CLI_INFRA_FAILURE):
+    - Retry once. If still fails, prompt user (CLI down / network / quota)
+
+After loop:
+  If cleaned before max: emit build.crossai_loop_complete (already done on
+                          clean exit, just a safety)
+  If 5 iterations exhausted WITHOUT clean:
+    - Emit build.crossai_loop_exhausted
+    - Prompt user with 3 options:
+      (a) continue — run another 5 iterations
+      (b) defer — proceed to /vg:review with remaining findings as known
+          issues (emit build.crossai_loop_user_override)
+      (c) skip + HARD debt — emit build.crossai_loop_user_override +
+          vg-orchestrator override --flag=skip-crossai-build-loop
+          --reason='<URL + explanation, ≥50ch>'
+```
+
+**Fix subagent model**: Sonnet (`claude-sonnet-4-6`). Sonnet is:
+- Fast enough to not bloat loop runtime (~1 min per fix)
+- Strong enough for contract-gap level fixes
+- Isolated context so main Claude doesn't accumulate fix noise
+
+**Severity threshold for triggering fix**: ANY BLOCK finding from either
+CLI. MEDIUM/LOW findings are captured but deferred to /vg:review or
+/vg:test phase (not blocking the build loop).
+
+**Prompt template for fix subagent**:
+
+```
+You are fixing CrossAI BLOCK findings from build iteration ${N} of phase ${P}.
+
+Read findings: ${PHASE_DIR}/crossai-build-verify/findings-iter${N}.json
+
+For each finding with severity=BLOCK:
+  1. Read the file at finding.file
+  2. Understand the gap (finding.message) against the artifact ref
+     (finding.artifact_ref — D-XX / G-XX / endpoint / task)
+  3. Apply the minimal fix per finding.fix_hint
+  4. Commit with: feat(${P}-${N}.fix${K}): <finding.artifact_ref>
+     body: "Per CrossAI iter ${N} — <finding.message>"
+
+Do NOT refactor, do NOT add features beyond the fix. Stop and return.
+```
+
+**IMPORTANT — this step is Claude-orchestrated, not bash-looped.**
+
+Bash auto-loop was wrong: re-running CrossAI on SAME unfixed code just
+re-produces the same findings. Main Claude (Opus) MUST orchestrate
+iteration-by-iteration with Sonnet Task subagent fixing between iters.
+
+```bash
+# Phase 1 — iteration 1: establish baseline
+CROSSAI_PHASE="${PHASE_NUMBER:-${PHASE_ARG}}"
+CROSSAI_MAX_ITER=5
+echo "▸ CrossAI build-verify iteration 1/${CROSSAI_MAX_ITER}..."
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-build-crossai-loop.py \
+  --phase "${CROSSAI_PHASE}" --iteration 1 --max-iterations ${CROSSAI_MAX_ITER}
+CROSSAI_RC=$?
+echo "▸ iter 1 exit code: ${CROSSAI_RC} (0=CLEAN, 1=BLOCKS_FOUND, 2=INFRA_FAILURE)"
+```
+
+**Now the orchestrator (main Claude Opus) reads CROSSAI_RC and decides**:
+
+- **CROSSAI_RC = 0**: loop script already emitted `build.crossai_loop_complete`.
+  Proceed directly to step 12 (run-complete). Build done clean at iter 1.
+
+- **CROSSAI_RC = 1**: BLOCK findings exist at
+  `${PHASE_DIR}/crossai-build-verify/findings-iter1.json`.
+  **Opus MUST dispatch a Sonnet Task subagent** with the findings JSON +
+  fix prompt (see template above). Subagent reads each finding, applies
+  minimal fix, commits with `feat(${PHASE}-1.fixN):` subject. After
+  subagent returns (all BLOCKS fixed + committed), Opus re-invokes:
+  ```bash
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-build-crossai-loop.py \
+    --phase "${CROSSAI_PHASE}" --iteration 2 --max-iterations ${CROSSAI_MAX_ITER}
+  ```
+  Repeat: exit 0 → done; exit 1 → fix + iter 3; ... up to iter 5.
+
+- **CROSSAI_RC = 2**: CLI infra failure (Codex/Gemini network/timeout/parse
+  fail). Opus investigates (check `${PHASE_DIR}/crossai-build-verify/
+  codex-iter*.md` + `gemini-iter*.md` for error detail). Either retry
+  the same iteration after fixing infra OR escalate to user for override.
+
+**After iter 5 without clean** — Opus MUST prompt user with 3 options:
+
+```
+━━━ ACTION REQUIRED — CrossAI loop exhausted ━━━
+
+5 iterations ran without clean. Remaining BLOCK findings listed in
+${PHASE_DIR}/crossai-build-verify/findings-iter5.json.
+
+Pick one:
+  (a) continue — spawn another Sonnet fix round + run iterations 6-10
+  (b) defer — record exhausted + proceed to /vg:review with remaining
+      findings as known issues. Runs:
+      python .claude/scripts/vg-orchestrator emit-crossai-terminal exhausted \
+        --payload '{"iterations":5,"reason":"user_deferred"}'
+  (c) skip + HARD debt — requires override.used with crossai flag:
+      python .claude/scripts/vg-orchestrator override \
+        --flag=skip-crossai-build-loop --reason='<ticket URL or SHA ≥50ch>'
+      python .claude/scripts/vg-orchestrator emit-crossai-terminal user_override
+```
+
+Opus presents options, user picks, Opus invokes the chosen command. Run-
+complete (step 12) BLOCKs until ONE of the three terminal events lands.
+
+**Why no bash while-loop**: the fix between iterations needs a Task subagent
+(Sonnet with isolated context reading findings-iterN.json), which a bash
+block can't spawn. Each iteration is a discrete Claude-orchestrated step.
+
+**If Opus bypasses this step** entirely: step 12 fires
+`build-crossai-required` validator which sees 0 iteration events → BLOCK.
+No way to skip via "promise" — events.db evidence required (OHOK-7/8).
+```
+
+```bash
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "11_crossai_build_verify_loop" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/11_crossai_build_verify_loop.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 11_crossai_build_verify_loop 2>/dev/null || true
+```
+</step>
+
+<step name="12_run_complete">
+## Step 12: Run-complete (validators fire, BLOCK on violations)
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
+RUN_RC=$?
+if [ $RUN_RC -ne 0 ]; then
+  echo "⛔ build run-complete BLOCK — review orchestrator output + fix before /vg:review" >&2
+  exit $RUN_RC
+fi
 ```
 </step>
 

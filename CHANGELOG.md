@@ -1,5 +1,92 @@
 # Changelog
 
+## [2.3.0] - 2026-04-23
+
+### OHOK hardening — close 6 performative gaps + marker forgery attack surface
+
+v2.3 finishes the "One Hit One Kill" (OHOK) pass: specs → accept now runs end-to-end without human intervention (except UAT), with every gate backed by **actual runtime enforcement** instead of prose "AI MUST do X" with no runtime hook.
+
+Triggered by 6 adversarial audits (2 CrossAI rounds, Codex + Gemini independent review). Prior audits found **~17 performative steps** where AI could read the rule, understand it, then silently skip. Those are all closed now.
+
+### Added
+
+**Forgery-resistant step markers** (Batch 5b / E1):
+- `_shared/lib/marker-schema.sh` — `mark_step()` writes content `v1|{phase}|{step}|{git_sha}|{iso_ts}|{run_id}` instead of empty `touch .done`.
+- `verify_marker()` checks 5 invariants: schema version, phase match, step match, `git_sha` IS ancestor of HEAD (blocks after-the-fact `touch` forgery), `iso_ts` within 30 days (blocks stale marker reuse).
+- `verify_all_markers()` iterates phase dir, returns BLOCK on any forged/mismatched/schema-bad marker.
+- `scripts/marker-migrate.py` one-time migration rewrites legacy empty markers with synthetic content; idempotent.
+- 73 `touch` calls across 8 skill files converted to `mark_step` with graceful fallback (`|| touch …`).
+- `accept.md` step `2_marker_precheck` now hard-blocks on `rc=3/4/5/6/7` (forgery/mismatch/stale), WARNs on legacy empty (configurable strict mode via `VG_MARKER_STRICT=1`).
+
+**Batch 1 — `specs.md` 0% → 85% enforced:**
+- Runtime contract frontmatter (7 markers, 2 telemetry events, forbidden flags).
+- `parse_args` bash gate: `grep` ROADMAP in 3 formats (heading / table / checkbox-list `- [x] **Phase N**`).
+- `generate_draft` bash gate: `case $USER_APPROVAL` with `approve`/`edit`/`discard`/unset → exit 2 on discard or unset.
+
+**Batch 2 — `review.md` phaseP_delta/regression real verification:**
+- Previously wrote PASS stubs. Now parses parent `GOAL-COVERAGE-MATRIX.md`, extracts FAILED/BLOCKED goals, computes **per-goal** git overlap (CrossAI R6 fix: previously ONE global file set — any touched parent file false-PASSed ALL unrelated failed goals).
+- Per-goal: `git log --grep=G-XX` → files → overlap check with hotfix delta. BLOCK if any failed goal with known commits has zero per-goal overlap.
+- `phaseP_regression` requires `bug_ref` in SPECS + ≥1 code commit + test linkage check.
+- Contract 4 → 25 markers (4 block + 21 warn via `required_unless_flag`).
+- 4 new override flags: `--allow-empty-hotfix`, `--allow-orthogonal-hotfix`, `--allow-no-bugref`, `--allow-empty-bugfix`.
+
+**Batch 3 — `accept.md` UAT quorum gate:**
+- Previously `[s] Skip` on every `AskUserQuestion` → DEFERRED verdict shipped → next phase proceeds anyway. Pure theatre.
+- New step `5_uat_quorum_gate` requires `.uat-responses.json`, counts critical_skips (decisions + READY goals).
+- **UAT coverage cross-check (CrossAI R6 fix)**: expected decisions count from `### D-XX` headings in CONTEXT.md + expected READY goals from GOAL-COVERAGE-MATRIX.md, responses must cover all. Prevents attacker writing `{decisions: {skip: 0, total: 0}}` to trivially pass quorum.
+- `--allow-uat-skips` override forces `verdict=DEFER` (propagates — next phase blocks).
+- Contract 3 → 12 markers + 4 new override flags.
+
+**Batch 4 — `build.md` real branching + context enforcement:**
+- step `5_handle_branching` now real bash: `case $BRANCH_STRATEGY` phase/milestone/none with `git checkout -b` + **worktree + index** uncommitted-changes precheck (CrossAI R6: `git diff --quiet` alone missed index-only staged changes).
+- step `4c` tracks `SIBLINGS_FAILED` array per-task; systemic failure (all fail) → exit 1 with diagnostic.
+- Contract 8 → 18 markers.
+
+**Batch 5 — `test.md` fix-loop counter persist + override-debt validator:**
+- `5c_auto_escalate` previously had prose "max 3 iterations" with no state. Now persists `${PHASE_DIR}/.fix-loop-state.json` with `iteration_count` + `first_run_ts`. `MAX_ITER` via `vg_config_get test.max_fix_loop_iterations`. Exhausted → `test.fix_loop_exhausted` telemetry + exit.
+- New `scripts/validators/check-override-events.py`:
+  - Event store indexed by event_id (dict, not set) — includes gate_id metadata.
+  - **gate_id binding** (CrossAI R6 critical): `resolved_by_event_id` event's gate_id must match override's gate_id. Previously: any unrelated real event could "resolve" any override.
+  - `legacy: true` now requires non-empty `legacy_reason` field (previously: unconditional bypass for all pre-v1.8.0 entries).
+  - Reads both `telemetry.jsonl` + `events.db` (hash-chained).
+
+### Added — Concrete bug fixes from CrossAI Round 6
+
+| # | Gap | File |
+|---|-----|------|
+| 1 | Missing ROADMAP format `- [x] **Phase N: ...**` | `specs.md` parse_args |
+| 2 | `${AUTO_MODE:+auto}${AUTO_MODE:-guided}` emitted junk like `autofalse` | `specs.md` telemetry payload |
+| 3 | `git diff --quiet` missed staged-only changes | `build.md` step 5 branching |
+| 4 | phaseP_delta one global overlap → false-PASS all unrelated failed goals | `review.md` phaseP_delta |
+| 5 | UAT responses JSON self-report trusted → trivial bypass | `accept.md` quorum gate |
+| 6 | `legacy: true` = unconditional bypass | `check-override-events.py` |
+| 7 | `resolved_by_event_id` didn't check gate_id | `check-override-events.py` |
+
+### Tests
+
+- `test_marker_forgery.py` — 16 cases (mark_step writes schema, verify rejects forgery/mismatch/stale/schema-bad, legacy lenient/strict mode, migrate script writes + idempotent)
+- `test_batch5_integrity.py` — +2 (legacy_without_reason BLOCK, gate_id_mismatch BLOCK); 15/15 pass
+- `test_phaseP_real_verification.py` — 15/15 pass after per-goal rewrite
+- `test_uat_quorum_gate.py` — 17/17 pass after coverage gate addition
+- `test_specs_contract.py` — 11/11 pass
+- `test_build_gap_closure.py` — 13/13 pass
+- **Total targeted: 71/71 pass.**
+
+### Migration
+
+One-time per project:
+```bash
+python .claude/scripts/marker-migrate.py --planning .vg
+```
+
+Rewrites legacy empty markers with synthetic content (phase from path, step from filename, git_sha = HEAD, iso_ts = now, run_id = `legacy-migration-{date}`). Idempotent. Backward compat: lenient mode accepts legacy empties by default; set `VG_MARKER_STRICT=1` to hard-block them.
+
+### CrossAI Round 6 verdict
+
+Both Codex + Gemini agreed: **BLOCK → must do Batch 5b before ship** (empty `.done` markers forgeable via synthetic `touch` sweep). v2.3 closes this. Post-migration, forged/mismatched/stale markers trigger BLOCK at accept gate with diagnostic per-step.
+
+---
+
 ## [2.2.0] - 2026-04-21
 
 ### Major — Orchestrator + runtime contract + anti-rationalization enforcement

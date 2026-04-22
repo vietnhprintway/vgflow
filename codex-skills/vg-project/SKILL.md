@@ -1071,8 +1071,12 @@ Model:
 6. If gate pass → atomic promote + commit
 
 Cascade impact:
-- If frontend/backend/build dimension changed → SUGGEST: "Tech stack changed → re-derive vg.config.md? [y/n]"
-- If yes → run Round 6 (config derivation) chỉ cho fields affected
+- If frontend/backend/build dimension changed → **⛔ forced user pause (destructive config change)**:
+  Invoke `AskUserQuestion`:
+    - header: "Re-derive config?"
+    - question: "Tech stack đã thay đổi. Có muốn re-derive vg.config.md không? Nếu Yes, tôi sẽ chạy Round 6 để cập nhật model selection / port / crossai CLI cho fields vừa đổi. Nếu No, vg.config.md giữ nguyên (có thể drift sau này)."
+    - options: ["Yes — re-derive affected fields", "No — keep current vg.config.md"]
+  Không auto-advance trên silence. Chỉ chạy Round 6 khi user chọn Yes.
 - Commit message: `project(update): <dimension(s)> changed — F-XX supersedes F-YY`
 </step>
 
@@ -1088,13 +1092,20 @@ User responds. Required field — không skip.
 Model:
 1. Parse description for **drift signals**:
    - Keywords: mobile/iOS/Android/native/desktop/Electron/serverless/lambda/embedded
-   - If any match AND foundation.platform != matched type → emit warning:
+   - If any match AND foundation.platform != matched type → **⛔ forced user pause (foundation drift risk)**:
      ```
      ⚠ Milestone description hint shift platform: 'mobile app' nhưng foundation = 'web-saas'.
+        Đây có thể là foundation drift — workflow downstream sẽ nhầm platform target.
         Recommend: /vg:project --update foundation TRƯỚC khi tiếp tục.
-        Continue anyway? [y/n]
      ```
-2. If user proceeds → append `## Milestone {N+1}` section to PROJECT.md
+     Invoke `AskUserQuestion`:
+       - header: "Platform drift detected"
+       - question: "Foundation hiện tại là 'web-saas' nhưng milestone mô tả nhắc đến 'mobile'. Bạn muốn làm gì?"
+       - options:
+         - "Stop — chạy /vg:project --update foundation trước (recommended)"
+         - "Continue — milestone vẫn thuộc web-saas, từ 'mobile' chỉ là reference"
+     Không auto-proceed. Chỉ append milestone khi user explicit chọn Continue.
+2. If user chọn Continue → append `## Milestone {N+1}` section to PROJECT.md
 3. FOUNDATION.md untouched (foundation = stable across milestones)
 4. vg.config.md untouched
 5. Commit: `project(milestone): add milestone {N+1} — {short title}`
@@ -1168,8 +1179,15 @@ Steps:
    PROJECT.md sẽ được slim down — di chuyển foundation fields ra FOUNDATION.md.
    Backup PROJECT.md cũ → ${PLANNING_DIR}/.archive/{ts}/PROJECT.v1.md
    ```
-6. AskUserQuestion: "Confirm migration? [y/n]"
-7. If yes:
+6. **⛔ forced user pause (destructive: rewrites PROJECT.md + creates FOUNDATION.md).**
+   Invoke `AskUserQuestion`:
+     - header: "Confirm migration"
+     - question: "Tôi sẽ backup PROJECT.md hiện tại vào archive, tạo FOUNDATION.md mới, và slim down PROJECT.md (bỏ tech stack/architecture fields sang FOUNDATION). vg.config.md không đổi. Proceed?"
+     - options:
+       - "Yes — migrate (backup sẽ được giữ ở .archive/)"
+       - "No — abort, PROJECT.md giữ nguyên"
+   Không auto-proceed trên silence. Chỉ thực hiện migration khi user chọn Yes.
+7. Nếu user chọn Yes:
    - Backup PROJECT.md → archive
    - Write FOUNDATION.md (new file)
    - Rewrite PROJECT.md (slim — keep identity/users/requirements/milestones, remove tech stack/architecture)
@@ -1194,8 +1212,15 @@ fi
 ```
 
 Re-run Round 6 only (config derivation). Show diff vs current vg.config.md.
-Ask user: "Apply changes? [y/n]"
-If yes → atomic write + commit.
+
+**⛔ forced user pause (overwrites vg.config.md).**
+Invoke `AskUserQuestion`:
+  - header: "Apply config changes?"
+  - question: "Đã diff xong vg.config.md cũ vs mới. Nếu Apply, tôi sẽ atomic overwrite vg.config.md và commit. Downstream commands sẽ dùng config mới ngay. Proceed?"
+  - options:
+    - "Apply — overwrite + commit"
+    - "Abort — vg.config.md giữ nguyên"
+Không auto-advance. Chỉ overwrite khi user chọn Apply.
 </step>
 
 <step name="10_complete">
