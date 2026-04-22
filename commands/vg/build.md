@@ -24,19 +24,35 @@ runtime_contract:
   must_write:
     - "${PHASE_DIR}/SUMMARY.md"
   must_touch_markers:
-    # Critical path — every long build MUST emit these. Wave tasks are dynamic
-    # so we verify the orchestrator envelope, not per-wave markers.
-    # OHOK-8 round-4 Codex finding: missing 11_crossai_build_verify_loop and
-    # 12_run_complete → build could satisfy runtime_contract without running
-    # the MANDATORY OHOK-7 CrossAI loop. Both added to close gate bypass.
+    # OHOK Batch 4 C3 (2026-04-22): contract 8 → 15 markers.
+    # Previously 8 steps (1/4/7/8/9/10/11/12) were validated — 11 other
+    # steps could silent-skip without orchestrator detection. Now all
+    # 18 steps declared; optional ones use severity=warn.
+    # ─── Hard gates (block) — foundational enforcement ───
+    - "0_gate_integrity_precheck"
     - "1_parse_args"
+    - "1a_build_queue_preflight"
+    - "1b_recon_gate"
+    - "3_validate_blueprint"
     - "4_load_contracts_and_context"
+    - "5_handle_branching"
     - "7_discover_plans"
     - "8_execute_waves"
     - "9_post_execution"
     - "10_postmortem_sanity"
     - "11_crossai_build_verify_loop"
     - "12_run_complete"
+    # ─── Advisory (warn) — missing ≠ block ───
+    - name: "0_session_lifecycle"
+      severity: "warn"
+    - name: "create_task_tracker"
+      severity: "warn"
+    - name: "2_initialize"
+      severity: "warn"
+    - name: "6_validate_phase"
+      severity: "warn"
+    - name: "8_5_bootstrap_reflection_per_wave"
+      severity: "warn"
   must_emit_telemetry:
     # v1.15.2 — names match vg_run_start/vg_run_complete auto-emits.
     # Previously declared build.phase_start/build.phase_end but 0 emit calls
@@ -643,9 +659,14 @@ fi
 
 **Run `find-siblings.py` for each task with file-path:**
 
+OHOK Batch 4 B7 (2026-04-22): subprocess failure now exits build. Previously
+script failure was silent — executor got empty sibling context without
+orchestrator knowing.
+
 ```bash
 mkdir -p "${PHASE_DIR}/.wave-context"
 
+SIBLINGS_FAILED=()
 for task in "${WAVE_TASKS[@]}"; do
   # task iteration gives TASK_NUM + TASK_FILE_PATH
   SIBLING_OUT="${PHASE_DIR}/.wave-context/siblings-task-${TASK_NUM}.json"
@@ -655,13 +676,29 @@ for task in "${WAVE_TASKS[@]}"; do
     GRAPHIFY_FLAG="--graphify-graph $GRAPHIFY_GRAPH_PATH"
   fi
 
-  ${PYTHON_BIN} .claude/scripts/find-siblings.py \
-    --file "$TASK_FILE_PATH" \
-    --config .claude/vg.config.md \
-    --top-n 3 \
-    $GRAPHIFY_FLAG \
-    --output "$SIBLING_OUT"
+  if ! ${PYTHON_BIN} .claude/scripts/find-siblings.py \
+       --file "$TASK_FILE_PATH" \
+       --config .claude/vg.config.md \
+       --top-n 3 \
+       $GRAPHIFY_FLAG \
+       --output "$SIBLING_OUT" 2>&1; then
+    # Non-fatal per-task — new modules legitimately have no siblings.
+    # But track + emit telemetry so pattern surfacing on a whole wave triggers review.
+    SIBLINGS_FAILED+=("${TASK_NUM}:${TASK_FILE_PATH}")
+    # Write stub so downstream 8c doesn't crash on missing JSON
+    echo '{"siblings":[],"source":"find-siblings-failed"}' > "$SIBLING_OUT"
+  fi
 done
+
+# If ALL tasks failed, something is systemically wrong — BLOCK.
+if [ "${#SIBLINGS_FAILED[@]}" -gt 0 ] && \
+   [ "${#SIBLINGS_FAILED[@]}" -eq "${#WAVE_TASKS[@]}" ]; then
+  echo "⛔ find-siblings.py failed for ALL ${#WAVE_TASKS[@]} tasks in wave — systemic issue" >&2
+  echo "   Failures: ${SIBLINGS_FAILED[@]}" >&2
+  echo "   Check: (a) find-siblings.py exists + executable, (b) config valid," >&2
+  echo "          (c) graphify graph path correct if GRAPHIFY_ACTIVE=true" >&2
+  exit 1
+fi
 ```
 
 ### Output format (`.wave-context/siblings-task-{N}.json`)
@@ -765,9 +802,57 @@ touch "${PHASE_DIR}/.step-markers/4_load_contracts_and_context.done"
 </step>
 
 <step name="5_handle_branching">
-Check `branching_strategy` from init. If "phase" or "milestone": checkout branch.
+**OHOK Batch 4 B6 (2026-04-22):** replace prose "checkout branch" with real bash.
+Previously step had ZERO code — marker touched blindly regardless of whether
+branch existed, checkout succeeded, or git was in conflicted state. Now gated.
 
-Final action: `touch "${PHASE_DIR}/.step-markers/5_handle_branching.done"`
+```bash
+BRANCH_STRATEGY=$(vg_config_get branching_strategy "none" 2>/dev/null || echo "none")
+
+case "$BRANCH_STRATEGY" in
+  phase|milestone)
+    BRANCH_NAME="phase/${PHASE_NUMBER}"
+    if [ "$BRANCH_STRATEGY" = "milestone" ]; then
+      # milestone strategy → branch per milestone (first phase of milestone creates, others reuse)
+      MILESTONE_NUM=$(echo "$PHASE_NUMBER" | cut -d. -f1)
+      BRANCH_NAME="milestone/${MILESTONE_NUM}"
+    fi
+
+    # Pre-flight: no uncommitted changes that would block checkout
+    if ! git diff --quiet 2>/dev/null; then
+      echo "⛔ Uncommitted changes in working tree — cannot checkout ${BRANCH_NAME}" >&2
+      echo "   Commit or stash first: git stash save 'pre-build-${PHASE_NUMBER}'" >&2
+      exit 1
+    fi
+
+    CURRENT=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [ "$CURRENT" = "$BRANCH_NAME" ]; then
+      echo "✓ Already on ${BRANCH_NAME}"
+    elif git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+      if ! git checkout "${BRANCH_NAME}" 2>&1; then
+        echo "⛔ git checkout ${BRANCH_NAME} failed" >&2
+        exit 1
+      fi
+      echo "✓ Checked out existing branch ${BRANCH_NAME}"
+    else
+      if ! git checkout -b "${BRANCH_NAME}" 2>&1; then
+        echo "⛔ git checkout -b ${BRANCH_NAME} failed" >&2
+        exit 1
+      fi
+      echo "✓ Created + checked out new branch ${BRANCH_NAME}"
+    fi
+    ;;
+  none|"")
+    echo "↷ branching_strategy=none — staying on current branch ($(git rev-parse --abbrev-ref HEAD 2>/dev/null))"
+    ;;
+  *)
+    echo "⚠ Unknown branching_strategy='${BRANCH_STRATEGY}' — skipping (expected: phase|milestone|none)" >&2
+    ;;
+esac
+
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/5_handle_branching.done"
+```
 </step>
 
 <step name="6_validate_phase">

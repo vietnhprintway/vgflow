@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ACCEPT_MD = REPO_ROOT / ".claude" / "commands" / "vg" / "accept.md"
 SPECS_MD = REPO_ROOT / ".claude" / "commands" / "vg" / "specs.md"
 REVIEW_MD = REPO_ROOT / ".claude" / "commands" / "vg" / "review.md"
+BUILD_MD = REPO_ROOT / ".claude" / "commands" / "vg" / "build.md"
 
 
 def _extract_bash_blocks(md_text: str, step_name: str) -> str:
@@ -434,6 +435,84 @@ def test_phaseP_regression_blocks_no_bug_ref(tmp_path):
         f"stderr={result.stderr[-600:]}"
     )
     assert "bug" in result.stderr.lower() and "ref" in result.stderr.lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Batch 4 smoke — build step 5 handle_branching real bash
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_step5_branching_none_strategy_passes(tmp_path):
+    """branching_strategy=none → no-op + marker written."""
+    repo = _make_git_repo(tmp_path)
+    phase_dir = repo / ".vg" / "phases" / "05-test"
+    phase_dir.mkdir(parents=True)
+    (phase_dir / ".step-markers").mkdir()
+
+    # Shim vg_config_get to return "none"
+    extra_shims = 'vg_config_get() { echo "none"; }\nexport -f vg_config_get 2>/dev/null || true\n'
+
+    bash = _extract_bash_blocks(
+        BUILD_MD.read_text(encoding="utf-8"), "5_handle_branching"
+    )
+    env = {"PHASE_DIR": str(phase_dir), "PHASE_NUMBER": "05"}
+    result = _run_bash(bash, env, repo, shims=STD_SHIMS + extra_shims)
+
+    assert result.returncode == 0, (
+        f"none strategy should pass, got rc={result.returncode}\n"
+        f"stderr={result.stderr}"
+    )
+    assert (phase_dir / ".step-markers" / "5_handle_branching.done").exists()
+
+
+def test_step5_branching_phase_strategy_creates_branch(tmp_path):
+    """branching_strategy=phase → creates branch phase/N."""
+    repo = _make_git_repo(tmp_path)
+    phase_dir = repo / ".vg" / "phases" / "07-feat"
+    phase_dir.mkdir(parents=True)
+    (phase_dir / ".step-markers").mkdir()
+
+    extra_shims = 'vg_config_get() { echo "phase"; }\nexport -f vg_config_get 2>/dev/null || true\n'
+    bash = _extract_bash_blocks(
+        BUILD_MD.read_text(encoding="utf-8"), "5_handle_branching"
+    )
+    env = {"PHASE_DIR": str(phase_dir), "PHASE_NUMBER": "07"}
+    result = _run_bash(bash, env, repo, shims=STD_SHIMS + extra_shims)
+
+    assert result.returncode == 0, (
+        f"rc={result.returncode}\nstderr={result.stderr}\nstdout={result.stdout}"
+    )
+    # Verify branch actually created
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, capture_output=True, text=True, encoding="utf-8",
+    )
+    assert branch.stdout.strip() == "phase/07", (
+        f"expected branch phase/07, got {branch.stdout.strip()}"
+    )
+
+
+def test_step5_branching_blocks_uncommitted_changes(tmp_path):
+    """Uncommitted changes in working tree → BLOCK before checkout."""
+    repo = _make_git_repo(tmp_path)
+    phase_dir = repo / ".vg" / "phases" / "08-test"
+    phase_dir.mkdir(parents=True)
+    (phase_dir / ".step-markers").mkdir()
+
+    # Create uncommitted change
+    (repo / "README.md").write_text("modified", encoding="utf-8")
+
+    extra_shims = 'vg_config_get() { echo "phase"; }\nexport -f vg_config_get 2>/dev/null || true\n'
+    bash = _extract_bash_blocks(
+        BUILD_MD.read_text(encoding="utf-8"), "5_handle_branching"
+    )
+    env = {"PHASE_DIR": str(phase_dir), "PHASE_NUMBER": "08"}
+    result = _run_bash(bash, env, repo, shims=STD_SHIMS + extra_shims)
+
+    assert result.returncode == 1, (
+        f"uncommitted changes should BLOCK, got rc={result.returncode}\n"
+        f"stderr={result.stderr}"
+    )
+    assert "Uncommitted changes" in result.stderr
 
 
 def test_phaseP_regression_blocks_empty_bugfix(tmp_path):
