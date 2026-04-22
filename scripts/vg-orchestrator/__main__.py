@@ -813,8 +813,12 @@ COMMAND_VALIDATORS = {
     # only). Now catches: commit format drift (R1), missing citations (R2),
     # goal-binding gap, plan granularity drift, override-debt balance per-step
     # not only at accept. Wave-attribution still runs per wave-complete separately.
+    # OHOK v2 finish — register test-first (TDD gate: test commit must precede
+    # src commit per task, or opt-out via 'no-test-gate' marker in message).
+    # Previously orphaned (existed but unregistered) — surfaced by
+    # /vg:doctor wired check.
     "vg:build": ["phase-exists", "commit-attribution", "task-goal-binding",
-                 "plan-granularity", "override-debt-balance"],
+                 "plan-granularity", "override-debt-balance", "test-first"],
     # Review doesn't enforce goal-coverage — tests land in /vg:test, so review
     # always fails before tests exist. Enforcement moved to /vg:test + /vg:accept
     # where tests MUST exist. Review's in-skill 0b gate warns advisory only.

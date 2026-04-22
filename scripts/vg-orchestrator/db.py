@@ -208,12 +208,24 @@ def get_active_run() -> dict | None:
         conn.close()
 
 
+# OHOK v2 Day 6 — per-event schema version for forward-compat migrations.
+# Bump when payload shape changes in a backward-incompatible way. Readers
+# (validators, reflector, reconciliation) check _schema and can reject
+# unknown versions to fail-closed instead of silently misinterpreting.
+EVENT_SCHEMA_VERSION = 1
+
+
 def append_event(run_id: str, event_type: str, phase: str, command: str,
                  actor: str = "orchestrator", outcome: str = "INFO",
                  step: str | None = None, payload: dict | None = None) -> dict:
     """Atomic event insert with hash chain. Returns the inserted event row."""
     ts = _utc_now()
-    payload_json = json.dumps(payload or {}, sort_keys=True,
+    # Inject schema version into every event payload (non-destructive — caller
+    # payloads don't need to know about it). Readers can do
+    # `json.loads(e.payload_json).get("_schema", 0)` to detect version.
+    merged_payload = dict(payload or {})
+    merged_payload.setdefault("_schema", EVENT_SCHEMA_VERSION)
+    payload_json = json.dumps(merged_payload, sort_keys=True,
                               separators=(",", ":"))
 
     with _flock():

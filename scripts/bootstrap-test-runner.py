@@ -378,11 +378,143 @@ def _run_scenario_migrate_naming(fixture: dict) -> tuple[str, str]:
     return "PASS", f"all {len(cases)} naming edge cases handled correctly"
 
 
+def _run_scenario_e2e_workflow(fixture: dict) -> tuple[str, str]:
+    """OHOK v2 Day 6 finish — E2E smoke exercising orchestrator binary
+    across pipeline commands. Not deep per-step validation (those have
+    dedicated fixtures) — just "does the pipe flow without corruption".
+    """
+    import sqlite3
+    orch = REPO_ROOT / ".claude" / "scripts" / "vg-orchestrator"
+    if not orch.exists():
+        return "FAIL", f"orchestrator missing at {orch}"
+
+    db_path = REPO_ROOT / ".vg" / "events.db"
+    if not db_path.exists():
+        return "SKIP", "events.db not initialized — run orchestrator once first"
+
+    # Ensure no leftover active run from prior session
+    subprocess.run(
+        [sys.executable, str(orch), "run-abort",
+         "--reason", "e2e-fixture-preflight-cleanup-min-50-chars-sentinel"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+    )
+
+    def run_cmd(args: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(orch)] + args,
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=timeout,
+        )
+
+    def count_events_since(ts_ref: str, event_pattern: str) -> int:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            r = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE ts > ? AND event_type LIKE ?",
+                (ts_ref, event_pattern),
+            ).fetchone()
+            return r[0] or 0
+        finally:
+            conn.close()
+
+    failures = []
+
+    for assertion in fixture.get("then", {}).get("assertions", []):
+        name = assertion.get("name", "unnamed")
+        cmd_type = assertion.get("cmd", "")
+
+        if cmd_type == "run-help":
+            r = run_cmd(["--help"])
+            if r.returncode != 0:
+                failures.append(f"{name}: --help exit {r.returncode}")
+
+        elif cmd_type in ("run-cycle", "run-cycle-expect-block",
+                          "run-cycle-verify-validators"):
+            command = assertion.get("command", "")
+            phase = assertion.get("phase", "99")
+
+            # Snapshot timestamp for event counting window
+            ts_before = subprocess.run(
+                [sys.executable, "-c",
+                 "import datetime; print(datetime.datetime.utcnow().isoformat())"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+
+            r_start = run_cmd(["run-start", command, phase])
+            if r_start.returncode != 0:
+                failures.append(
+                    f"{name}: run-start exit {r_start.returncode}: "
+                    f"{r_start.stderr[:100]}"
+                )
+                continue
+
+            # Check expected {cmd}.started events landed
+            for expected in assertion.get("expect_events", []):
+                n = count_events_since(ts_before, expected)
+                if n < 1:
+                    failures.append(
+                        f"{name}: expected event {expected!r} not emitted"
+                    )
+
+            # Run-complete — may BLOCK (exit 2) or PASS (exit 0)
+            r_complete = run_cmd(["run-complete"])
+            expected_exit = assertion.get("expect_exit_on_complete")
+            if expected_exit is not None and r_complete.returncode != expected_exit:
+                failures.append(
+                    f"{name}: run-complete exit {r_complete.returncode} "
+                    f"!= expected {expected_exit}"
+                )
+
+            # Validators fired check
+            for validator in assertion.get("expect_validators_fired", []):
+                conn = sqlite3.connect(str(db_path))
+                try:
+                    r = conn.execute(
+                        "SELECT COUNT(*) FROM events WHERE ts > ? "
+                        "AND event_type LIKE 'validation.%' "
+                        "AND payload_json LIKE ?",
+                        (ts_before, f'%"validator":"{validator}"%'),
+                    ).fetchone()
+                    if (r[0] or 0) < 1:
+                        failures.append(
+                            f"{name}: validator {validator!r} didn't fire"
+                        )
+                finally:
+                    conn.close()
+
+            # Cleanup if requested
+            if assertion.get("cleanup_abort"):
+                run_cmd(["run-abort", "--reason",
+                        "e2e-fixture-cleanup-min-50-chars-sentinel-padding"])
+
+        elif cmd_type == "verify-hash-chain":
+            # Ensure events.db hash chain has no NULL prev_hash except seed
+            conn = sqlite3.connect(str(db_path))
+            try:
+                r = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE prev_hash IS NULL"
+                ).fetchone()
+                null_count = r[0] or 0
+                if null_count > 1:
+                    failures.append(
+                        f"{name}: hash chain broken — {null_count} NULL prev_hash "
+                        f"(expected ≤1 seed)"
+                    )
+            finally:
+                conn.close()
+
+    if failures:
+        return "FAIL", f"{len(failures)} assertion(s) failed: " + "; ".join(failures[:3])
+
+    assertion_count = len(fixture.get("then", {}).get("assertions", []))
+    return "PASS", f"E2E pipeline smoke: {assertion_count} assertions passed"
+
+
 SCENARIO_RUNNERS = {
     "scenario-3-portability-empty-zone": _run_scenario3_portability,
     "scenario-1-playwright-lazy-propagation": _run_scenario1_playwright,
     "scenario-2-toast-fake-success-mutation-verify": _run_scenario2_mutation_verify,
     "scenario-migrate-naming-edge-cases": _run_scenario_migrate_naming,
+    "scenario-e2e-workflow-smoke": _run_scenario_e2e_workflow,
 }
 
 

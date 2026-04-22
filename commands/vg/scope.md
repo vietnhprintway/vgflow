@@ -1,7 +1,7 @@
 ---
 name: vg:scope
 description: Deep phase discussion — 5 structured rounds producing enriched CONTEXT.md + DISCUSSION-LOG.md
-argument-hint: "<phase> [--skip-crossai] [--auto]"
+argument-hint: "<phase> [--skip-crossai] [--auto] [--update] [--deepen=D-XX]"
 allowed-tools:
   - Read
   - Write
@@ -147,14 +147,39 @@ Skip dimension-expander when `config.scope.dimension_expand_check: false` (rapid
 PHASE_NUMBER=""
 SKIP_CROSSAI=false
 AUTO_MODE=false
+UPDATE_MODE=false       # OHOK Day 5 — incremental delta-diff instead of wipe
+DEEPEN_DECISION=""      # OHOK Day 5 — targeted drill-down on one D-XX
 
 for arg in $ARGUMENTS; do
   case "$arg" in
     --skip-crossai) SKIP_CROSSAI=true ;;
     --auto) AUTO_MODE=true ;;
+    --update) UPDATE_MODE=true ;;
+    --deepen=*) DEEPEN_DECISION="${arg#*=}" ;;
+    --deepen) ;;  # next token is decision id — simple parse below
     *) PHASE_NUMBER="$arg" ;;
   esac
 done
+
+# --update mode: read existing CONTEXT.md + DISCUSSION-LOG.md, spawn Haiku
+# delta-diff subagent to compute proposed delta vs user's new input, present
+# interactive y/n/e per delta. Does NOT wipe existing decisions (opposite
+# of default re-discuss flow). Requires CONTEXT.md present.
+#
+# --deepen=D-XX: skip rounds 1-5, run targeted sub-decision exploration for
+# the named decision. Appends D-XX.1, D-XX.2, ... as sub-decisions resolving
+# branching. Requires CONTEXT.md with D-XX present.
+#
+# Both flags are mutually exclusive with --auto (incremental updates need
+# user per-delta confirmation by definition).
+if [ "$UPDATE_MODE" = "true" ] && [ "$AUTO_MODE" = "true" ]; then
+  echo "⛔ --update incompatible with --auto (incremental mode needs user confirmation)" >&2
+  exit 1
+fi
+if [ -n "$DEEPEN_DECISION" ] && [ "$AUTO_MODE" = "true" ]; then
+  echo "⛔ --deepen incompatible with --auto" >&2
+  exit 1
+fi
 
 # v1.15.2 — register run so Stop hook can verify runtime_contract evidence
 # v2.2 — direct orchestrator call replaces bash-function indirection.

@@ -36,8 +36,11 @@ VERB=""
 FWD_ARGS=""
 for arg in $ARGUMENTS; do
   case "$arg" in
-    health|integrity|gate-stats|recover|stack|wired|help)
+    health|integrity|gate-stats|recover|stack|wired|dist|help)
       [ -z "$VERB" ] && VERB="$arg" || FWD_ARGS="${FWD_ARGS} ${arg}"
+      ;;
+    --dist|--distribution)
+      VERB="dist"
       ;;
     --wired)
       VERB="wired"
@@ -80,6 +83,7 @@ The shell block above resolves `VERB` and `FWD_ARGS`. The outer model reads the 
 | `recover`     | `Skill(skill="vg:recover", args=FWD_ARGS)` |
 | `stack`       | run `python .claude/scripts/vg-stack-health.py` inline (no sub-skill) |
 | `wired`       | run `python .claude/scripts/vg-wired-check.py ${FWD_ARGS}` inline — WIRED-OR-NOTHING 3-check for validators/hooks/commands (OHOK v2 Day 6) |
+| `dist`        | run `python .claude/scripts/distribution-check.py --verify ${FWD_ARGS}` inline — compare script+validator hashes vs `.distribution-manifest.json` baseline (detects local drift / tampering). Use `--generate` to rewrite baseline after intentional edits. |
 | `help` / ""   | print menu below, exit 0 |
 
 For `stack` verb: executes the v2.2 stack diagnostic — orchestrator reachable, events.db integrity, schemas valid, validators present, hooks wired, bootstrap consistent. Exit 0 healthy, 1 warnings, 2 blocking issues.
