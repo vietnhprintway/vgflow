@@ -91,6 +91,9 @@ Before planning, enforce any `config_amendments_needed` locked during /vg:scope 
 ```bash
 # v2.2 — register run with orchestrator (idempotent if UserPromptSubmit hook
 # already fired). Hard-fail if orchestrator unreachable.
+# Round-4 BLOCK fix: defensive parse PHASE_NUMBER from ARGUMENTS before run-start
+# (argument parsing proper happens in step 1, but telemetry needs phase-id now).
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start \
     vg:blueprint "${PHASE_NUMBER}" "${ARGUMENTS}" || {
   echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2

@@ -1137,9 +1137,9 @@ Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
     </bootstrap_rules>
 
     <build_config>
-    typecheck_cmd: ${config.build_gates.typecheck_cmd}
-    build_cmd: ${config.build_gates.build_cmd}
-    generated_types_path: ${config.contract_format.generated_types_path}
+    typecheck_cmd: ${TYPECHECK_CMD_RESOLVED:-$(vg_config_get build_gates.typecheck_cmd pnpm\ typecheck)}
+    build_cmd: ${BUILD_CMD_RESOLVED:-$(vg_config_get build_gates.build_cmd pnpm\ build)}
+    generated_types_path: ${GENERATED_TYPES_PATH_RESOLVED:-$(vg_config_get contract_format.generated_types_path packages/api-types)}
     phase: ${PHASE_NUMBER}
     plan: ${PLAN_NUM}
     </build_config>
@@ -1557,26 +1557,32 @@ if type -t vg_typecheck_adaptive >/dev/null 2>&1; then
     vg_typecheck_adaptive "$pkg" "${WAVE_TAG}" || GATE1_FAIL=$((GATE1_FAIL + 1))
   done
   [ "$GATE1_FAIL" -gt 0 ] && FAILED_GATE="typecheck"
-elif [ -n "${config.build_gates.typecheck_cmd}" ]; then
-  # Fallback when lib unavailable (older install)
-  echo "Gate 1/4: Running ${config.build_gates.typecheck_cmd} (non-adaptive)..."
-  if ! eval "${config.build_gates.typecheck_cmd}"; then
-    FAILED_GATE="typecheck"
+else
+  # Fallback when lib unavailable (older install) — use vg_config_get helper
+  TYPECHECK_CMD=$(vg_config_get build_gates.typecheck_cmd "")
+  if [ -n "$TYPECHECK_CMD" ]; then
+    echo "Gate 1/4: Running ${TYPECHECK_CMD} (non-adaptive)..."
+    if ! eval "$TYPECHECK_CMD"; then
+      FAILED_GATE="typecheck"
+    fi
   fi
 fi
 
 # Gate 2: Build (mandatory)
-if [ -z "$FAILED_GATE" ] && [ -n "${config.build_gates.build_cmd}" ]; then
-  echo "Gate 2/4: Running ${config.build_gates.build_cmd}..."
-  if ! eval "${config.build_gates.build_cmd}"; then
-    FAILED_GATE="build"
+if [ -z "$FAILED_GATE" ]; then
+  BUILD_CMD=$(vg_config_get build_gates.build_cmd "")
+  if [ -n "$BUILD_CMD" ]; then
+    echo "Gate 2/4: Running ${BUILD_CMD}..."
+    if ! eval "$BUILD_CMD"; then
+      FAILED_GATE="build"
+    fi
   fi
 fi
 
 # Gate 3: Unit tests — affected subset only (mandatory if test_unit_required=true)
 if [ -z "$FAILED_GATE" ]; then
-  UNIT_CMD="${config.build_gates.test_unit_cmd}"
-  UNIT_REQ="${config.build_gates.test_unit_required:-true}"
+  UNIT_CMD=$(vg_config_get build_gates.test_unit_cmd "")
+  UNIT_REQ=$(vg_config_get build_gates.test_unit_required "true")
 
   # Check test infrastructure presence
   if [ -z "$UNIT_CMD" ]; then
@@ -1644,10 +1650,13 @@ if [ -z "$FAILED_GATE" ]; then
 fi
 
 # Gate 4: Contract verify (grep built code vs API-CONTRACTS.md)
-if [ -z "$FAILED_GATE" ] && [ -n "${config.build_gates.contract_verify_grep}" ]; then
-  echo "Gate 4/5: Running contract verify grep..."
-  if ! eval "${config.build_gates.contract_verify_grep}"; then
-    FAILED_GATE="contract_verify"
+if [ -z "$FAILED_GATE" ]; then
+  CONTRACT_VERIFY_CMD=$(vg_config_get build_gates.contract_verify_grep "")
+  if [ -n "$CONTRACT_VERIFY_CMD" ]; then
+    echo "Gate 4/5: Running contract verify grep..."
+    if ! eval "$CONTRACT_VERIFY_CMD"; then
+      FAILED_GATE="contract_verify"
+    fi
   fi
 fi
 
@@ -1655,7 +1664,7 @@ fi
 # a test file referencing the goal id or a success-criteria keyword).
 # Mode from config.build_gates.goal_test_binding: strict | warn | off
 if [ -z "$FAILED_GATE" ]; then
-  GTB_MODE="${config.build_gates.goal_test_binding:-warn}"
+  GTB_MODE=$(vg_config_get build_gates.goal_test_binding "warn")
   if [ "$GTB_MODE" != "off" ]; then
     echo "Gate 5/5: Goal-test binding (mode=${GTB_MODE})..."
     GTB_LOG="${PHASE_DIR}/build-state.log"
@@ -1931,12 +1940,12 @@ while [ "$FAILED_GATE" ] && [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 
       ${AGENT_SKILLS}
 
-  # Re-run failed gate only
+  # Re-run failed gate only (vg_config_get for bash-safe dotted path lookup)
   case "$FAILED_GATE" in
-    typecheck) CMD="${config.build_gates.typecheck_cmd}" ;;
-    build) CMD="${config.build_gates.build_cmd}" ;;
-    test_unit) CMD="${config.build_gates.test_unit_cmd}" ;;
-    contract_verify) CMD="${config.build_gates.contract_verify_grep}" ;;
+    typecheck) CMD=$(vg_config_get build_gates.typecheck_cmd "") ;;
+    build) CMD=$(vg_config_get build_gates.build_cmd "") ;;
+    test_unit) CMD=$(vg_config_get build_gates.test_unit_cmd "") ;;
+    contract_verify) CMD=$(vg_config_get build_gates.contract_verify_grep "") ;;
     goal_test_binding)
       CMD="${PYTHON_BIN} .claude/scripts/verify-goal-test-binding.py --phase-dir ${PHASE_DIR} --wave-tag ${WAVE_TAG} --wave-number ${N}"
       ;;
@@ -2342,14 +2351,16 @@ fi
 **Final gate (all waves combined) — BLOCK on fail:**
 
 ```bash
+FINAL_TYPECHECK=$(vg_config_get build_gates.typecheck_cmd "")
+FINAL_BUILD=$(vg_config_get build_gates.build_cmd "")
 echo "Final gate: full-repo typecheck..."
-if ! eval "${config.build_gates.typecheck_cmd}"; then
+if [ -n "$FINAL_TYPECHECK" ] && ! eval "$FINAL_TYPECHECK"; then
   echo "⛔ Final typecheck failed"
   exit 1
 fi
 
 echo "Final gate: full-repo build..."
-if ! eval "${config.build_gates.build_cmd}"; then
+if [ -n "$FINAL_BUILD" ] && ! eval "$FINAL_BUILD"; then
   echo "⛔ Final build failed"
   exit 1
 fi
@@ -2357,8 +2368,8 @@ fi
 # Full unit test suite (catches cross-wave regression)
 # ⛔ HARD GATE (tightened 2026-04-17): --allow-no-tests replaced with --override-reason= requirement.
 # Cannot silently skip final unit suite — must cite reason and log to build-state.
-UNIT_CMD="${config.build_gates.test_unit_cmd}"
-UNIT_REQ="${config.build_gates.test_unit_required:-true}"
+UNIT_CMD=$(vg_config_get build_gates.test_unit_cmd "")
+UNIT_REQ=$(vg_config_get build_gates.test_unit_required "true")
 if [ -n "$UNIT_CMD" ]; then
   echo "Final gate: full unit suite..."
   if ! eval "$UNIT_CMD"; then
