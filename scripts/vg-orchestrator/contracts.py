@@ -92,8 +92,29 @@ def _fallback_parse(fm_text: str) -> dict | None:
     marker severity/waiver fields — name: / severity: / namespace: /
     required_unless_flag: — via the generic nested field pattern.
     """
-    m = re.search(r"^runtime_contract:\s*\n((?:[ \t].*\n?)+)",
-                  fm_text, re.MULTILINE)
+    # OHOK Batch 2 fix: allow blank lines inside the block so multi-line
+    # marker entries like `- name: X\n  severity: warn` stay grouped with
+    # their neighbours. Previous regex stopped at first empty line, cutting
+    # off ~80% of extended contracts. Strategy: split fm_text, find block
+    # start manually, consume while lines are indented OR blank.
+    lines = fm_text.splitlines()
+    start_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r"^runtime_contract:\s*$", line):
+            start_idx = i + 1
+            break
+    if start_idx is None:
+        return None
+    end_idx = start_idx
+    while end_idx < len(lines):
+        ln = lines[end_idx]
+        if ln == "" or ln.startswith((" ", "\t")):
+            end_idx += 1
+            continue
+        break
+    block_lines = lines[start_idx:end_idx]
+    # Re-use original algorithm on block_lines directly
+    m = type('M', (), {'group': lambda self, n: '\n'.join(block_lines) + '\n'})()
     if not m:
         return None
     block = m.group(1)

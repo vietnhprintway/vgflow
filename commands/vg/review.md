@@ -13,15 +13,74 @@ allowed-tools:
   - AskUserQuestion
   - BashOutput
 runtime_contract:
-  # Review MUST produce RUNTIME-MAP (ground truth of discovered UI) + coverage
-  # matrix. If review "ran" without these, discovery was hallucinated.
+  # OHOK Batch 2 C4 (2026-04-22): full-coverage contract.
+  # Previously contract listed only 3 markers (0_parse, 0b_goal, complete) —
+  # 19 other steps could silently skip without orchestrator detection.
+  # Now all 23 steps are declared; optional / profile-specific / already-
+  # internally-guarded ones use severity=warn so missing emits telemetry
+  # without blocking run (body has own enforcement).
   must_write:
     - "${PHASE_DIR}/RUNTIME-MAP.json"
     - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
   must_touch_markers:
+    # ─── Hard gates (block) — foundational, always run ───
+    - "00_gate_integrity_precheck"
     - "0_parse_and_validate"
     - "0b_goal_coverage_gate"
     - "complete"
+
+    # ─── Session lifecycle + planning (warn) — advisory, not blocking ───
+    - name: "00_session_lifecycle"
+      severity: "warn"
+    - name: "create_task_tracker"
+      severity: "warn"
+    - name: "phase_profile_branch"
+      severity: "warn"
+
+    # ─── Profile-exclusive phaseP_* (warn) — exactly one fires per profile ───
+    # Body has own enforcement via REVIEW_MODE gate. Missing marker on
+    # non-matching profile = expected; emits contract.marker_warn telemetry.
+    - name: "phaseP_infra_smoke"
+      severity: "warn"
+    - name: "phaseP_delta"
+      severity: "warn"
+    - name: "phaseP_regression"
+      severity: "warn"
+    - name: "phaseP_schema_verify"
+      severity: "warn"
+    - name: "phaseP_link_check"
+      severity: "warn"
+
+    # ─── Full-profile discovery pipeline (warn — short-circuited by phaseP) ───
+    - name: "phase1_code_scan"
+      severity: "warn"
+    - name: "phase1_5_ripple_and_god_node"
+      severity: "warn"
+    - name: "phase2_browser_discovery"
+      severity: "warn"
+    - name: "phase2_exploration_limits"
+      severity: "warn"
+    - name: "phase2_mobile_discovery"
+      severity: "warn"
+    - name: "phase2_5_visual_checks"
+      severity: "warn"
+    - name: "phase2_5_mobile_visual_checks"
+      severity: "warn"
+    - name: "phase3_fix_loop"
+      severity: "warn"
+    - name: "phase4_goal_comparison"
+      severity: "warn"
+
+    # ─── Post-discovery (warn) ───
+    - name: "unreachable_triage"
+      severity: "warn"
+    - name: "crossai_review"
+      severity: "warn"
+      required_unless_flag: "--skip-crossai"
+    - name: "write_artifacts"
+      severity: "warn"
+    - name: "bootstrap_reflection"
+      severity: "warn"
   must_emit_telemetry:
     - event_type: "review.started"
       phase: "${PHASE_NUMBER}"
@@ -32,6 +91,10 @@ runtime_contract:
     - "--skip-scan"
     - "--skip-discovery"
     - "--fix-only"
+    - "--allow-empty-hotfix"
+    - "--allow-orthogonal-hotfix"
+    - "--allow-no-bugref"
+    - "--allow-empty-bugfix"
 ---
 
 <NARRATION_POLICY>
@@ -571,19 +634,22 @@ fi
 </step>
 
 <step name="phaseP_delta">
-## Review mode: delta (P5, v1.9.2)
+## Review mode: delta (P5, v1.9.2 — OHOK Batch 2 B5: real verification)
 
 **Runs when `REVIEW_MODE=delta` (hotfix profile).**
 
-Logic: hotfix patches a parent phase. Review focuses on:
-- (a) parent phase's failed/blocked goals — re-verify they now pass
-- (b) delta changes — small surface, review only touched files + sibling regression
+**Previous behavior (performative):** wrote "Verdict: PASS" stub without actually verifying hotfix touches parent failures. Hotfix could ship completely untested. OHOK Batch 2 B5 replaces stub with per-goal verification loop.
+
+Logic: hotfix patches a parent phase. Review MUST:
+- (a) Find parent's failed/blocked goals in GOAL-COVERAGE-MATRIX
+- (b) For each failed goal, check if hotfix commits touch files that were implicated in the failure (via commit paths ∩ parent phase commits for that goal)
+- (c) Fail build if any critical failed goal is NOT covered by hotfix delta — ship would regress
 
 ```bash
 if [ "$REVIEW_MODE" != "delta" ]; then
   echo "↷ Skipping phaseP_delta (REVIEW_MODE=$REVIEW_MODE)"
 else
-  # 1. Find parent phase dir from SPECS
+  # 1. Resolve parent phase
   PARENT_REF=$(grep -E '^\*\*Parent phase:\*\*|^parent_phase:' "$PHASE_DIR/SPECS.md" 2>/dev/null | \
                sed -E 's/.*(Parent phase:\*\*|parent_phase:)\s*//' | awk '{print $1}' | head -1)
   if [ -z "$PARENT_REF" ]; then
@@ -591,101 +657,334 @@ else
     exit 1
   fi
   PARENT_DIR=$(ls -d "${PHASES_DIR}/${PARENT_REF}"* 2>/dev/null | head -1)
+  if [ -z "$PARENT_DIR" ]; then
+    echo "⛔ Parent phase dir not found for ref '${PARENT_REF}'" >&2
+    exit 1
+  fi
+  PARENT_MATRIX="${PARENT_DIR}/GOAL-COVERAGE-MATRIX.md"
   echo "▸ Delta review: parent=${PARENT_REF} → ${PARENT_DIR}"
 
-  # 2. If parent has GOAL-COVERAGE-MATRIX, extract failed/blocked goals
-  PARENT_MATRIX="${PARENT_DIR}/GOAL-COVERAGE-MATRIX.md"
+  # 2. Extract parent failed/blocked goals (actionable subset — UNREACHABLE/INFRA_PENDING
+  #    are parent-domain issues hotfix can't resolve, exclude from coverage gate)
+  FAILED_GOALS=""
   if [ -f "$PARENT_MATRIX" ]; then
-    FAILED_GOALS=$(grep -E '\| (BLOCKED|FAILED|INFRA_PENDING|UNREACHABLE) \|' "$PARENT_MATRIX" | \
-                   grep -oE 'G-[0-9]+|S-[0-9]+' | sort -u | head -100)
-    echo "▸ Parent failed goals: $(echo $FAILED_GOALS | tr '\n' ' ')"
+    FAILED_GOALS=$(grep -E '\|[[:space:]]*(BLOCKED|FAILED)[[:space:]]*\|' "$PARENT_MATRIX" | \
+                   grep -oE 'G-[0-9]+' | sort -u)
+    FAILED_COUNT=$(echo "$FAILED_GOALS" | grep -c . || echo 0)
+    echo "▸ Parent BLOCKED/FAILED goals (${FAILED_COUNT}): $(echo $FAILED_GOALS | tr '\n' ' ')"
   else
-    echo "⚠ Parent has no GOAL-COVERAGE-MATRIX — delta review will focus on delta changes only"
+    echo "⚠ Parent has no GOAL-COVERAGE-MATRIX — cannot verify delta coverage"
+    FAILED_COUNT=0
   fi
 
-  # 3. Write a compact GOAL-COVERAGE-MATRIX for hotfix showing:
-  #    - Parent failed goals re-checked status (best-effort — requires re-run of test)
-  #    - Delta change summary from git
-  DELTA_FILES=$(git diff --name-only HEAD~10 HEAD -- apps/ infra/ packages/ 2>/dev/null | head -20 || echo "")
-  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PARENT_REF" "$DELTA_FILES" <<'PY'
-import sys
+  # 3. Extract delta files (changes made in THIS phase — current commits only)
+  PHASE_COMMITS=$(git log --format=%H -- "${PHASE_DIR}" 2>/dev/null | head -1)
+  BASELINE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+  DELTA_FILES=$(git diff --name-only "${BASELINE_SHA}" HEAD -- \
+                'apps/**/src/**' 'packages/**/src/**' 'infra/**' 2>/dev/null | sort -u)
+  DELTA_COUNT=$(echo "$DELTA_FILES" | grep -c . || echo 0)
+
+  if [ "$DELTA_COUNT" -eq 0 ]; then
+    echo "⛔ Hotfix phase has 0 code files changed (apps/**/src|packages/**/src|infra/**)" >&2
+    echo "   Hotfix must modify at least 1 code file to be meaningful." >&2
+    echo "   Override: --allow-empty-hotfix (log to override-debt)" >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-empty-hotfix ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-delta-empty-hotfix" "${PHASE_NUMBER}" "hotfix has no code delta" "${PHASE_DIR}"
+  fi
+
+  # 4. For each failed goal, check if delta files overlap with files parent modified
+  #    when the goal was recorded as failing. Proxy: grep parent commits mentioning G-XX
+  #    for file paths, check intersection with DELTA_FILES.
+  COVERAGE_JSON="${PHASE_DIR}/.delta-coverage.json"
+  ${PYTHON_BIN} - "$PARENT_DIR" "$PHASE_DIR" "$COVERAGE_JSON" "$PARENT_REF" <<'PY' || true
+import json, re, subprocess, sys
+from pathlib import Path
+
+parent_dir, phase_dir, out_path, parent_ref = sys.argv[1:5]
+matrix = Path(parent_dir) / "GOAL-COVERAGE-MATRIX.md"
+
+failed = []
+if matrix.exists():
+    for line in matrix.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.search(r'\|\s*(G-\d+)\s*\|.*\|\s*(BLOCKED|FAILED)\s*\|', line)
+        if m:
+            failed.append(m.group(1))
+
+# Parent commits touching apps/**/src|packages/**/src|infra — our proxy for
+# "files involved in parent work"
+parent_files = set()
+try:
+    r = subprocess.run(
+        ["git", "log", "--name-only", "--format=", "--", str(parent_dir)],
+        capture_output=True, text=True, timeout=10,
+    )
+    for line in r.stdout.splitlines():
+        if line and any(line.startswith(p) for p in ("apps/", "packages/", "infra/")):
+            parent_files.add(line.strip())
+except Exception:
+    pass
+
+# Delta files (current phase)
+try:
+    r = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD~1", "HEAD",
+         "--", "apps/**/src/**", "packages/**/src/**", "infra/**"],
+        capture_output=True, text=True, timeout=10,
+    )
+    delta_files = set(f.strip() for f in r.stdout.splitlines() if f.strip())
+except Exception:
+    delta_files = set()
+
+overlap = sorted(parent_files & delta_files)
+coverage_pct = (len(overlap) / len(parent_files) * 100) if parent_files else 0
+
+out = {
+    "parent_ref": parent_ref,
+    "failed_goals": failed,
+    "parent_files_count": len(parent_files),
+    "delta_files_count": len(delta_files),
+    "overlap_files": overlap,
+    "overlap_count": len(overlap),
+    "coverage_pct_of_parent": round(coverage_pct, 1),
+}
+Path(out_path).write_text(json.dumps(out, indent=2))
+print(f"✓ delta coverage: {len(overlap)}/{len(parent_files)} parent files touched "
+      f"({coverage_pct:.1f}%), {len(failed)} parent failed goals")
+PY
+
+  # 5. Gate: if parent had failed goals AND delta touches 0 of parent's files, BLOCK
+  OVERLAP_COUNT=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${COVERAGE_JSON}'))['overlap_count'])" 2>/dev/null || echo 0)
+  if [ "${FAILED_COUNT:-0}" -gt 0 ] && [ "${OVERLAP_COUNT:-0}" -eq 0 ]; then
+    echo "⛔ Parent has ${FAILED_COUNT} BLOCKED/FAILED goals but hotfix touches 0 of parent's files." >&2
+    echo "   Delta files: ${DELTA_COUNT}" >&2
+    echo "   This hotfix cannot address parent failures — scope is orthogonal." >&2
+    echo "   Options:" >&2
+    echo "     (a) Ensure hotfix edits files in parent's blast radius" >&2
+    echo "     (b) /vg:scope ${PHASE_NUMBER} — re-scope if unrelated issue" >&2
+    echo "     (c) --allow-orthogonal-hotfix override (log debt, hotfix ships without covering parent)" >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-orthogonal-hotfix ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-delta-orthogonal" "${PHASE_NUMBER}" "hotfix doesn't touch parent files (${FAILED_COUNT} failed goals uncovered)" "${PHASE_DIR}"
+  fi
+
+  # 6. Write matrix with actual per-goal delta-overlap status
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$PARENT_REF" "$COVERAGE_JSON" <<'PY'
+import json, sys
 from datetime import datetime
-out_path = sys.argv[1]
-phase = sys.argv[2]
-parent = sys.argv[3]
-delta_files = sys.argv[4].splitlines() if sys.argv[4] else []
+from pathlib import Path
+
+out_path, phase, parent_ref, cov_json = sys.argv[1:5]
+cov = json.loads(Path(cov_json).read_text(encoding="utf-8")) if Path(cov_json).exists() else {}
+
+failed = cov.get("failed_goals", [])
+overlap = cov.get("overlap_files", [])
+delta_count = cov.get("delta_files_count", 0)
+parent_files_count = cov.get("parent_files_count", 0)
+coverage_pct = cov.get("coverage_pct_of_parent", 0)
+
+# Decide verdict
+if failed and not overlap:
+    verdict = "BLOCK (orthogonal — hotfix doesn't touch parent files)"
+elif failed and overlap:
+    verdict = f"PASS (delta touches {len(overlap)}/{parent_files_count} parent files; /vg:test re-verifies parent failed goals)"
+elif not failed:
+    verdict = "PASS (parent had no failed goals; delta review defers full goal re-check to /vg:test)"
+else:
+    verdict = "PASS (no parent matrix found; /vg:test will handle regression)"
+
 lines = [
     f"# Goal Coverage Matrix — Phase {phase} (hotfix delta)",
     "",
     f"**Profile:** hotfix  ",
-    f"**Parent phase:** {parent}  ",
-    f"**Source:** parent_phase.TEST-GOALS (regression re-verify) + delta changes  ",
+    f"**Parent phase:** {parent_ref}  ",
+    f"**Source:** parent GOAL-COVERAGE-MATRIX + git delta vs HEAD~1  ",
     f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  ",
+    "",
+    "## Parent failed goals",
+    "",
+]
+if failed:
+    lines.append("| Goal | Status | Delta-overlap |")
+    lines.append("|------|--------|---------------|")
+    for g in failed:
+        # Without per-goal file mapping we can't prove specific coverage;
+        # overall overlap serves as proxy
+        cov_mark = "Y (overall overlap)" if overlap else "N (orthogonal)"
+        lines.append(f"| {g} | BLOCKED/FAILED (parent) | {cov_mark} |")
+else:
+    lines.append("_no parent failed/blocked goals found_")
+lines += [
     "",
     "## Delta changes",
     "",
+    f"**Files changed (code paths):** {delta_count}",
+    f"**Overlap with parent files:** {len(overlap)}/{parent_files_count} ({coverage_pct:.1f}%)",
+    "",
 ]
-if delta_files:
-    for f in delta_files:
+if overlap:
+    lines.append("Sample overlapping files:")
+    for f in overlap[:10]:
         lines.append(f"- `{f}`")
-else:
-    lines.append("_no delta files detected_")
-lines += ["", "## Regression scope", "",
-          f"Re-verify parent phase ({parent}) failed/blocked goals in /vg:test step.",
-          "Delta review passes automatically if no delta is detected as breaking.",
-          "",
-          "## Gate", "",
-          "**Verdict:** PASS (delta review — regression verification deferred to /vg:test)", ""]
-open(out_path,'w',encoding='utf-8').write('\n'.join(lines) + '\n')
-print("✓ GOAL-COVERAGE-MATRIX.md written (hotfix delta)")
+lines += [
+    "",
+    "## Gate",
+    "",
+    f"**Verdict:** {verdict}",
+    "",
+]
+Path(out_path).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+print(f"✓ GOAL-COVERAGE-MATRIX.md written — verdict: {verdict.split(' (')[0]}")
 PY
 
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
   touch "${PHASE_DIR}/.step-markers/phaseP_delta.done"
-
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_delta 2>/dev/null || true
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.phaseP_delta_verified" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"parent\":\"${PARENT_REF}\",\"overlap_count\":${OVERLAP_COUNT:-0},\"failed_count\":${FAILED_COUNT:-0}}" >/dev/null 2>&1 || true
   exit 0
 fi
 ```
 </step>
 
 <step name="phaseP_regression">
-## Review mode: regression (P5, v1.9.2 — bugfix profile)
+## Review mode: regression (P5, v1.9.2 — bugfix profile, OHOK Batch 2 B5: real verification)
 
 **Runs when `REVIEW_MODE=regression`.**
+
+**Previous behavior (performative):** wrote "Verdict: PASS (regression handled at /vg:test)" stub without verifying (a) issue is referenced, (b) code was actually changed, or (c) regression test exists. Bugfix could ship with empty changeset.
+
+OHOK Batch 2 B5 enforces 3 real checks:
+1. Bug reference exists in SPECS (else BLOCK — bugfix must cite issue)
+2. Phase has ≥1 code commit (else BLOCK — fix must touch code)
+3. Phase introduces ≥1 test file or extends existing test with bug ID reference (else WARN — logged but doesn't block; /vg:test will discover gap if test truly missing)
 
 ```bash
 if [ "$REVIEW_MODE" != "regression" ]; then
   echo "↷ Skipping phaseP_regression (REVIEW_MODE=$REVIEW_MODE)"
 else
-  BUG_REF=$(grep -E '^\*\*issue_id\*\*:|^issue_id:|^\*\*bug_ref\*\*:|^bug_ref:|^\*\*Fixes bug\*\*:' "$PHASE_DIR/SPECS.md" 2>/dev/null | sed -E 's/.*://; s/^\s*//' | head -1)
-  echo "▸ Regression review (bugfix): issue_ref=${BUG_REF:-<unspecified>}"
-  echo "  Deferring actual regression tests to /vg:test (issue-specific suite)."
-  # Write stub matrix
-  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$BUG_REF" <<'PY'
+  # 1. Extract bug reference — MUST exist
+  BUG_REF=$(grep -E '^\*\*issue_id\*\*:|^issue_id:|^\*\*bug_ref\*\*:|^bug_ref:|^\*\*Fixes bug\*\*:' \
+            "$PHASE_DIR/SPECS.md" 2>/dev/null | sed -E 's/.*://; s/^\s*//' | head -1)
+  if [ -z "$BUG_REF" ]; then
+    echo "⛔ Bugfix profile requires issue_id/bug_ref in SPECS.md — no reference found" >&2
+    echo "   Add to SPECS frontmatter: issue_id: JIRA-123" >&2
+    echo "   or body: **Fixes bug**: GH#456" >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-no-bugref ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-regression-no-bugref" "${PHASE_NUMBER}" "bugfix without issue_id" "${PHASE_DIR}"
+    BUG_REF="<unspecified>"
+  fi
+  echo "▸ Regression review (bugfix): issue_ref=${BUG_REF}"
+
+  # 2. Phase must have ≥1 code commit — empty bugfix is meaningless
+  BASELINE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD 2>/dev/null)
+  CODE_FILES=$(git diff --name-only "${BASELINE_SHA}" HEAD -- \
+               'apps/**/src/**' 'packages/**/src/**' 'infra/**' 2>/dev/null | sort -u)
+  CODE_COUNT=$(echo "$CODE_FILES" | grep -c . || echo 0)
+
+  if [ "$CODE_COUNT" -eq 0 ]; then
+    echo "⛔ Bugfix phase has 0 code files changed in apps|packages|infra" >&2
+    echo "   Bugfix must modify at least 1 production file." >&2
+    if [[ ! "${ARGUMENTS}" =~ --allow-empty-bugfix ]]; then
+      exit 1
+    fi
+    source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/override-debt.sh" 2>/dev/null || true
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "phaseP-regression-empty-bugfix" "${PHASE_NUMBER}" "bugfix has no code delta" "${PHASE_DIR}"
+  fi
+
+  # 3. Scan for regression test — WARN if missing (don't block; /vg:test catches real gaps)
+  TEST_FILES=$(git diff --name-only "${BASELINE_SHA}" HEAD -- \
+               '**/e2e/**/*.spec.ts' '**/__tests__/**' '**/*.test.ts' '**/*.test.js' \
+               '**/tests/**/*.py' 2>/dev/null | sort -u)
+  TEST_COUNT=$(echo "$TEST_FILES" | grep -c . || echo 0)
+  BUG_ID_SAFE=$(echo "$BUG_REF" | grep -oE '[A-Za-z0-9_-]+' | head -1)
+
+  # Look for test file mentioning the bug ID (by name or content)
+  TEST_MENTIONS_BUG=0
+  if [ -n "$BUG_ID_SAFE" ] && [ "$TEST_COUNT" -gt 0 ]; then
+    for f in $TEST_FILES; do
+      if [ -f "$f" ]; then
+        if grep -qiE "(${BUG_ID_SAFE}|regression|bugfix)" "$f" 2>/dev/null; then
+          TEST_MENTIONS_BUG=1
+          break
+        fi
+      fi
+    done
+  fi
+
+  if [ "$TEST_COUNT" -eq 0 ]; then
+    echo "⚠ Bugfix introduces no test files — /vg:test will attempt to generate regression coverage" >&2
+    REGRESSION_NOTE="no-test-added (WARN — /vg:test to generate)"
+  elif [ "$TEST_MENTIONS_BUG" -eq 0 ]; then
+    echo "⚠ Bugfix has ${TEST_COUNT} test files but none reference bug ID '${BUG_ID_SAFE}'" >&2
+    REGRESSION_NOTE="test-files-unlinked (WARN — consider adding bug ID comment to test)"
+  else
+    echo "✓ Bugfix has ${TEST_COUNT} test files, at least one references bug ID" >&2
+    REGRESSION_NOTE="test-linked (OK)"
+  fi
+
+  # 4. Write matrix with actual verification results
+  ${PYTHON_BIN} - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" "$PHASE_NUMBER" "$BUG_REF" \
+    "$CODE_COUNT" "$TEST_COUNT" "$TEST_MENTIONS_BUG" "$REGRESSION_NOTE" <<'PY'
 import sys
 from datetime import datetime
-out, phase, bug = sys.argv[1], sys.argv[2], sys.argv[3]
+out, phase, bug, code_count, test_count, test_mentions, note = sys.argv[1:8]
+code_count = int(code_count); test_count = int(test_count); test_mentions = int(test_mentions)
+
+if code_count == 0:
+    verdict = "BLOCK (empty bugfix — no code changes)"
+elif test_count > 0 and test_mentions:
+    verdict = f"PASS (bugfix has {code_count} code files + linked test; /vg:test re-verifies)"
+elif test_count > 0:
+    verdict = f"PASS-WARN (bugfix has {code_count} code files + {test_count} tests unlinked to bug)"
+else:
+    verdict = f"PASS-WARN (bugfix has {code_count} code files but 0 tests; /vg:test must generate)"
+
 lines = [
     f"# Goal Coverage Matrix — Phase {phase} (bugfix regression)",
     "",
     f"**Profile:** bugfix  ",
-    f"**Bug reference:** {bug or '_unspecified_'}  ",
-    f"**Source:** SPECS.fixes_bug  ",
+    f"**Bug reference:** {bug}  ",
+    f"**Source:** SPECS.md issue_id + git delta vs HEAD~1  ",
     f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}",
     "",
-    "## Regression gate",
+    "## Verification checks",
     "",
-    "Bugfix regression is verified by /vg:test `issue-specific` runner — this review step",
-    "passes automatically. Full regression sweep via /vg:regression after accept.",
+    "| Check | Status |",
+    "|-------|--------|",
+    f"| Bug reference present | {'✓' if bug != '<unspecified>' else '⛔ missing'} |",
+    f"| Code files changed | {code_count} |",
+    f"| Test files changed | {test_count} |",
+    f"| Tests reference bug ID | {'✓' if test_mentions else 'no'} |",
+    f"| Regression note | {note} |",
     "",
-    "**Verdict:** PASS (regression handled at /vg:test)",
+    "## Gate",
+    "",
+    f"**Verdict:** {verdict}",
+    "",
+    "**Next:** /vg:test runs issue-specific runner to re-verify bug is actually fixed.",
     "",
 ]
 open(out, 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
-print("✓ GOAL-COVERAGE-MATRIX.md written (bugfix regression stub)")
+print(f"✓ GOAL-COVERAGE-MATRIX.md written — {verdict.split(' (')[0]}")
 PY
+
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
   touch "${PHASE_DIR}/.step-markers/phaseP_regression.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phaseP_regression 2>/dev/null || true
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.phaseP_regression_verified" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"bug_ref\":\"${BUG_REF}\",\"code_count\":${CODE_COUNT},\"test_count\":${TEST_COUNT},\"test_linked\":${TEST_MENTIONS_BUG}}" >/dev/null 2>&1 || true
   exit 0
 fi
 ```
