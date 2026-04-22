@@ -104,6 +104,8 @@ fi
 
 ```bash
 # v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+# OHOK-8 round-4 Codex fix: parse PHASE_NUMBER BEFORE run-start
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:test "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 00_gate_integrity_precheck 2>/dev/null || true
 ```
@@ -191,18 +193,23 @@ If `--fix-only`: skip to 5c-fix section.
 </step>
 
 <step name="create_task_tracker">
-Create tasks for progress tracking:
+**Narrate step plan using markdown headers (NO TaskCreate — see NARRATION_POLICY).**
+
+Per NARRATION_POLICY at top of this file: /vg:test spawns Playwright runs + CrossAI agents that may take 20-60 min. TaskCreate items persist across sessions and hang if interrupted. Use markdown headers in text output instead.
+
+Before starting phase 5a, write this block verbatim so user sees plan:
 ```
-TaskCreate: "5a. Deploy to target"              (activeForm: "Deploying...")
-TaskCreate: "5b. Runtime contract verify"       (activeForm: "Verifying contracts...")
-TaskCreate: "5c. Independent smoke check"       (activeForm: "Spot-checking runtime map...")
-TaskCreate: "5c. Goal verification"             (activeForm: "Verifying goals...")
-TaskCreate: "5c. Minor fix loop"                (activeForm: "Fixing minor issues...")
-TaskCreate: "5c. Multi-page flows"              (activeForm: "Running flow tests...")
-TaskCreate: "5d. Codegen"                       (activeForm: "Generating .spec.ts...")
-TaskCreate: "5e. Regression run"                (activeForm: "Running Playwright tests...")
-TaskCreate: "5f. Security audit"                (activeForm: "Running security scan...")
+## ━━━ /vg:test step plan ━━━
+5a. Deploy to target
+5b. Runtime contract verify
+5c. Independent smoke + goal verify + minor fix loop + multi-page flows
+5d. Codegen .spec.ts from verified runtime map
+5e. Regression run (Playwright)
+5f. Security audit
 ```
+
+At start of each sub-step: `## ━━━ Running 5c: Goal verification (3/12 goals done) ━━━`.
+At end: `touch "${PHASE_DIR}/.step-markers/${sub_step}.done"`. Marker file is authoritative progress signal (consumed by step 9 post-exec check + /vg:next routing).
 </step>
 
 <step name="0_state_update">
@@ -1562,7 +1569,7 @@ the phase. This is the final strict gate — goals unbound here = /vg:test FAILS
 Mode from `config.build_gates.goal_test_binding_phase_end` (default: strict).
 
 ```bash
-GTB_MODE="${config.build_gates.goal_test_binding_phase_end:-strict}"
+GTB_MODE=$(vg_config_get build_gates.goal_test_binding_phase_end strict)
 if [ "$GTB_MODE" != "off" ]; then
   # Use full phase commit range as the wave-tag proxy — scan all phase commits
   PHASE_FIRST_COMMIT=$(git log --format="%H" --reverse --grep="${PHASE_NUMBER}-" | head -1)
@@ -2141,7 +2148,9 @@ Two-tier check on phase-changed files.
 
 Get changed files for this phase:
 ```bash
-CHANGED_FILES=$(git diff --name-only HEAD~${COMMIT_COUNT} HEAD -- "${config.code_patterns.api_routes}" "${config.code_patterns.web_pages}" 2>/dev/null)
+API_ROUTES_PATTERN=$(vg_config_get code_patterns.api_routes "apps/api/**/*.ts")
+WEB_PAGES_PATTERN=$(vg_config_get code_patterns.web_pages "apps/web/**/*.tsx")
+CHANGED_FILES=$(git diff --name-only HEAD~${COMMIT_COUNT} HEAD -- "$API_ROUTES_PATTERN" "$WEB_PAGES_PATTERN" 2>/dev/null)
 ```
 
 Security patterns (generic, not stack-specific):
@@ -2211,8 +2220,9 @@ while IFS=$'\t' read -r ENDPOINT AUTH_LINE; do
 done < "${VG_TMP}/contract-auth-lines.txt"
 
 # Same for error response shape — verify FE reads error.message not statusText
-ERROR_SHAPE="${config.contract_format.error_response_shape:-{ error: { code: string, message: string } }}"
-CHANGED_FE=$(git diff --name-only HEAD~${COMMIT_COUNT:-5} HEAD -- "${config.code_patterns.web_pages}" 2>/dev/null)
+ERROR_SHAPE=$(vg_config_get contract_format.error_response_shape "{ error: { code: string, message: string } }")
+WEB_PAGES_PATTERN=$(vg_config_get code_patterns.web_pages "apps/web/**/*.tsx")
+CHANGED_FE=$(git diff --name-only HEAD~${COMMIT_COUNT:-5} HEAD -- "$WEB_PAGES_PATTERN" 2>/dev/null)
 if [ -n "$CHANGED_FE" ]; then
   # FE anti-pattern: toast.error(error.message) where error = AxiosError
   BAD_TOAST=$(echo "$CHANGED_FE" | xargs grep -l "toast.*error\.message\b\|toast.*err\.message\b" 2>/dev/null | \

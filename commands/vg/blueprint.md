@@ -323,8 +323,12 @@ Run first: /vg:scope {phase}
 ```bash
 # If project has design assets configured, ensure they're normalized BEFORE planning
 # (so R4 granularity check + executor design_context have something to point at)
-if [ -n "${config.design_assets.paths[0]}" ]; then
-  DESIGN_OUT="${config.design_assets.output_dir:-${PLANNING_DIR}/design-normalized}"
+# OHOK-9 round-4 Codex fix: ${config.X.Y} is invalid bash (dots not allowed
+# in var names). Previously returned empty string AND broke subsequent parsing.
+# Use vg_config_get / vg_config_get_array helpers from config-loader.
+DESIGN_PATHS=$(vg_config_get_array design_assets.paths)
+if [ -n "$DESIGN_PATHS" ]; then
+  DESIGN_OUT=$(vg_config_get design_assets.output_dir "${PLANNING_DIR}/design-normalized")
   DESIGN_MANIFEST="${DESIGN_OUT}/manifest.json"
 
   # Stale check: any source asset newer than manifest?
@@ -334,13 +338,14 @@ if [ -n "${config.design_assets.paths[0]}" ]; then
     REASON="manifest missing"
   else
     # Compare mtimes — if any asset newer than manifest, re-extract
-    for pattern in "${config.design_assets.paths[@]}"; do
+    while read -r pattern; do
+      [ -z "$pattern" ] && continue
       if find $pattern -newer "$DESIGN_MANIFEST" 2>/dev/null | grep -q .; then
         NEEDS_EXTRACT=true
         REASON="assets changed since last extract"
         break
       fi
-    done
+    done <<< "$DESIGN_PATHS"
   fi
 
   if [ "$NEEDS_EXTRACT" = true ]; then
@@ -1055,7 +1060,7 @@ No block — warnings only. AI planner should address each warning in task descr
 Build `.callers.json` — maps each PLAN task's `<edits-*>` symbols to all downstream files using them. Build step 4e consumes this; commit-msg hook enforces caller update or citation.
 
 ```bash
-if [ "${config.semantic_regression.enabled:-true}" = "true" ]; then
+if [ "$(vg_config_get semantic_regression.enabled true)" = "true" ]; then  # OHOK-9 round-4
   # ⛔ BUG #1 fix (2026-04-18): MUST pass --graphify-graph when active.
   # Without flag, script falls back to grep-only (misses path-alias imports
   # like `@/hooks/X`, misses cross-monorepo symbol callers).
@@ -2094,8 +2099,9 @@ Catches contract syntax errors BEFORE build consumes them.
 
 ```bash
 CONTRACTS="${PHASE_DIR}/API-CONTRACTS.md"
-COMPILE_CMD="${config.contract_format.compile_cmd}"
-CONTRACT_TYPE="${config.contract_format.type}"
+# OHOK-9 round-4 Codex fix: invalid bash dotted substitution → use helper
+COMPILE_CMD=$(vg_config_get contract_format.compile_cmd "")
+CONTRACT_TYPE=$(vg_config_get contract_format.type "zod_code_block")
 
 # Select code block language per contract_format.type:
 #   zod_code_block / typescript_interface → ```typescript
@@ -2236,39 +2242,72 @@ Save mode + thresholds to blueprint-state.json.
 
 For current iteration N (starts at 1):
 
-```
-# Parse CONTEXT decisions
-DECISIONS=$(grep -oE '^D-[0-9]+' "${PHASE_DIR}/CONTEXT.md" | sort -u)
+```bash
+# OHOK-8 round-4 Codex fix: real bash (was pseudocode) + namespace-aware regex.
+# Previously grep '^D-[0-9]+' missed both '### D-XX:' legacy headers AND
+# '### P{phase}.D-XX:' namespaced headers (scope v1.8+ canonical). Result:
+# decision coverage gate false-passed with zero decisions found.
+
+# Parse CONTEXT decisions — accepts bare D-XX AND namespaced P{phase}.D-XX
+# headers (both with ### prefix per scope.md §§ generating format).
+DECISIONS=$(grep -oE '^### (P[0-9.]+\.)?D-[0-9]+' "${PHASE_DIR}/CONTEXT.md" \
+  | sed -E 's/^### //' | sort -u)
 # Parse PLAN tasks with goals-covered
 TASKS=$(grep -oE '^## Task [0-9]+' "${PHASE_DIR}"/PLAN*.md | sort -u)
-# Parse TEST-GOALS
-GOALS=$(grep -oE '^## Goal G-[0-9]+' "${PHASE_DIR}/TEST-GOALS.md" | sort -u)
+# Parse TEST-GOALS — accepts both '### G-XX' and '### Goal G-XX' (phase 14 drift)
+GOALS=$(grep -oE '^### (Goal\s+)?G-[0-9]+' "${PHASE_DIR}/TEST-GOALS.md" \
+  | sed -E 's/^### (Goal\s+)?//' | sort -u)
 # Parse API-CONTRACTS endpoints
 ENDPOINTS=$(grep -oE '^### (POST|GET|PUT|DELETE|PATCH) /' "${PHASE_DIR}/API-CONTRACTS.md" | sort -u)
 
-# Cross-check (bidirectional — fixes I4):
-# 1. Decisions ↔ Tasks (SPECS covered)
-for D in $DECISIONS:
-  if no task references D (check in PLAN*.md goals-covered or implements-decision attr):
-    decisions_missing += D
-# 2. Goals → Tasks (normal direction: task covers goal)
-for G in $GOALS:
-  if no task lists G in <goals-covered>:
-    goals_missing += G
-# 2-bis. Goals ← Tasks (orphan goals from 2b5 Implemented-by linkage)
-#        A goal flagged "⚠ NONE" in TEST-GOALS.md means bidirectional linkage failed
-#        → count it as missing even if some task coincidentally has its ID.
-orphan_goals=$(grep -B1 "Implemented by:.*⚠ NONE" "${PHASE_DIR}/TEST-GOALS.md" | grep -oE '^## Goal G-[0-9]+')
-goals_missing = unique(goals_missing ∪ orphan_goals)
-# 3. Endpoints ↔ Tasks
-for E in $ENDPOINTS:
-  if no task creates handler for E:
-    endpoints_missing += E
+# Cross-check 1 — Decisions covered by tasks (SPECS tracing)
+decisions_missing=""
+for D in $DECISIONS; do
+  # Task attribute format: <goals-covered>G-01,G-02</goals-covered> OR
+  # <implements-decision>P14.D-01</implements-decision>. Also accept bare
+  # D-XX inside goals-covered for legacy tasks.
+  if ! grep -rqE "(implements-decision[>:]\s*${D}|<goals-covered>[^<]*${D}\b)" \
+       "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
+    decisions_missing="${decisions_missing} ${D}"
+  fi
+done
 
-# Compute miss percentages (guard against zero division for empty phases)
-decisions_miss_pct = (len(decisions_missing) / len(DECISIONS) * 100) if len(DECISIONS) > 0 else 0
-goals_miss_pct = (len(goals_missing) / len(GOALS) * 100) if len(GOALS) > 0 else 0
-endpoints_miss_pct = (len(endpoints_missing) / len(ENDPOINTS) * 100) if len(ENDPOINTS) > 0 else 0
+# Cross-check 2 — Goals covered by tasks (normal direction)
+goals_missing=""
+for G in $GOALS; do
+  if ! grep -rqE "<goals-covered>[^<]*${G}\b" \
+       "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
+    goals_missing="${goals_missing} ${G}"
+  fi
+done
+
+# Cross-check 2-bis — Orphan goals flagged by step 2b5 bidirectional linkage
+orphan_goals=$(grep -B1 "Implemented by:.*⚠ NONE" "${PHASE_DIR}/TEST-GOALS.md" \
+  | grep -oE 'G-[0-9]+' | sort -u)
+goals_missing=$(echo "${goals_missing} ${orphan_goals}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
+# Cross-check 3 — Endpoints covered by tasks
+endpoints_missing=""
+for E_HEADER in $ENDPOINTS; do
+  # Extract METHOD + PATH from '### METHOD /path'
+  E=$(echo "$E_HEADER" | sed -E 's/^### //')
+  if ! grep -rqF "${E}" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
+    endpoints_missing="${endpoints_missing} ${E}"
+  fi
+done
+
+# Compute counts for percentage gate
+DEC_TOTAL=$(echo "$DECISIONS" | wc -w)
+DEC_MISS=$(echo "$decisions_missing" | wc -w)
+GOAL_TOTAL=$(echo "$GOALS" | wc -w)
+GOAL_MISS=$(echo "$goals_missing" | wc -w)
+EP_TOTAL=$(echo "$ENDPOINTS" | wc -w)
+EP_MISS=$(echo "$endpoints_missing" | wc -w)
+
+# Percentages (bash arithmetic, guard against div-by-zero)
+decisions_miss_pct=$(( DEC_TOTAL > 0 ? DEC_MISS * 100 / DEC_TOTAL : 0 ))
+goals_miss_pct=$(( GOAL_TOTAL > 0 ? GOAL_MISS * 100 / GOAL_TOTAL : 0 ))
+endpoints_miss_pct=$(( EP_TOTAL > 0 ? EP_MISS * 100 / EP_TOTAL : 0 ))
 ```
 
 ### 2d-4: Gate decision

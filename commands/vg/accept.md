@@ -17,7 +17,10 @@ runtime_contract:
   # /vg:accept MUST produce UAT.md with human verdict. Missing = phase not
   # actually accepted despite claim.
   must_write:
-    - "${PHASE_DIR}/UAT.md"
+    # OHOK-8 round-4 Codex fix: skill writes ${PHASE_DIR}/${PHASE_NUMBER}-UAT.md
+    # (see step 6_write_uat_md line 901). Contract previously asked for bare
+    # UAT.md → validator BLOCK on valid artifact, or looked at wrong path.
+    - "${PHASE_DIR}/${PHASE_NUMBER}-UAT.md"
   must_touch_markers:
     - "1_artifact_precheck"
     - "2_marker_precheck"
@@ -65,6 +68,8 @@ fi
 
 ```bash
 # v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+# OHOK-8 round-4 Codex fix: parse PHASE_NUMBER BEFORE run-start
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:accept "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 0_gate_integrity_precheck 2>/dev/null || true
 ```
@@ -175,7 +180,19 @@ echo "✓ All expected step markers present for profile: $PROFILE"
 
 ```bash
 SANDBOX=$(ls "${PHASE_DIR}"/*SANDBOX-TEST.md 2>/dev/null | head -1)
-VERDICT=$(grep -iE "^\s*\*\*Verdict:?\*\*|^\s*Verdict:" "$SANDBOX" | head -1 | grep -oiE "PASSED|GAPS_FOUND|FAILED" | tr '[:lower:]' '[:upper:]')
+# OHOK-8 round-4 Codex fix: accept emits verdict in 3 formats across versions.
+# Parser now accepts all:
+#   `**Verdict:** PASSED`           (bold inline)
+#   `Verdict: PASSED`                (plain prefix)
+#   `## Verdict: PASSED`             (markdown heading — test.md canonical)
+#   `status: passed` (YAML frontmatter, lowercased values)
+# Previous regex only matched the first two → test.md's heading format
+# produced a false BLOCK "verdict not parseable" after a valid /vg:test.
+VERDICT=$(grep -iE "^\s*#+\s*Verdict:?|^\s*\*\*Verdict:?\*\*|^\s*Verdict:|^\s*status:" "$SANDBOX" \
+  | head -1 \
+  | grep -oiE "PASSED|GAPS_FOUND|FAILED|passed|gaps_found|failed" \
+  | head -1 \
+  | tr '[:lower:]' '[:upper:]')
 
 case "$VERDICT" in
   PASSED|GAPS_FOUND)

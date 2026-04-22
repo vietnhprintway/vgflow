@@ -121,6 +121,10 @@ fi
 
 ```bash
 # v2.2 — register run with orchestrator (idempotent with UserPromptSubmit hook)
+# OHOK-8 round-4 Codex fix: parse PHASE_NUMBER BEFORE run-start so the run
+# doesn't register against an empty phase (telemetry + runtime-contract
+# evidence attaches to "" instead of the actual phase).
+[ -z "${PHASE_NUMBER:-}" ] && PHASE_NUMBER=$(echo "${ARGUMENTS}" | awk '{print $1}')
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:review "${PHASE_NUMBER}" "${ARGUMENTS}" || { echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2; exit 1; }
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 00_gate_integrity_precheck 2>/dev/null || true
 ```
@@ -156,9 +160,9 @@ session_mark_step "0-parse-args"
 Parse `$ARGUMENTS`: phase_number, flags.
 
 Flags:
-- `--skip-scan` — skip Phase 1 (code scan), go directly to browser discovery
-- `--skip-discovery` — skip Phase 2 (browser discovery), use existing RUNTIME-MAP for Phase 4
-- `--fix-only` — skip to Phase 3 (requires RUNTIME-MAP with errors)
+- `--skip-scan` — skip Phase 1 (code scan), go directly to browser discovery. **Gated**: must pair with `--override-reason="<text>"` (logged to override-debt).
+- `--skip-discovery` — skip Phase 2 (browser discovery), use existing RUNTIME-MAP for Phase 4. **Gated**: must pair with `--override-reason="<text>"` (logged to override-debt).
+- `--fix-only` — skip to Phase 3 (requires RUNTIME-MAP with errors). **Gated**: listed in `forbidden_without_override` (line 34) — must combine with `--override-reason="<text>"` to run, otherwise hard BLOCK. Entry logged to override-debt register.
 - `--skip-crossai` — skip CrossAI review at end
 - `--evaluate-only` — skip Phase 1 + 2 (discovery already done by Codex/Gemini), read existing scan JSONs from ${PHASE_DIR}, go directly to Phase 2b-3 (collect + merge) → Phase 3 (fix) → Phase 4 (goal comparison). Requires: nav-discovery.json + scan-*.json already exist.
 - `--retry-failed` — skip Phase 1 + Phase 2 navigator, re-scan ONLY views mapped to failed/blocked goals in GOAL-COVERAGE-MATRIX.md. Requires: GOAL-COVERAGE-MATRIX.md + RUNTIME-MAP.json already exist. Use when: review already ran but goals < 100%, code was fixed, need targeted re-scan without full re-discovery.
@@ -320,27 +324,34 @@ touch "${PHASE_DIR}/.step-markers/0b_goal_coverage_gate.done" 2>/dev/null || tru
 </step>
 
 <step name="create_task_tracker">
-Create tasks for progress tracking — granular sub-steps so user sees exactly what's happening:
-```
-TaskCreate: "1a: Contract verify (grep)"            (activeForm: "Grepping BE routes vs contracts...")
-TaskCreate: "1b: Element inventory"                 (activeForm: "Counting UI elements per file...")
-TaskCreate: "1.5: Graphify ripple analysis"         (activeForm: "Scanning cross-module callers...")
-TaskCreate: "2a: Deploy + preflight"                (activeForm: "Deploying to {ENV}, checking health...")
-TaskCreate: "2b-1: Navigator discovers views"       (activeForm: "Haiku navigator scanning sidebar...")
-TaskCreate: "2b-2: Haiku scanners (per view)"       (activeForm: "Spawning {N} Haiku agents for {N} views...")
-TaskCreate: "2b-3: Merge + evaluate scan results"   (activeForm: "Merging Haiku results, evaluating coverage...")
-TaskCreate: "2.5: Visual integrity checks"          (activeForm: "Checking fonts, overflow, responsive...")
-TaskCreate: "3: Fix loop"                           (activeForm: "Fixing {N} issues, iteration {I}/3...")
-TaskCreate: "4a: Load goals + filter infra deps"    (activeForm: "Parsing {N} goals, checking infra availability...")
-TaskCreate: "4b: Map goals to RUNTIME-MAP"          (activeForm: "Mapping {N} goals to discovered views...")
-TaskCreate: "4c: Weighted gate evaluation"          (activeForm: "Evaluating gate: critical 100%, important 80%...")
-TaskCreate: "4d: Write GOAL-COVERAGE-MATRIX"        (activeForm: "Writing coverage matrix...")
-```
+**Narrate step plan using markdown headers (NO TaskCreate/TaskUpdate — see NARRATION_POLICY).**
 
-**Dynamic update rule:** As each sub-step runs, update activeForm with concrete values:
-- "2b-2: Spawning Haiku scanners" → "2b-2: Scanning /conversions as advertiser (3/7 views)"
-- "3: Fix loop" → "3: Fixing Bug #2: S2SSecretSection crash (iter 1/3)"
-- "4a: Load goals" → "4a: 38 goals loaded, 16 INFRA_PENDING (ClickHouse, pixel_server)"
+Per NARRATION_POLICY: review can spawn 5-20 Haiku scanners running in parallel (30+ min total). TaskCreate items would persist forever in Claude Code tail UI if the session interrupts mid-scan. Instead:
+
+1. Write this block verbatim in your text output before starting phase 1 so user sees the plan:
+   ```
+   ## ━━━ /vg:review step plan ━━━
+   1a:   Contract verify (grep BE routes vs contracts)
+   1b:   Element inventory (count UI elements per file)
+   1.5:  Graphify ripple analysis (cross-module callers)
+   2a:   Deploy + preflight (to {ENV}, health check)
+   2b-1: Navigator discovers views (Haiku scanning sidebar)
+   2b-2: Haiku scanners per view (N parallel agents)
+   2b-3: Merge + evaluate scan results
+   2.5:  Visual integrity checks
+   3:    Fix loop (max 3 iterations)
+   4a:   Load goals + filter infra deps
+   4b:   Map goals to RUNTIME-MAP
+   4c:   Weighted gate evaluation
+   4d:   Write GOAL-COVERAGE-MATRIX
+   ```
+2. Before each sub-step runs, narrate: `## ━━━ Running 2b-2: Scanning /conversions as advertiser (3/7 views) ━━━`.
+3. After each sub-step: `touch "${PHASE_DIR}/.step-markers/${sub_step}.done"`.
+
+**Dynamic header examples** (concrete values in headers, not in stale task items):
+- `## ━━━ 2b-2: Scanning /conversions as advertiser (3/7 views) ━━━`
+- `## ━━━ 3: Fixing Bug #2: S2SSecretSection crash (iter 1/3) ━━━`
+- `## ━━━ 4a: 38 goals loaded, 16 INFRA_PENDING (ClickHouse, pixel_server) ━━━`
 </step>
 
 <step name="phase_profile_branch">
@@ -1589,8 +1600,8 @@ for h in sorted(hits): print(h)
 
    ## CONNECTION
    SESSION_ID="haiku-nav-{phase}-$$"
-   MCP_PREFIX=$(bash "~/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
-   trap "bash '~/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
+   MCP_PREFIX=$(bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" claim "$SESSION_ID")
+   trap "bash '${HOME}/.claude/playwright-locks/playwright-lock.sh' release \"$SESSION_ID\" 2>/dev/null" EXIT INT TERM
    Use returned $MCP_PREFIX as server for all browser tool calls.
 
    ## TASK
@@ -1612,7 +1623,7 @@ for h in sorted(hits): print(h)
         "actual_views": ["/sites", "/campaigns", "/audit-log", "/settings/roles", ...]
       }
    7. browser_close
-   8. bash "~/.claude/playwright-locks/playwright-lock.sh" release "haiku-nav-{phase}-$$"
+   8. bash "${HOME}/.claude/playwright-locks/playwright-lock.sh" release "haiku-nav-{phase}-$$"
 
    ## INJECTED DATA
    REGISTERED_ROUTES = [{from step 2 above — list from code scan}]
@@ -3153,9 +3164,16 @@ Goals không có UI surface đúng ra phải mark `infra_deps: [<no-ui tag>]` tr
 Trước khi chạy weighted gate, PHẢI resolve mọi `NOT_SCANNED` + `FAILED` thành 1 trong 4 kết luận.
 
 ```bash
-NOT_SCANNED_COUNT=$(count goals where status == "NOT_SCANNED")
-FAILED_COUNT=$(count goals where status == "FAILED")
+# OHOK-8 round-4 Codex fix: replace pseudocode with real bash grep.
+# Previously `count goals where status == "NOT_SCANNED"` was not executable
+# → gate couldn't run → NOT_SCANNED goals slipped through unresolved.
+MATRIX="${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
+NOT_SCANNED_COUNT=$(grep -cE '^\| G-[0-9]+.*\|[[:space:]]*NOT_SCANNED[[:space:]]*\|' "$MATRIX" 2>/dev/null || echo 0)
+FAILED_COUNT=$(grep -cE '^\| G-[0-9]+.*\|[[:space:]]*FAILED[[:space:]]*\|' "$MATRIX" 2>/dev/null || echo 0)
 INTERMEDIATE=$((NOT_SCANNED_COUNT + FAILED_COUNT))
+# Build the list of intermediate goal IDs (used later in override auto-convert)
+INTERMEDIATE_GOALS=$(grep -oE '^\| (G-[0-9]+)[^|]*\|[^|]*\|[^|]*\|[[:space:]]*(NOT_SCANNED|FAILED)[[:space:]]*\|' "$MATRIX" 2>/dev/null \
+  | grep -oE 'G-[0-9]+' | sort -u | tr '\n' ' ')
 
 if [ "$INTERMEDIATE" -gt 0 ]; then
   echo "⛔ Review cannot exit Phase 4 — ${INTERMEDIATE} intermediate goals:"
@@ -3212,9 +3230,16 @@ if [ "$INTERMEDIATE" -gt 0 ]; then
     if ! rationalization_guard_dispatch "$RATGUARD_RESULT" "not-scanned-defer" "--allow-intermediate" "$PHASE_NUMBER" "review.4c-pre" "${INTERMEDIATE} intermediate goals"; then
       exit 1
     fi
-    # Auto-convert intermediate → UNREACHABLE với audit trail
+    # OHOK-8 round-4 Codex fix: update_goal_status was undefined function.
+    # Replaced with real bash sed that rewrites matrix row in-place.
+    # Auto-convert intermediate → UNREACHABLE với audit trail.
+    TS=$(date -u +%FT%TZ)
     for gid in $INTERMEDIATE_GOALS; do
-      update_goal_status $gid "UNREACHABLE" --reason "review-skip-${original_status}"
+      # Match row `| G-XX |...|...|...| (NOT_SCANNED|FAILED) |`, replace
+      # status column only. Preserve other columns. Use | delimiter in sed
+      # to avoid conflicts with pipe chars in evidence.
+      sed -i -E "s|^(\| ${gid} \|[^|]+\|[^|]+\|[^|]+\|)[[:space:]]*(NOT_SCANNED\|FAILED)[[:space:]]*\|(.*)$|\1 UNREACHABLE |review-skip-\2 @${TS}\3|" \
+        "$MATRIX" 2>/dev/null || true
     done
     echo "intermediate-override: ${INTERMEDIATE} goals auto-converted UNREACHABLE ts=$(date -u +%FT%TZ)" \
       >> "${PHASE_DIR}/build-state.log"

@@ -26,12 +26,17 @@ runtime_contract:
   must_touch_markers:
     # Critical path — every long build MUST emit these. Wave tasks are dynamic
     # so we verify the orchestrator envelope, not per-wave markers.
+    # OHOK-8 round-4 Codex finding: missing 11_crossai_build_verify_loop and
+    # 12_run_complete → build could satisfy runtime_contract without running
+    # the MANDATORY OHOK-7 CrossAI loop. Both added to close gate bypass.
     - "1_parse_args"
     - "4_load_contracts_and_context"
     - "7_discover_plans"
     - "8_execute_waves"
     - "9_post_execution"
     - "10_postmortem_sanity"
+    - "11_crossai_build_verify_loop"
+    - "12_run_complete"
   must_emit_telemetry:
     # v1.15.2 — names match vg_run_start/vg_run_complete auto-emits.
     # Previously declared build.phase_start/build.phase_end but 0 emit calls
@@ -113,6 +118,10 @@ fi
 
 ```bash
 # v2.2 — register run with orchestrator (idempotent if UserPromptSubmit hook fired)
+# OHOK-8 round-4 Codex fix: parse phase BEFORE run-start (was registering
+# empty phase because PHASE_ARG/PHASE_NUMBER not set until step 1 below).
+[ -z "${PHASE_ARG:-}" ] && PHASE_ARG=$(echo "${ARGUMENTS}" | awk '{print $1}')
+PHASE_NUMBER="${PHASE_NUMBER:-$PHASE_ARG}"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:build "${PHASE_NUMBER:-${PHASE_ARG}}" "${ARGUMENTS}" || {
   echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
   exit 1
@@ -188,10 +197,16 @@ fi
 RESET_QUEUE=false
 STATUS_ONLY=false
 ONLY_TASKS=""
+WAVE_FILTER=""
 [[ "${ARGUMENTS:-}" =~ --reset-queue ]] && RESET_QUEUE=true
 [[ "${ARGUMENTS:-}" =~ --status ]] && STATUS_ONLY=true
 if [[ "${ARGUMENTS:-}" =~ --only[[:space:]]*=?[[:space:]]*([0-9,]+) ]]; then
   ONLY_TASKS="${BASH_REMATCH[1]}"
+fi
+# --wave N → WAVE_FILTER (declared in flag list line 157, gate-used at step 8 line 796)
+if [[ "${ARGUMENTS:-}" =~ --wave[[:space:]]*=?[[:space:]]*([0-9]+) ]]; then
+  WAVE_FILTER="${BASH_REMATCH[1]}"
+  export WAVE_FILTER
 fi
 
 # --status is a read-only shortcut — print progress + exit before doing any work
@@ -318,26 +333,29 @@ else
 fi
 ```
 
-### Step 1: Create tasks ONLY for applicable steps
+### Step 1: Narrate step plan (NO TaskCreate — see NARRATION_POLICY above)
 
-Create one task per step in `$EXPECTED_STEPS` (comma-separated). Use the step name as task subject.
-Do NOT create tasks for steps excluded by profile filter.
+Per NARRATION_POLICY (`⛔ DO NOT USE TodoWrite / TaskCreate / TaskUpdate`), progress tracking in /vg:build uses `.step-markers/*.done` files as the authoritative signal, NOT a task list. Before proceeding:
 
-```
-For each stepId in EXPECTED_STEPS:
-  TaskCreate: subject=stepId, activeForm="Running ${stepId}..."
-```
+1. Write a markdown header in your text output listing the expected step plan:
+   ```
+   ## ━━━ /vg:build step plan (profile=$PROFILE, $EXPECTED_COUNT steps) ━━━
+   - ${stepId_1}
+   - ${stepId_2}
+   - ...
+   ```
+2. Run each step in order. At start: write `## ━━━ Running ${stepId} ━━━` header. At end: `touch "${PHASE_DIR}/.step-markers/${stepId}.done"`.
 
-### Step 2: Task count assertion
+### Step 2: Marker directory sanity check (replaces task count assertion)
 
-After task creation, verify count matches:
+Confirm marker dir is empty on fresh build (or populated as expected on resume):
 ```bash
-ACTUAL_COUNT=$(gsd-tools task-list --count 2>/dev/null || echo "0")
-if [ "$ACTUAL_COUNT" != "$EXPECTED_COUNT" ]; then
-  echo "⛔ Task tracker mismatch: expected $EXPECTED_COUNT for profile $PROFILE, got $ACTUAL_COUNT"
-  echo "   Missing or extra tasks indicate profile filter was ignored."
+EXISTING_COUNT=$(ls "$MARKER_DIR"/*.done 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! "$ARGUMENTS" =~ --resume ]] && [ "$EXISTING_COUNT" -ne 0 ]; then
+  echo "⛔ Fresh build but ${EXISTING_COUNT} stale markers in ${MARKER_DIR}. Run with --reset-queue or manually clean."
   exit 1
 fi
+echo "▸ Step plan: $EXPECTED_COUNT steps for profile=$PROFILE. Progress tracked via ${MARKER_DIR}/*.done."
 ```
 
 **Rule for subsequent steps:** every `<step>` body MUST, as its FINAL action, write a marker:
@@ -346,7 +364,7 @@ touch "${PHASE_DIR}/.step-markers/{STEP_NAME}.done"
 ```
 Post-execution check (step 9) compares markers vs EXPECTED_STEPS. Missing marker = step skipped silently = BLOCK.
 
-Each sub-step should: `TaskUpdate: status="in_progress"` at start, `status="completed"` at end, AND write marker at end.
+Each sub-step: write narration header at start, marker file at end. No TaskCreate/TaskUpdate invocation anywhere in /vg:build.
 </step>
 
 <step name="2_initialize">
@@ -506,7 +524,7 @@ Read `${PHASE_DIR}/API-CONTRACTS.md`. Per plan task, extract only endpoint secti
 
 ```bash
 # Resolve DESIGN_OUTPUT_DIR from config (fallback to default)
-DESIGN_OUTPUT_DIR="${config.design_assets.output_dir:-${PLANNING_DIR}/design-normalized}"
+DESIGN_OUTPUT_DIR=$(vg_config_get design_assets.output_dir "${PLANNING_DIR}/design-normalized")  # OHOK-9 round-4
 DESIGN_MANIFEST="${DESIGN_OUTPUT_DIR}/manifest.json"
 
 # If any task has <design-ref>, classify each as SLUG vs DESCRIPTIVE:
@@ -675,7 +693,7 @@ Build or refresh `.callers.json` — maps each task's `<edits-*>` symbols to dow
 Output schema is identical regardless of source (graphify vs grep) — commit-msg hook reads same fields. Add `source: "graphify" | "grep"` field for traceability.
 
 ```bash
-if [ "${config.semantic_regression.enabled:-true}" = "true" ]; then
+if [ "$(vg_config_get semantic_regression.enabled true)" = "true" ]; then  # OHOK-9 round-4
   CALLER_GRAPH="${PHASE_DIR}/.callers.json"
 
   # Regenerate if missing OR any PLAN*.md newer than graph
@@ -2492,9 +2510,19 @@ fi
 # 1. Verify all plans have SUMMARY — HARD BLOCK (tightened 2026-04-17)
 # Missing SUMMARY = agent silently skipped documentation → orphan commits → review misses scope.
 MISSING_SUMMARIES=""
-for plan in ${PHASE_DIR}/*-PLAN*.md; do
-  PLAN_NUM=$(basename "$plan" | grep -oE '^[0-9]+')
-  SUMMARY="${PHASE_DIR}/${PLAN_NUM}-SUMMARY*.md"
+# Canonical: blueprint writes single `PLAN.md` → expect `SUMMARY.md`.
+# Legacy (GSD-migrated): `{N}-PLAN*.md` pairs with `{N}-SUMMARY*.md`.
+# Glob handles both; [ ! -e "$plan" ] skips unexpanded literal when no match.
+for plan in ${PHASE_DIR}/PLAN*.md ${PHASE_DIR}/*-PLAN*.md; do
+  [ ! -e "$plan" ] && continue
+  plan_base=$(basename "$plan")
+  if [[ "$plan_base" =~ ^([0-9]+)-PLAN ]]; then
+    PLAN_NUM="${BASH_REMATCH[1]}"
+    SUMMARY="${PHASE_DIR}/${PLAN_NUM}-SUMMARY*.md"
+  else
+    PLAN_NUM="canonical"
+    SUMMARY="${PHASE_DIR}/SUMMARY*.md"
+  fi
   if ! ls $SUMMARY 1>/dev/null 2>&1; then
     echo "⛔ Plan ${PLAN_NUM} has no SUMMARY"
     MISSING_SUMMARIES="${MISSING_SUMMARIES} ${PLAN_NUM}"

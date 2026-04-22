@@ -591,3 +591,58 @@ bash "$LOCK_SCRIPT" cleanup   # remove locks older than 1 hour
 ```
 
 **NEVER hardcode** any server name like `mcp__playwright1__`. Always use `$MCP_PREFIX` from auto-claim.
+
+## OHOK-9 round-4 Codex fix: `vg_config_get` dotted-path helper
+
+**Problem**: skills had `${config.design_assets.paths[0]}` / `${config.semantic_regression.enabled}` / `${config.contract_format.compile_cmd}` — all INVALID bash (dots aren't valid in variable names). Config-loader parses many values via awk but lacked a generic accessor for arbitrary dotted paths. Skills that tried to reference `${config.X.Y.Z}` directly produced empty strings AND broke downstream bash parsing.
+
+**Fix**: add `vg_config_get <dotted.path> [default]` — reads `.claude/vg.config.md` YAML, returns scalar value at that path or default if missing. Plus `vg_config_get_array` for list fields.
+
+```bash
+vg_config_get() {
+  # Usage: vg_config_get design_assets.output_dir ".planning/design-normalized"
+  #        vg_config_get semantic_regression.enabled true
+  # Scalar values only. For arrays use vg_config_get_array.
+  local path="${1:-}" default="${2:-}"
+  [ -z "$path" ] && { echo "$default"; return; }
+  local config=".claude/vg.config.md"
+  [ ! -f "$config" ] && { echo "$default"; return; }
+  local top="${path%%.*}" field="${path#*.}"
+  if [ "$top" = "$field" ]; then
+    local val=$(awk -v k="^${top}:" '$0 ~ k { sub(/^[^:]+:[[:space:]]*/,""); gsub(/["]/,""); print; exit }' "$config" 2>/dev/null)
+    echo "${val:-$default}"; return
+  fi
+  local val=$(awk -v t="^${top}:" -v f="^[[:space:]]+${field}:" '
+    $0 ~ t {in_block=1; next}
+    in_block && /^[a-z_]/ {in_block=0}
+    in_block && $0 ~ f {
+      sub(/^[^:]+:[[:space:]]*/,""); gsub(/["]/,""); print; exit
+    }
+  ' "$config" 2>/dev/null)
+  echo "${val:-$default}"
+}
+
+vg_config_get_array() {
+  # Usage: vg_config_get_array design_assets.paths
+  # Returns newline-separated values. Caller iterates with `while read -r`.
+  local path="${1:-}"
+  [ -z "$path" ] && return
+  local config=".claude/vg.config.md"
+  [ ! -f "$config" ] && return
+  local top="${path%%.*}" field="${path#*.}"
+  awk -v t="^${top}:" -v f="^[[:space:]]+${field}:" '
+    $0 ~ t {in_top=1; next}
+    in_top && /^[a-z_]/ {in_top=0}
+    in_top && $0 ~ f {in_field=1; next}
+    in_field && /^[[:space:]]+-[[:space:]]/ {
+      sub(/^[[:space:]]+-[[:space:]]*/,""); gsub(/["]/,""); print
+      next
+    }
+    in_field && !/^[[:space:]]+-/ {in_field=0}
+  ' "$config" 2>/dev/null
+}
+
+export -f vg_config_get vg_config_get_array 2>/dev/null || true
+```
+
+**Skill usage pattern**: replace every `"${config.x.y.z}"` with `"$(vg_config_get x.y.z [default])"`. For arrays: `while read -r p; do ...; done < <(vg_config_get_array x.y.z)`.

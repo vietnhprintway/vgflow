@@ -143,21 +143,24 @@ Save answer → proceed to step 6 with user answers as primary input.
 - Supplement with ROADMAP and PROJECT.md context where user answers are sparse
 - Do NOT override user's explicit answers with AI inference
 
-**Show the full draft to the user:**
+**⛔ BLOCKING APPROVAL GATE (forced user pause — not ambiguous).**
+
+AI MUST stop, render the preview, invoke `AskUserQuestion` (structured 3-option choice), and wait for explicit user response. Writing to disk without user answer = R1/R2 violation logged to override-debt register.
+
 ```
 --- SPECS.md Preview ---
 {full content}
 --- End Preview ---
-
-Approve? (y/edit/n)
-- y: Write file
-- edit: Tell me what to change
-- n: Discard
 ```
 
-If "edit": ask what to change, regenerate, show again.
-If "n": stop.
-If "y": proceed to step 7.
+Then invoke AskUserQuestion with exactly these 3 options:
+- **Approve** (AI proceeds to write file in step 7)
+- **Edit** (user says what to change; AI regenerates; loop back to this gate)
+- **Discard** (AI halts; specs.md not created)
+
+No free-text auto-advance. No "y by default after 30s". No interpreting silence as approval. If user answer unclear or ambiguous, re-ask.
+
+On Approve → step 7. On Edit → ask "Bạn muốn sửa phần nào?" then regenerate and return here. On Discard → stop command, log decision to override-debt register ("user discarded spec draft").
 </step>
 
 <step name="write_specs">
