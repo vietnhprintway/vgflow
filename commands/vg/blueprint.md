@@ -2547,7 +2547,8 @@ type -t vg_emit >/dev/null 2>&1 && {
   vg_emit "blueprint.plan_written"         "{\"phase\":\"${PHASE_NUMBER}\"}"
   vg_emit "blueprint.contracts_generated"  "{\"phase\":\"${PHASE_NUMBER}\"}"
 }
-type -t vg_run_complete >/dev/null 2>&1 && vg_run_complete "PASS"
+# (OHOK-3 2026-04-22) Legacy vg_run_complete call removed — canonical
+# `python vg-orchestrator run-complete` runs at terminal block below.
 ```
 </step>
 

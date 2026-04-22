@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Evidence, Output, timer, emit_and_exit  # noqa: E402
+from _common import Evidence, Output, timer, emit_and_exit, find_phase_dir  # noqa: E402
 
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
 PHASES_DIR = REPO_ROOT / ".vg" / "phases"
@@ -57,6 +57,67 @@ CITATION_PATTERNS = [
     re.compile(r"\bno-goal-impact\b", re.IGNORECASE),
     re.compile(r"\bno-impact\b", re.IGNORECASE),  # shorter variant
 ]
+
+# OHOK-6 (Codex/Gemini P1): semantic ghosting detection.
+# Extract the specific decision/goal ID being claimed, so we can verify
+# the artifact actually exists. Shape-match of "Per CONTEXT.md D-15" was
+# previously accepted even if D-15 doesn't exist in CONTEXT.md — AI could
+# fabricate a plausible-looking citation to satisfy the commit-msg hook.
+DECISION_EXTRACT_RE = re.compile(
+    r"Per\s+CONTEXT\.md\s+(?:P[\d.]+\.)?D-(\d+)", re.IGNORECASE,
+)
+GOAL_EXTRACT_RE = re.compile(
+    r"Covers?\s+goal:?\s+G-(\d+)", re.IGNORECASE,
+)
+
+
+def _decision_exists(phase_dir: Path, decision_num: str) -> bool:
+    """Check phase's CONTEXT.md has this decision header. Accepts both
+    bare D-XX and P{phase}.D-XX formats.
+    """
+    ctx = phase_dir / "CONTEXT.md"
+    if not ctx.exists():
+        return False
+    try:
+        text = ctx.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    # Match ### D-15 or ### P7.6.D-15 headers
+    pattern = re.compile(
+        rf"^###\s+(?:P[\d.]+\.)?D-{int(decision_num):02d}\b"
+        rf"|^###\s+(?:P[\d.]+\.)?D-{int(decision_num)}\b",
+        re.MULTILINE,
+    )
+    return bool(pattern.search(text))
+
+
+def _goal_exists(phase_dir: Path, goal_num: str) -> bool:
+    """Check phase's TEST-GOALS.md has this goal ID.
+
+    Accepts multiple header formats observed across phases:
+      - `### G-01:` or `### G-01 ` (standard)
+      - `### Goal G-01:` (phase 14 format, with "Goal" prefix)
+      - Table row `| G-01 | ...`
+
+    Both zero-padded (G-01) and unpadded (G-1) accepted.
+    """
+    goals = phase_dir / "TEST-GOALS.md"
+    if not goals.exists():
+        return False
+    try:
+        text = goals.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return False
+    n = int(goal_num)
+    # Build both zero-padded + unpadded forms
+    ids = {f"G-{n:02d}", f"G-{n}"}
+    for gid in ids:
+        # `### <maybe "Goal ">G-XX[:|\s]` or `| G-XX |`
+        if re.search(rf"^###\s+(?:Goal\s+)?{re.escape(gid)}\b", text, re.MULTILINE):
+            return True
+        if re.search(rf"^\|\s*{re.escape(gid)}\s*\|", text, re.MULTILINE):
+            return True
+    return False
 
 # Code paths that require citation (skip for pure planning/docs commits)
 CODE_PATH_RE = re.compile(
@@ -142,8 +203,8 @@ def main() -> None:
 
     out = Output(validator="commit-attribution")
     with timer(out):
-        phase_dirs = list(PHASES_DIR.glob(f"{args.phase}-*")) or \
-                     list(PHASES_DIR.glob(f"{args.phase.zfill(2)}-*"))
+        phase_dir = find_phase_dir(args.phase)
+        phase_dirs = [phase_dir] if phase_dir else []
         if not phase_dirs:
             # No phase dir = can't validate; treat as skip (PASS)
             emit_and_exit(out)
@@ -167,6 +228,7 @@ def main() -> None:
         violations_subject = []
         violations_citation = []
         violations_bypass = []
+        violations_phantom_citation = []  # OHOK-6: cited but doesn't resolve
 
         for c in commits:
             sha = c["sha"]
@@ -192,6 +254,23 @@ def main() -> None:
                 has_citation = any(p.search(body) for p in CITATION_PATTERNS)
                 if not has_citation:
                     violations_citation.append((sha, subject[:60], files[:3]))
+                else:
+                    # OHOK-6 (Codex/Gemini P1) — semantic ghosting detection.
+                    # Citation matched regex; verify the cited D-XX / G-XX
+                    # actually exists in the phase's artifact files.
+                    phantom_refs = []
+                    for m in DECISION_EXTRACT_RE.finditer(body):
+                        d_num = m.group(1)
+                        if not _decision_exists(phase_dir, d_num):
+                            phantom_refs.append(f"D-{d_num}")
+                    for m in GOAL_EXTRACT_RE.finditer(body):
+                        g_num = m.group(1)
+                        if not _goal_exists(phase_dir, g_num):
+                            phantom_refs.append(f"G-{g_num}")
+                    if phantom_refs:
+                        violations_phantom_citation.append(
+                            (sha, subject[:60], phantom_refs)
+                        )
 
             # CHECK 3: --no-verify / --amend in body (bypass red flag)
             if BYPASS_RE.search(body):
@@ -249,6 +328,32 @@ def main() -> None:
                     "--no-verify bypasses pre-commit hooks (typecheck, lint, citation). "
                     "Verify the commits actually pass hooks when run manually; if not, "
                     "fix underlying issue rather than bypassing."
+                ),
+            ))
+
+        if violations_phantom_citation:
+            # OHOK-6 (Codex/Gemini P1): semantic ghosting. Citation matched
+            # regex but cited D-XX/G-XX doesn't exist in the phase artifacts.
+            sample = violations_phantom_citation[:5]
+            evidence_str = "; ".join(
+                f"{sha} {subj} → missing: {', '.join(refs)}"
+                for sha, subj, refs in sample
+            )
+            out.add(Evidence(
+                type="phantom_citation",
+                message=(
+                    f"{len(violations_phantom_citation)} commit(s) cite "
+                    f"decisions/goals that DON'T EXIST in phase artifacts. "
+                    f"Semantic ghosting — audit-looking breadcrumbs without "
+                    f"real reference."
+                ),
+                actual=evidence_str,
+                fix_hint=(
+                    "Either (a) amend commit body to cite a real D-XX/G-XX "
+                    "from CONTEXT.md/TEST-GOALS.md, (b) add the missing "
+                    "decision/goal to the artifact (run /vg:scope or "
+                    "/vg:amend), or (c) change citation to 'no-goal-impact' "
+                    "if truly orthogonal."
                 ),
             ))
 

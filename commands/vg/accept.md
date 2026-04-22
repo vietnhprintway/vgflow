@@ -1014,8 +1014,9 @@ touch "${PHASE_DIR}/.step-markers/2_marker_precheck.done"
 touch "${PHASE_DIR}/.step-markers/3_sandbox_verdict_gate.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 3_sandbox_verdict_gate 2>/dev/null || true
 
-# Emit accept.completed telemetry + release run ownership
-type -t vg_run_complete >/dev/null 2>&1 && vg_run_complete "PASS"
+# (OHOK-3 2026-04-22) Legacy `vg_run_complete` bash helper call removed —
+# canonical `python vg-orchestrator run-complete` runs at step 7 below.
+# One path only; no dual lifecycle.
 ```
 </step>
 

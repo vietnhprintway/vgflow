@@ -45,6 +45,25 @@ SETTINGS = REPO_ROOT / ".claude" / "settings.local.json"
 COMMANDS_DIR = REPO_ROOT / ".claude" / "commands" / "vg"
 DB_PATH = REPO_ROOT / ".vg" / "events.db"
 
+# OHOK-3 (2026-04-22): newly-registered validators won't have fired yet until
+# the first /vg:build run post-registration. Declared dormant-expected here.
+#
+# OHOK-6 (Codex P1): each entry has an ADDED date. After DORMANT_TTL_DAYS,
+# wired-check emits a WARN urging user to either (a) run the command that
+# fires the validator, or (b) remove the validator if it's dead code.
+# Without TTL, this allowlist becomes a permanent suppressor — Codex's
+# "dormant becomes permanent escape hatch" vector.
+#
+# After a dormant-expected validator actually fires (proves_fire=True),
+# wired-check tells user to REMOVE the entry. Next audit catches leftover
+# entries that became unnecessary.
+DORMANT_EXPECTED: dict[str, str] = {
+    "test-first":             "2026-04-22",  # fires on /vg:build post-Day 5 reg
+    "wave-attribution":       "2026-04-22",  # fires on /vg:build wave-complete
+    "build-crossai-required": "2026-04-22",  # fires on /vg:build post-OHOK-7
+}
+DORMANT_TTL_DAYS = 30
+
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -111,15 +130,43 @@ def check_validators(fast: bool = False) -> list[dict]:
             finally:
                 conn.close()
 
+        is_dormant_ok = (name in DORMANT_EXPECTED) and is_registered
+        note = ""
+        if not exists:
+            note = "missing file"
+        elif not is_registered:
+            note = "not registered"
+        elif proves is False and not is_dormant_ok:
+            note = "no fire events"
+        elif proves is False and is_dormant_ok:
+            # OHOK-6: check TTL — dormant entries aren't forever
+            import datetime as _dt
+            added_str = DORMANT_EXPECTED[name]
+            try:
+                added = _dt.datetime.fromisoformat(added_str)
+                age_days = (_dt.datetime.utcnow() - added).days
+                if age_days > DORMANT_TTL_DAYS:
+                    # Expired — no longer count as OK; still warn the user
+                    is_dormant_ok = False
+                    note = (f"dormant EXPIRED ({age_days}d > {DORMANT_TTL_DAYS}d TTL) — "
+                            "run command or remove from allowlist")
+                else:
+                    note = (f"dormant (expected, added {added_str}, "
+                            f"expires in {DORMANT_TTL_DAYS - age_days}d)")
+            except Exception:
+                note = "dormant (expected — fires on next command run)"
+        elif proves is True and name in DORMANT_EXPECTED:
+            # Fired naturally — entry can now be removed from allowlist
+            note = f"FIRED — remove '{name}' from DORMANT_EXPECTED allowlist"
+
         results.append({
             "category": "validators",
             "item": name,
             "exists": exists,
             "registered": is_registered,
             "proves_fire": proves,
-            "note": "" if exists and is_registered and (proves or fast) else
-                    ("not registered" if not is_registered else
-                     "no fire events" if proves is False else "")
+            "dormant_ok": is_dormant_ok,
+            "note": note,
         })
 
     return results
@@ -261,7 +308,10 @@ def print_table(results: list[dict]) -> int:
             else:
                 fire_s = f"{YELLOW}⚠{RESET}"
 
-            row_fail = (not exists_ok) or (not reg_ok) or fire_ok is False
+            # OHOK-3: dormant-expected validators don't count as fail
+            dormant_ok = r.get("dormant_ok", False)
+            fire_missing = (fire_ok is False) and not dormant_ok
+            row_fail = (not exists_ok) or (not reg_ok) or fire_missing
             if row_fail:
                 fail += 1
 

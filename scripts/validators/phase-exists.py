@@ -17,19 +17,17 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Evidence, Output, timer, emit_and_exit  # noqa: E402
+from _common import Evidence, Output, timer, emit_and_exit, find_phase_dir  # noqa: E402
 
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
 PHASES_DIR = REPO_ROOT / ".vg" / "phases"
 
 
 def resolve_phase_dir(phase: str) -> Path | None:
-    if not PHASES_DIR.exists():
-        return None
-    candidates = list(PHASES_DIR.glob(f"{phase}-*"))
-    if not candidates:
-        candidates = list(PHASES_DIR.glob(f"{phase.zfill(2)}-*"))
-    return candidates[0] if candidates else None
+    """Deprecated shim — delegates to shared find_phase_dir helper
+    (OHOK v2 follow-up 2026-04-22 fix: decimal phase zero-pad + bare-dir).
+    """
+    return find_phase_dir(phase)
 
 
 def main() -> None:

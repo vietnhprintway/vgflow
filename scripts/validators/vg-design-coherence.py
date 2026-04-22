@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Evidence, Output, timer, emit_and_exit  # noqa: E402
+from _common import Evidence, Output, timer, emit_and_exit, find_phase_dir  # noqa: E402
 
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
 PHASES_DIR = REPO_ROOT / ".vg" / "phases"
@@ -94,8 +94,8 @@ def main() -> None:
     out = Output(validator="vg-design-coherence")
     with timer(out):
         # Find phase directory — support leading-zero + unpadded
-        phase_dirs = list(PHASES_DIR.glob(f"{args.phase}-*")) or \
-                     list(PHASES_DIR.glob(f"{args.phase.zfill(2)}-*"))
+        phase_dir = find_phase_dir(args.phase)
+        phase_dirs = [phase_dir] if phase_dir else []
         if not phase_dirs:
             out.add(Evidence(
                 type="missing_file",

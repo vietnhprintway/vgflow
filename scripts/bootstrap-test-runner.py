@@ -509,12 +509,117 @@ def _run_scenario_e2e_workflow(fixture: dict) -> tuple[str, str]:
     return "PASS", f"E2E pipeline smoke: {assertion_count} assertions passed"
 
 
+def _run_scenario_ohok7_crossai_loop_required(fixture: dict) -> tuple[str, str]:
+    """OHOK-7 — verify build-crossai-required validator enforces loop evidence.
+
+    Dispatches 3 states via synthetic current-run.json + events.db emission:
+    (1) iteration=0 + terminal=0 → expect BLOCK (crossai_loop_never_ran)
+    (2) iteration=1 + terminal=0 → expect BLOCK (crossai_loop_no_terminal)
+    (3) iteration=1 + terminal=1 → expect PASS
+
+    Always uses run-abort to clean up synthetic run at end, even on failure.
+    """
+    orch = REPO_ROOT / ".claude" / "scripts" / "vg-orchestrator"
+    validator = REPO_ROOT / ".claude" / "scripts" / "validators" / \
+                "build-crossai-required.py"
+    if not orch.exists() or not validator.exists():
+        return "FAIL", "orchestrator or validator missing"
+
+    failures: list[str] = []
+    # Preflight: ensure no leftover run
+    subprocess.run(
+        [sys.executable, str(orch), "run-abort",
+         "--reason", "ohok7-fixture-preflight-cleanup-min-50-chars-sentinel"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+    )
+
+    # Fixture phase must resolve via find_phase_dir — pick an existing phase.
+    # 14 always exists in this repo (OHOK v2 dogfood phase). Fallback to any
+    # first dir matching pattern.
+    phases_dir = REPO_ROOT / ".vg" / "phases"
+    phase_arg = "14"
+    if phases_dir.exists():
+        p14 = list(phases_dir.glob("14-*")) or list(phases_dir.glob("14.*"))
+        if not p14:
+            # No phase 14 → use whatever first phase dir exists
+            any_phase = sorted(phases_dir.iterdir())
+            for d in any_phase:
+                if d.is_dir() and d.name[0].isdigit():
+                    phase_arg = d.name.split("-")[0]
+                    break
+
+    def run_validator() -> tuple[int, str]:
+        r = subprocess.run(
+            [sys.executable, str(validator), "--phase", phase_arg],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+        )
+        return r.returncode, r.stdout + r.stderr
+
+    def emit(event_type: str, payload: dict) -> None:
+        subprocess.run(
+            [sys.executable, str(orch), "emit-event", event_type,
+             "--payload", json.dumps(payload),
+             "--actor", "orchestrator", "--outcome", "INFO"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+        )
+
+    try:
+        # Start synthetic vg:build run on the resolved phase
+        r = subprocess.run(
+            [sys.executable, str(orch), "run-start", "vg:build", phase_arg],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+        )
+        if r.returncode != 0:
+            return "FAIL", f"run-start exit {r.returncode}: {r.stderr[:200]}"
+
+        # State 1: no iteration events → expect BLOCK
+        rc1, out1 = run_validator()
+        if "crossai_loop_never_ran" not in out1:
+            failures.append(
+                f"state1 no-iter: expected crossai_loop_never_ran, got "
+                f"{out1[:200]}"
+            )
+
+        # State 2: iteration started but no terminal → expect BLOCK (no_terminal)
+        emit("build.crossai_iteration_started",
+             {"iteration": 1, "max_iterations": 5})
+        rc2, out2 = run_validator()
+        if "crossai_loop_no_terminal" not in out2:
+            failures.append(
+                f"state2 iter+no-terminal: expected crossai_loop_no_terminal, "
+                f"got {out2[:200]}"
+            )
+
+        # State 3: iteration + terminal (loop_complete) → expect PASS
+        emit("build.crossai_loop_complete",
+             {"iterations": 1, "outcome": "CLEAN"})
+        rc3, out3 = run_validator()
+        if '"verdict": "PASS"' not in out3:
+            failures.append(
+                f"state3 iter+terminal: expected PASS, got {out3[:200]}"
+            )
+    finally:
+        subprocess.run(
+            [sys.executable, str(orch), "run-abort",
+             "--reason", "ohok7-fixture-teardown-cleanup-min-50-chars-sentinel"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=10,
+        )
+
+    if failures:
+        return "FAIL", "; ".join(failures[:3])
+    return "PASS", (
+        "validator enforces OHOK-7 loop: BLOCK without iterations, BLOCK "
+        "without terminal, PASS with iteration + loop_complete"
+    )
+
+
 SCENARIO_RUNNERS = {
     "scenario-3-portability-empty-zone": _run_scenario3_portability,
     "scenario-1-playwright-lazy-propagation": _run_scenario1_playwright,
     "scenario-2-toast-fake-success-mutation-verify": _run_scenario2_mutation_verify,
     "scenario-migrate-naming-edge-cases": _run_scenario_migrate_naming,
     "scenario-e2e-workflow-smoke": _run_scenario_e2e_workflow,
+    "scenario-ohok7-crossai-loop-required": _run_scenario_ohok7_crossai_loop_required,
 }
 
 

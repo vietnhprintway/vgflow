@@ -97,12 +97,13 @@ session_exit_banner() {
   echo "━━━ /vg:${cmd} Phase ${phase} — ${verdict} at step=${step} ━━━"
   echo ""
 
-  # v1.15.2 — release run ownership so next /vg:* starts clean.
-  # Emits {cmd}.completed telemetry, deletes current-run.json.
-  # Only emit PASS when rc=0; other exits leave current-run.json so /vg:recover can inspect.
-  if [ "$rc" -eq 0 ] && type -t vg_run_complete >/dev/null 2>&1; then
-    vg_run_complete "PASS" 2>/dev/null || true
-  fi
+  # OHOK-3 (2026-04-22): legacy vg_run_complete bash helper removed.
+  # Canonical path is `python .claude/scripts/vg-orchestrator run-complete`,
+  # invoked at the terminal block of each /vg:* skill (accept, blueprint,
+  # build, review, scope, test). If rc=0 and that terminal block already ran,
+  # run-complete has already been called — nothing to do here. If rc≠0 the
+  # skill exited early; leaving current-run.json lets /vg:recover inspect.
+  # One lifecycle path only.
 
   # Clear trap to avoid recursion if something in banner fails
   trap - EXIT INT TERM

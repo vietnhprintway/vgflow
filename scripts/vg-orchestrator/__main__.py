@@ -58,15 +58,68 @@ def _git_sha() -> str | None:
         return None
 
 
+_RUN_STALE_MINUTES = 30
+
+
+def _is_run_stale(active: dict) -> bool:
+    """True if active run is old enough to be considered abandoned.
+    Matches Stop hook's STALE_MINUTES so the two layers stay consistent.
+    """
+    started = active.get("started_at", "")
+    if not started:
+        return True
+    try:
+        ts = datetime.fromisoformat(started.rstrip("Z"))
+        age_min = (datetime.utcnow() - ts).total_seconds() / 60
+        return age_min > _RUN_STALE_MINUTES
+    except Exception:
+        return True
+
+
 def cmd_run_start(args) -> int:
     """Write runs row + emit run.started. Return run_id on stdout."""
-    if state_mod.read_current_run():
-        # Existing active run — fail loud rather than overwrite silently
-        active = state_mod.read_current_run()
-        print(f"⛔ Active run exists: {active.get('command')} "
-              f"phase={active.get('phase')}. Abort or complete first.",
-              file=sys.stderr)
-        return 1
+    active = state_mod.read_current_run()
+    if active:
+        # OHOK-4 (2026-04-22): previously blocked forever if prior run crashed
+        # without run-complete — user had to manually rm current-run.json.
+        # Now: auto-clear stale (>30min) runs + warn, block fresh ones.
+        if _is_run_stale(active):
+            age_note = f"stale (>{_RUN_STALE_MINUTES}min)"
+            print(
+                f"⚠ Clearing {age_note} run: {active.get('command')} "
+                f"phase={active.get('phase')} started {active.get('started_at', '?')}.\n"
+                f"   Orphaned run likely from crashed session. If this was\n"
+                f"   intentional, run-abort it first to preserve audit trail.",
+                file=sys.stderr,
+            )
+            # Emit event so events.db reflects the takeover
+            try:
+                db.append_event(
+                    run_id=active.get("run_id", "unknown"),
+                    event_type="run.stale_cleared",
+                    phase=active.get("phase", ""),
+                    command=active.get("command", ""),
+                    actor="orchestrator",
+                    outcome="INFO",
+                    payload={"reason": "stale_at_run_start",
+                             "age_minutes_threshold": _RUN_STALE_MINUTES,
+                             "new_command": args.command,
+                             "new_phase": args.phase},
+                )
+            except Exception:
+                pass
+            state_mod.clear_current_run()
+            # Continue to fresh run-start below
+        else:
+            print(f"⛔ Active run exists: {active.get('command')} "
+                  f"phase={active.get('phase')} started "
+                  f"{active.get('started_at', '?')} (<{_RUN_STALE_MINUTES}min old).\n"
+                  f"   Options:\n"
+                  f"   1. Complete it: python vg-orchestrator run-complete\n"
+                  f"   2. Abort: python vg-orchestrator run-abort --reason '<why>'\n"
+                  f"   3. Wait >{_RUN_STALE_MINUTES}min — it will auto-clear",
+                  file=sys.stderr)
+            return 1
 
     session_id = os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
     extra_str = " ".join(args.extra) if isinstance(args.extra, list) else (args.extra or "")
@@ -532,13 +585,93 @@ def cmd_validate(args) -> int:
     return r.returncode
 
 
+_TICKET_RE = re.compile(
+    r"(?:https?://\S+|#\d+|(?:GH|JIRA|ISSUE|TICKET|PR|BUG|OD)-?\d+)",
+    re.IGNORECASE,
+)
+_SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
+# Accept only URLs pointing at real artifact trackers. Random https://x.y is
+# NOT proof — it's just a string that matches the pattern.
+_URL_RE = re.compile(r"https?://([^/\s]+)(/\S*)?", re.IGNORECASE)
+_ACCEPTED_TRACKER_HOSTS = {
+    "github.com", "gitlab.com", "bitbucket.org", "codeberg.org",
+    "gitea.com", "linear.app",
+}
+
+
+def _verify_sha_in_repo(sha: str) -> bool:
+    """OHOK-5 (Codex P0): verify a SHA-looking string is actually a git object
+    in the local repo. Blocks `deadbee` / `1a2b3c4` fabricated proofs.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["git", "cat-file", "-t", sha],
+            capture_output=True, text=True, timeout=3,
+            cwd=os.environ.get("VG_REPO_ROOT") or os.getcwd(),
+        )
+        # Output should be one of: commit, tree, blob, tag
+        return r.returncode == 0 and r.stdout.strip() in {
+            "commit", "tree", "blob", "tag"
+        }
+    except Exception:
+        return False
+
+
+def _verify_proof_resolves(reason: str) -> tuple[bool, str]:
+    """OHOK-5 (Codex/Gemini P0): verify at least one proof token in `reason`
+    resolves to a real artifact. Distinguishes audit breadcrumbs from proof.
+
+    Accept paths (any ONE sufficient):
+    1. SHA found via `_SHA_RE` AND `git cat-file -t <sha>` succeeds → real commit
+    2. URL with trusted tracker host (github.com, gitlab.com, etc.) → assume
+       real (offline URL existence check is out of scope — trust tracker list)
+    3. Tracker ID (GH-42, JIRA-1234, #42) → lower trust; MUST appear alongside
+       another proof OR explicit `--user-confirmed` flag (future work)
+
+    Returns (verified, proof_kind). If nothing resolves, verified=False.
+    """
+    # Check SHA-like tokens
+    for m in _SHA_RE.finditer(reason):
+        sha = m.group(1)
+        if _verify_sha_in_repo(sha):
+            return True, f"git_sha:{sha[:12]}"
+    # Check URL with accepted host
+    for m in _URL_RE.finditer(reason):
+        host = m.group(1).lower()
+        # Strip port if present
+        host = host.split(":", 1)[0]
+        if host in _ACCEPTED_TRACKER_HOSTS:
+            return True, f"url:{host}"
+        # Also accept any subdomain of accepted hosts
+        for tracker in _ACCEPTED_TRACKER_HOSTS:
+            if host.endswith(f".{tracker}") or host == tracker:
+                return True, f"url:{host}"
+    return False, ""
+
+# OHOK-3 (2026-04-22): promote-goal-manual quota per phase.
+# Gemini flagged that unlimited MANUAL promotion = escape hatch. Phase 14 OHOK
+# v2 run resolved OD-148/149 via promote-goal-manual instead of fixing CORS
+# drift root cause. Quota forces the user to feel the cost of each manual
+# goal — 3 is the soft ceiling (real phases may have legit manual goals for
+# visual/UX/payment flows not feasible to automate).
+PROMOTE_MANUAL_QUOTA_PER_PHASE = 3
+
+
 def cmd_promote_goal_manual(args) -> int:
     """OHOK v2 Day 3 — promote a goal to verification=manual with user justification.
     Emits goal.promoted_manual event (review-skip-guard accepts MANUAL status as
     explicit promotion, not silent skip). Writes GOAL-COVERAGE-MATRIX row if
     missing, else updates status column.
 
-    Usage: vg-orchestrator promote-goal-manual G-02 --phase 14 --reason "..."
+    Usage: vg-orchestrator promote-goal-manual G-02 --phase 14 \\
+             --reason "..." (≥50 chars with ticket/URL/commit proof)
+
+    OHOK-3 hardening:
+      - Quota: max 3 manual promotions per phase (across all runs). Forces
+        user to feel escape-hatch cost. Fix root cause instead of bulk-promote.
+      - Proof: --reason MUST contain a ticket URL, GH/ISSUE/JIRA ID, PR#,
+        or commit SHA (min 7 hex chars). Free-text "we'll fix later" rejected.
     """
     current = state_mod.read_current_run()
     phase = args.phase or (current["phase"] if current else None)
@@ -546,11 +679,75 @@ def cmd_promote_goal_manual(args) -> int:
         print("⛔ --phase required (no active run)", file=sys.stderr)
         return 1
 
-    if len(args.reason.strip()) < 50:
-        print(f"⛔ --reason must be ≥50 chars (got {len(args.reason.strip())}).\n"
+    reason = args.reason.strip()
+    if len(reason) < 50:
+        print(f"⛔ --reason must be ≥50 chars (got {len(reason)}).\n"
               f"   Manual promotion is an explicit user decision — require "
               f"concrete user-visible justification not auto-generated prose.",
               file=sys.stderr)
+        return 2
+
+    # OHOK-3: proof requirement — reason must cite an external artifact.
+    # OHOK-5 (Codex/Gemini): proof must also RESOLVE, not just match regex.
+    # Random `deadbee`, fake `#1`, or `https://bogus.invalid/` were bypass
+    # vectors in the shape-only check.
+    has_ticket = bool(_TICKET_RE.search(reason))
+    has_commit_sha = bool(_SHA_RE.search(reason))
+    if not (has_ticket or has_commit_sha):
+        print(
+            "⛔ --reason must cite an external artifact proving user sign-off.\n"
+            "   Accept one of:\n"
+            "   - Ticket URL:   https://github.com/.../issues/42\n"
+            "   - Ticket ID:    GH-42, ISSUE-42, JIRA-1234, #42\n"
+            "   - Commit SHA:   abc1234 (≥7 hex chars, proves root-cause fix exists)\n"
+            "   - PR ref:       PR-42\n\n"
+            "   Rationale (OHOK-3): free-text 'we will fix later' has no\n"
+            "   forcing function. A ticket/commit reference creates an\n"
+            "   externally-auditable trail that the deferred work actually\n"
+            "   happens. Gemini verdict: escape hatch needs a paper trail.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # OHOK-5: resolvable-proof gate
+    resolved, proof_kind = _verify_proof_resolves(reason)
+    if not resolved:
+        print(
+            "⛔ --reason contains shape-matching proof but NOTHING RESOLVES.\n"
+            "   Shape-only tokens create audit breadcrumbs, not proof.\n"
+            "   Must contain at least ONE of:\n"
+            "   - A git SHA that exists in this repo (verified via\n"
+            "     `git cat-file -t <sha>`). Random `deadbee` / `1a2b3c4` rejected.\n"
+            "   - A URL on a trusted tracker host: github.com, gitlab.com,\n"
+            "     bitbucket.org, codeberg.org, linear.app (or subdomain).\n"
+            "     Standalone IDs like 'GH-42' without a URL are insufficient —\n"
+            "     add the full ticket URL.\n"
+            "   Rationale (OHOK-5 round-2 findings): Codex + Gemini both flagged\n"
+            "   that regex shape matching accepts fabricated proofs like\n"
+            "   'deadbee' or 'https://not.a.real.tracker/foo'. SHA-in-repo\n"
+            "   + tracker-host allowlist closes that.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # OHOK-3: per-phase quota. Count prior goal.promoted_manual events for this
+    # phase (across all runs in events.db). Exceeds quota → BLOCK until user
+    # increases quota via explicit override.
+    prior = db.query_events(phase=phase, event_type="goal.promoted_manual")
+    prior_count = len(prior) if prior else 0
+    if prior_count >= PROMOTE_MANUAL_QUOTA_PER_PHASE:
+        print(
+            f"⛔ Phase {phase} has already used {prior_count}/"
+            f"{PROMOTE_MANUAL_QUOTA_PER_PHASE} manual promotion slots.\n"
+            f"   Quota exists to prevent bulk-flipping goals to MANUAL as\n"
+            f"   escape hatch. Options:\n"
+            f"   1. Fix the root cause so goal auto-verifies (preferred)\n"
+            f"   2. Mark goal 'deferred' via GOAL-COVERAGE-MATRIX.md edit\n"
+            f"      + add deferred-reason cite to a ticket\n"
+            f"   3. Override quota (logs HARD debt): vg-orchestrator override \\\n"
+            f"        --flag=promote-manual-quota-exceeded --reason '<≥20char>'\n",
+            file=sys.stderr,
+        )
         return 2
 
     repo = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd())
@@ -584,33 +781,173 @@ def cmd_promote_goal_manual(args) -> int:
     new_text += manual_entry
     matrix.write_text(new_text, encoding="utf-8")
 
+    # OHOK-5 (Codex P0): event MUST fire whether or not an active run exists.
+    # Previous bug: offline `promote-goal-manual --phase X` edited matrix +
+    # debt file but emitted NO event → quota counter skipped → bypass vector.
+    # Fix: if no active run, synthesize an offline-mode run-id so the event
+    # still lands in events.db and quota counts correctly. OHOK metrics also
+    # see it because by_run groups by run_id.
     if current:
-        db.append_event(
-            run_id=current["run_id"],
-            event_type="goal.promoted_manual",
+        event_run_id = current["run_id"]
+        event_command = current["command"]
+        offline_mode = False
+    else:
+        # Synthesize an audited offline run so event isn't orphaned
+        event_run_id = db.create_run(
+            command="vg:promote-goal-manual",
             phase=phase,
-            command=current["command"],
+            args=f"--goal-id {args.goal_id}",
+            session_id=os.environ.get("CLAUDE_SESSION_ID"),
+            git_sha=_git_sha(),
+        )
+        event_command = "vg:promote-goal-manual"
+        offline_mode = True
+        # Emit run.started/completed bracket so this offline call shows up
+        # as a complete run in metrics rather than a dangling event.
+        db.append_event(
+            run_id=event_run_id,
+            event_type="run.started",
+            phase=phase,
+            command=event_command,
             actor="user",
             outcome="INFO",
-            payload={"goal_id": args.goal_id,
-                     "reason": args.reason[:300]},
+            payload={"offline_mode": True,
+                     "purpose": "promote_goal_manual"},
         )
 
-    print(f"✓ {args.goal_id} → MANUAL in {matrix.name}")
+    db.append_event(
+        run_id=event_run_id,
+        event_type="goal.promoted_manual",
+        phase=phase,
+        command=event_command,
+        actor="user",
+        outcome="INFO",
+        payload={"goal_id": args.goal_id,
+                 "reason": args.reason[:300],
+                 "has_ticket": has_ticket,
+                 "has_commit_sha": has_commit_sha,
+                 "offline_mode": offline_mode,
+                 "quota_used": prior_count + 1,
+                 "quota_max": PROMOTE_MANUAL_QUOTA_PER_PHASE},
+    )
+
+    if offline_mode:
+        # Close the synthetic run so it appears finalized in metrics
+        db.append_event(
+            run_id=event_run_id,
+            event_type="run.completed",
+            phase=phase,
+            command=event_command,
+            actor="user",
+            outcome="PASS",
+            payload={"offline_mode": True,
+                     "action": "promote_goal_manual"},
+        )
+
+    # OHOK-3: also append to OVERRIDE-DEBT.md so bulk MANUAL promotion is
+    # visible during /vg:accept review, not buried in events.db alone.
+    # OHOK-6 (Codex P1): write failures previously swallowed silently —
+    # audit trail could vanish without anyone noticing. Now surface loudly
+    # + emit debt_register.write_failed event.
+    register = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()) / \
+               ".vg" / "OVERRIDE-DEBT.md"
+    try:
+        register.parent.mkdir(parents=True, exist_ok=True)
+        with register.open("a", encoding="utf-8") as f:
+            f.write(
+                f"\n- id: PROMOTE-MANUAL-{phase}-{args.goal_id}\n"
+                f"  logged_at: {datetime.utcnow().isoformat()}Z\n"
+                f"  type: goal_promoted_manual\n"
+                f"  phase: \"{phase}\"\n"
+                f"  goal_id: {args.goal_id}\n"
+                f"  quota: {prior_count + 1}/{PROMOTE_MANUAL_QUOTA_PER_PHASE}\n"
+                f"  reason: \"{args.reason.replace(chr(34), chr(39))}\"\n"
+                f"  status: active\n"
+            )
+    except Exception as e:
+        print(
+            f"⚠ OVERRIDE-DEBT.md write FAILED: {e}\n"
+            f"   Event still emitted to events.db (audit trail preserved there),\n"
+            f"   but human-visible register is out of sync. Investigate:\n"
+            f"   - disk full?\n"
+            f"   - permission denied on {register}?\n"
+            f"   - file locked by other process?\n"
+            f"   Re-run after fixing.",
+            file=sys.stderr,
+        )
+        try:
+            db.append_event(
+                run_id=event_run_id,
+                event_type="debt_register.write_failed",
+                phase=phase,
+                command=event_command,
+                actor="orchestrator",
+                outcome="WARN",
+                payload={"error": str(e)[:200],
+                         "register": str(register),
+                         "context": "promote_goal_manual"},
+            )
+        except Exception:
+            pass  # even event DB failure → give up gracefully, don't crash
+
+    print(f"✓ {args.goal_id} → MANUAL in {matrix.name} "
+          f"(quota {prior_count + 1}/{PROMOTE_MANUAL_QUOTA_PER_PHASE})")
     return 0
 
 
 def cmd_override(args) -> int:
     """Log override.used event for this run + append to OVERRIDE-DEBT.md.
-    Satisfies forbidden_without_override contract check at run-complete."""
+    Satisfies forbidden_without_override contract check at run-complete.
+
+    OHOK-3 hardening (2026-04-22): reason gate raised from 4→50 chars AND
+    must cite external artifact (ticket/commit/PR). Previous 4-char bar let
+    AI pass 'meh' as valid override — Gemini flagged as bypass vector.
+    """
     current = state_mod.read_current_run()
     if not current:
         print("⛔ No active run", file=sys.stderr)
         return 1
 
-    if len(args.reason.strip()) < 4:
-        print("⛔ reason must be ≥4 chars", file=sys.stderr)
-        return 1
+    reason = args.reason.strip()
+    if len(reason) < 50:
+        print(
+            f"⛔ --reason must be ≥50 chars (got {len(reason)}).\n"
+            f"   Override is an explicit decision to bypass a gate — the\n"
+            f"   reason becomes the audit trail. Terse reasons get rubber-\n"
+            f"   stamped by reviewers. Write why this override is safe,\n"
+            f"   what you checked, and when the debt gets paid down.",
+            file=sys.stderr,
+        )
+        return 2
+
+    has_ticket = bool(_TICKET_RE.search(reason))
+    has_commit_sha = bool(_SHA_RE.search(reason))
+    if not (has_ticket or has_commit_sha):
+        print(
+            "⛔ --reason must cite an external artifact (ticket/URL/PR/commit SHA).\n"
+            "   Accept one of: https://..., GH-42, ISSUE-42, JIRA-1234, #42,\n"
+            "   PR-42, or commit hash (≥7 hex chars).\n"
+            "   Rationale: override without paper-trail = silent debt. The\n"
+            "   OVERRIDE-DEBT register is only useful if entries are\n"
+            "   externally auditable.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # OHOK-5: resolvable-proof gate (same check as promote-goal-manual)
+    resolved, proof_kind = _verify_proof_resolves(reason)
+    if not resolved:
+        print(
+            "⛔ --reason shape-matches but NOTHING RESOLVES.\n"
+            "   Shape-only proof = audit breadcrumb, not real evidence.\n"
+            "   Must contain ONE of:\n"
+            "   - git SHA in this repo (verified via `git cat-file -t`)\n"
+            "   - URL on trusted tracker (github.com/gitlab.com/bitbucket.org/\n"
+            "     codeberg.org/linear.app + subdomains)\n"
+            "   Fake tokens like `deadbee` or bogus URLs rejected.",
+            file=sys.stderr,
+        )
+        return 2
 
     ev = db.append_event(
         run_id=current["run_id"],
@@ -638,8 +975,29 @@ def cmd_override(args) -> int:
                 f"  git_sha: {_git_sha() or 'unknown'}\n"
                 f"  status: active\n"
             )
-    except Exception:
-        pass
+    except Exception as e:
+        # OHOK-6 (Codex P1): surface loud, emit event — don't swallow
+        print(
+            f"⚠ OVERRIDE-DEBT.md write FAILED (cmd_override): {e}\n"
+            f"   Event OD-{ev['id']:03d} already in events.db (audit trail OK),\n"
+            f"   but human-visible register is out of sync. Fix + re-run.",
+            file=sys.stderr,
+        )
+        try:
+            db.append_event(
+                run_id=current["run_id"],
+                event_type="debt_register.write_failed",
+                phase=current["phase"],
+                command=current["command"],
+                actor="orchestrator",
+                outcome="WARN",
+                payload={"error": str(e)[:200],
+                         "register": str(register),
+                         "context": "override",
+                         "event_id": ev["id"]},
+            )
+        except Exception:
+            pass
 
     print(f"OD-{ev['id']:03d} logged: {args.flag}")
     return 0
@@ -818,7 +1176,13 @@ COMMAND_VALIDATORS = {
     # Previously orphaned (existed but unregistered) — surfaced by
     # /vg:doctor wired check.
     "vg:build": ["phase-exists", "commit-attribution", "task-goal-binding",
-                 "plan-granularity", "override-debt-balance", "test-first"],
+                 "plan-granularity", "override-debt-balance", "test-first",
+                 # OHOK-7 (2026-04-22): MANDATORY post-build CrossAI loop.
+                 # Must see events.db evidence of ≥1 crossai iteration +
+                 # a terminal event (loop_complete / loop_exhausted /
+                 # loop_user_override). No way to pass this gate without
+                 # actually running .claude/scripts/vg-build-crossai-loop.py.
+                 "build-crossai-required"],
     # Review doesn't enforce goal-coverage — tests land in /vg:test, so review
     # always fails before tests exist. Enforcement moved to /vg:test + /vg:accept
     # where tests MUST exist. Review's in-skill 0b gate warns advisory only.

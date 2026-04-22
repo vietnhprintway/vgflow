@@ -123,13 +123,54 @@ def _fallback_parse(fm_text: str) -> dict | None:
 
 
 def resolve_phase_dir(phase: str) -> Path | None:
-    """Find phase dir accepting zero-padded variants."""
+    """Find phase dir accepting multiple naming conventions.
+
+    Mirrors bash phase-resolver.sh logic (OHOK v2 Day 5). Handles:
+    - canonical: `07.13` → `07.13-dsp-*`
+    - zero-pad: `7.13` → `07.13-*` (split on dot, pad major part only)
+    - three-level decimal: `07.0.1` → `07.0.1-*`
+    - bare dir (legacy GSD migration): `07` → `07/` (no dash suffix)
+    - exact-beats-prefix: `07.12` MUST match `07.12-*` not `07.12.1-*`
+
+    Previously broke because `phase.zfill(2)` on `7.13` stayed `7.13`
+    (zfill pads the whole string, not the major part of decimal).
+    User screenshot 2026-04-22 showed `7.13` → "Phase dir not found" even
+    though `07.13-dsp-full-rebuild` existed. OHOK v2 follow-up fix.
+    """
     if not phase or not PHASES_DIR.exists():
         return None
+
+    # Step 1: exact match with dash suffix (prevents 07.12 matching 07.12.1-*)
     candidates = list(PHASES_DIR.glob(f"{phase}-*"))
-    if not candidates:
-        candidates = list(PHASES_DIR.glob(f"{phase.zfill(2)}-*"))
-    return candidates[0] if candidates else None
+    if candidates:
+        return candidates[0]
+
+    # Step 1b: exact bare-dir match (legacy GSD dirs like `00/`, `07/`)
+    bare = PHASES_DIR / phase
+    if bare.is_dir():
+        return bare
+
+    # Step 2: zero-pad the MAJOR part (before first dot)
+    # `7.13` → major=`7`, rest=`13` → normalized=`07.13`
+    # `7`    → major=`7`, rest=``   → normalized=`07`
+    # `07.1` → major=`07`, already 2-wide → unchanged
+    if "." in phase:
+        major, _, rest = phase.partition(".")
+    else:
+        major, rest = phase, ""
+
+    if major.isdigit() and len(major) < 2:
+        normalized_major = major.zfill(2)
+        normalized = f"{normalized_major}.{rest}" if rest else normalized_major
+        if normalized != phase:
+            candidates = list(PHASES_DIR.glob(f"{normalized}-*"))
+            if candidates:
+                return candidates[0]
+            bare_norm = PHASES_DIR / normalized
+            if bare_norm.is_dir():
+                return bare_norm
+
+    return None
 
 
 def substitute(template: str, phase: str, phase_dir: Path | None) -> str:

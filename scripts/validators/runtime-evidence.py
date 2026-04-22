@@ -93,6 +93,87 @@ def check_playwright_run_evidence(spec: Path, since_mtime: float) -> tuple[bool,
     return False, ""
 
 
+def find_per_spec_failures(specs: list[Path]) -> list[dict]:
+    """OHOK-6 (Gemini P1): parse test-results/ for per-spec failure folders.
+
+    Playwright writes one folder per failing test to `apps/web/test-results/`,
+    named `<spec-basename>-<test-title-slug>-<browser>/`. Global `.last-run.json`
+    only tracks the LATEST run — if user runs failing phase-14 tests then a
+    trivial passing smoke, status becomes 'passed' and global check lets the
+    phase-14 failure slip through. Per-folder scan catches this "Pass-by-Proxy"
+    bypass: if ANY failure folder references phase specs, BLOCK regardless
+    of last-run status.
+
+    Returns list of {spec, failure_folder, mtime} for each phase-relevant failure.
+    """
+    test_results = REPO_ROOT / "apps" / "web" / "test-results"
+    if not test_results.exists():
+        return []
+    # Build spec basename → spec path lookup.
+    # Path.stem of `foo.spec.ts` = `foo.spec` (only strips LAST ext), but
+    # Playwright folder names start with basename WITHOUT `.spec`. Strip
+    # trailing `.spec` so match prefix is correct.
+    def _basename(p: Path) -> str:
+        s = p.stem
+        if s.endswith(".spec"):
+            s = s[:-5]
+        elif s.endswith(".test"):
+            s = s[:-5]
+        return s
+    spec_bases = {_basename(s): s for s in specs}  # "auth-domain-isolation" → Path
+    failures: list[dict] = []
+    for entry in test_results.iterdir():
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        # Folder name: <spec-basename>-<slug>-<browser>
+        # Match by prefix — longest matching spec basename wins (avoid
+        # "auth" matching "auth-domain-isolation" when both specs exist)
+        matched_spec = None
+        longest_match = 0
+        for base, path in spec_bases.items():
+            # Spec basename could contain dashes; folder name may truncate
+            # to ~50 chars. Try prefix match on basename or shortened form.
+            if entry.name.startswith(base + "-") and len(base) > longest_match:
+                matched_spec = path
+                longest_match = len(base)
+        if matched_spec:
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                mtime = 0
+            failures.append({
+                "spec": str(matched_spec.relative_to(REPO_ROOT)),
+                "failure_folder": str(entry.relative_to(REPO_ROOT)),
+                "mtime": mtime,
+            })
+    return failures
+
+
+def read_playwright_last_run_status() -> tuple[str | None, list[str], str]:
+    """Parse apps/web/test-results/.last-run.json for actual test outcome.
+
+    Returns (status, failed_test_ids, report_path):
+      - status: "passed" | "failed" | "interrupted" | None (no file)
+      - failed_test_ids: list of failed test IDs (truncated to 10 in evidence)
+      - report_path: relative path to the .last-run.json (for evidence)
+
+    Playwright writes this on every `pnpm playwright test` exit. If AI ran
+    tests but half failed, `status: "failed"` regardless of how many passed.
+    Phase 14 OHOK v2 dogfood: status=failed with 4 failing tests but
+    runtime-evidence validator PASSED because it only checked mtime existence.
+    """
+    last_run = REPO_ROOT / "apps" / "web" / "test-results" / ".last-run.json"
+    if not last_run.exists():
+        return None, [], ""
+    try:
+        data = json.loads(last_run.read_text(encoding="utf-8"))
+    except Exception:
+        return None, [], str(last_run.relative_to(REPO_ROOT))
+    status = data.get("status")
+    failed = data.get("failedTests") or []
+    return status, failed, str(last_run.relative_to(REPO_ROOT))
+
+
 def parse_goal_coverage_matrix(phase_dir: Path) -> list[dict]:
     """Parse GOAL-COVERAGE-MATRIX.md for goals + their status."""
     matrix = phase_dir / "GOAL-COVERAGE-MATRIX.md"
@@ -132,6 +213,87 @@ def main() -> int:
     specs = find_phase_specs(phase_dir)
     evidence = []
     verdict = "PASS"
+
+    # CHECK -1 (OHOK-6, 2026-04-22 round 2): per-spec failure folders.
+    # Must run BEFORE global status check because AI can run failing phase
+    # specs, then run a trivial passing spec to flip `.last-run.json` to
+    # "passed" (Pass-by-Proxy bypass). Per-spec scan catches this.
+    per_spec_failures = find_per_spec_failures(specs) if specs else []
+    if per_spec_failures:
+        verdict = "BLOCK"
+        sample = per_spec_failures[:8]
+        evidence.append({
+            "type": "per_spec_failure_folder",
+            "message": (
+                f"{len(per_spec_failures)} failure folder(s) in test-results/ "
+                f"reference phase specs (regardless of global .last-run.json). "
+                f"Pass-by-Proxy bypass blocked: even if latest run was a smoke "
+                f"that passed, these folders prove phase specs failed."
+            ),
+            "evidence": [{
+                "spec": f["spec"],
+                "folder": f["failure_folder"],
+            } for f in sample],
+            "hint": (
+                "Fix failing tests + delete test-results/* to clear stale evidence: "
+                "`cd apps/web && rm -rf test-results/ && pnpm playwright test`"
+            ),
+        })
+
+    # CHECK 0 (OHOK-3, 2026-04-22): actual Playwright outcome from global state.
+    # Phase 14 incident: status=failed 4/5 tests but validator PASS.
+    # OHOK-6: also guard against deletion fallthrough — if .last-run.json
+    # is missing but specs exist, require explicit evidence.
+    last_status, failed_tests, last_run_path = read_playwright_last_run_status()
+    if last_status is None and specs:
+        # OHOK-6 (Gemini P1): deletion fallthrough guard. Missing
+        # .last-run.json + existing specs = no ground truth = BLOCK.
+        # Previously fell through to weak mtime check.
+        verdict = "BLOCK"
+        evidence.append({
+            "type": "missing_last_run_json",
+            "message": (
+                "apps/web/test-results/.last-run.json is missing but "
+                f"{len(specs)} phase spec(s) exist. Cannot verify execution "
+                "state. Deletion of .last-run.json is a bypass vector — "
+                "explicit run required."
+            ),
+            "hint": "cd apps/web && pnpm playwright test",
+        })
+    elif last_status == "failed":
+        verdict = "BLOCK"
+        failed_sample = failed_tests[:10]
+        evidence.append({
+            "type": "playwright_failed",
+            "message": (
+                f"Playwright .last-run.json reports status='failed' with "
+                f"{len(failed_tests)} failing test(s). Tests MUST pass before "
+                f"runtime-evidence gate approves."
+            ),
+            "file": last_run_path,
+            "failed_tests": failed_sample,
+            "hint": (
+                "Fix failing tests, then re-run: cd apps/web && pnpm playwright test. "
+                "Override via /vg:review --allow-unexecuted-specs requires --override-reason."
+            ),
+        })
+    elif last_status == "interrupted":
+        verdict = "BLOCK"
+        evidence.append({
+            "type": "playwright_interrupted",
+            "message": (
+                "Playwright .last-run.json reports status='interrupted' "
+                "(test run killed mid-flight). Cannot trust partial results."
+            ),
+            "file": last_run_path,
+            "hint": "Re-run full suite: cd apps/web && pnpm playwright test",
+        })
+    elif last_status == "passed":
+        evidence.append({
+            "type": "playwright_passed",
+            "message": "Playwright .last-run.json reports status='passed'",
+            "file": last_run_path,
+        })
 
     if not specs:
         # No specs found for phase. Warn only — might be backend-only phase

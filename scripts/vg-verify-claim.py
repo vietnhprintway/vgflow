@@ -106,16 +106,23 @@ def main() -> int:
     phase = current.get("phase", "?")
 
     if is_stale(current):
-        # Abandoned run — clear + approve silently (prevent false-fire on
-        # old stale state across sessions)
-        log(f"active run {command} phase={phase} is stale → clearing + approve")
-        try:
-            CURRENT_RUN.unlink()
-        except FileNotFoundError:
-            pass
-        print(json.dumps({"decision": "approve",
-                          "reason": "stale-run-cleared"}))
-        return 0
+        # OHOK-6 (Gemini P1): previously auto-cleared + approved. That was
+        # a time-based escape hatch — AI could idle >30min then call Stop
+        # to bypass all gates. Now BLOCK with explicit recovery path.
+        # User must consciously acknowledge the run was abandoned.
+        log(f"active run {command} phase={phase} is stale → BLOCK")
+        err = (
+            f"⛔ Active run is stale (>30min, started {current.get('started_at', '?')}):\n"
+            f"   {command} phase={phase} run_id={current.get('run_id', '?')[:12]}\n\n"
+            f"   Stale runs are NOT auto-cleared anymore (OHOK-6). AI could\n"
+            f"   previously wait out the threshold and get silent approval.\n"
+            f"   Explicitly abort or repair:\n"
+            f"   - python .claude/scripts/vg-orchestrator run-abort --reason 'abandoned'\n"
+            f"   - python .claude/scripts/vg-orchestrator run-repair --force\n"
+            f"   Then retry Stop."
+        )
+        print(err, file=sys.stderr)
+        return 2
 
     log(f"active run {command} phase={phase} → invoking orchestrator run-complete")
     rc, stdout, stderr = run_orchestrator_complete()
@@ -137,12 +144,29 @@ def main() -> int:
         print(msg, file=sys.stderr)
         return 2
 
-    # Any other non-zero: treat as soft-fail so we don't deadlock on
-    # orchestrator bugs. Log prominently.
-    log(f"orchestrator unexpected rc={rc}, stderr={stderr[:300]}")
-    print(json.dumps({"decision": "approve",
-                      "reason": f"orchestrator-rc-{rc}-soft-approve"}))
-    return 0
+    # OHOK-3 (2026-04-22): Gemini flagged this branch as "institutionalized
+    # cowardice" — soft-approve on unexpected rc meant orchestrator bugs
+    # silently let AI claim PASS. Fix: BLOCK with actionable recovery path.
+    #
+    # If the user hits genuine orchestrator bugs (rare), they can:
+    #   - python vg-orchestrator run-abort --reason "orchestrator bug rc=X"
+    #   - python vg-orchestrator run-repair --force
+    # then retry Stop. We do NOT auto-escape anymore.
+    log(f"orchestrator unexpected rc={rc}, stderr={stderr[:500]}")
+    err_msg = (
+        f"⛔ vg-orchestrator run-complete returned unexpected rc={rc}.\n"
+        f"   This is NOT a BLOCK from contract violations — it's a bug or\n"
+        f"   transient state issue. Previous versions soft-approved here,\n"
+        f"   which let AI claim PASS without real verification.\n\n"
+        f"   Recovery options:\n"
+        f"   1. Inspect: python .claude/scripts/vg-orchestrator run-status\n"
+        f"   2. Inspect log: tail .vg/hook-verifier.log\n"
+        f"   3. Repair: python .claude/scripts/vg-orchestrator run-repair --force\n"
+        f"   4. Abort: python .claude/scripts/vg-orchestrator run-abort --reason '<why>'\n"
+        f"\n   Orchestrator stderr excerpt: {stderr[:300].strip()}"
+    )
+    print(err_msg, file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

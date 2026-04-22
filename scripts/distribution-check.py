@@ -52,6 +52,8 @@ TRACKED_PATHS = [
     ".claude/scripts/vg-verify-claim.py",
     ".claude/scripts/vg-entry-hook.py",
     ".claude/scripts/vg-wired-check.py",
+    ".claude/scripts/vg-ohok-metrics.py",
+    ".claude/scripts/vg-build-crossai-loop.py",
     ".claude/scripts/rationalization-guard.sh",
     ".claude/scripts/bootstrap-loader.py",
     ".claude/scripts/bootstrap-test-runner.py",
