@@ -20,6 +20,11 @@ runtime_contract:
   must_touch_markers:
     - "0_parse_and_validate"
     - "5b_runtime_contract_verify"
+    # BOOT-1 (2026-04-23): reflector must run at test-close so the learning
+    # loop captures evidence from the full specs→accept pipeline, not only
+    # review. severity=warn (non-blocking) — reflector crashes don't fail test.
+    - name: "bootstrap_reflection"
+      severity: "warn"
   must_emit_telemetry:
     - event_type: "test.started"
       phase: "${PHASE_NUMBER}"
@@ -200,6 +205,38 @@ Khi loop qua goals để replay:
 If `--regression-only`: skip to 5e (requires generated tests to exist).
 If `--smoke-only`: run only 5c-smoke, report, exit.
 If `--fix-only`: skip to 5c-fix section.
+</step>
+
+<step name="0c_telemetry_suggestions">
+## Step 0c — Reactive Telemetry Suggestions (v2.5 Phase E)
+
+Read telemetry suggestions and surface to user. Security validators (UNQUARANTINABLE) are NEVER suggested for skip, regardless of pass rate.
+
+```bash
+if [ -x "$(command -v ${PYTHON_BIN:-python3})" ] && [ -f ".claude/scripts/telemetry-suggest.py" ]; then
+  SUGGESTIONS=$(${PYTHON_BIN:-python3} .claude/scripts/telemetry-suggest.py --command vg:test 2>/dev/null || echo "")
+  if [ -n "$SUGGESTIONS" ]; then
+    COUNT=$(echo "$SUGGESTIONS" | grep -c '^{' || echo 0)
+    if [ "${COUNT:-0}" -gt 0 ]; then
+      echo "▸ Telemetry suggestions for vg:test (${COUNT}, advisory):"
+      echo "$SUGGESTIONS" | head -5 | ${PYTHON_BIN:-python3} -c "
+import json, sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d=json.loads(line)
+        t=d.get('type','?')
+        if t=='skip': print(f\"  [skip] {d.get('validator','?')} — {d.get('pass_rate',0):.0%} over {d.get('samples',0)} samples\")
+        elif t=='reorder': print(f\"  [reorder-late] {d.get('validator','?')} — p95={d.get('p95_ms',0)}ms\")
+        elif t=='override_abuse': print(f\"  [override-abuse] {d.get('flag','?')} used {d.get('count_30d',0)}x/30d\")
+    except Exception: pass
+" 2>/dev/null
+    fi
+  fi
+fi
+touch "${PHASE_DIR}/.step-markers/0c_telemetry_suggestions.done"
+```
 </step>
 
 <step name="create_task_tracker">
@@ -2216,7 +2253,51 @@ Display:
 <step name="5f_security_audit">
 ## 5f: SECURITY AUDIT
 
-Two-tier check on phase-changed files.
+Multi-tier security check. Tier 0 runs B8 structured validators (new,
+2026-04-23); Tier 1-4 run grep heuristics inherited from earlier versions.
+
+### Tier 0: B8 structured validators (MANDATORY, 2026-04-23)
+
+Previously 5f was 4-tier grep prose only — `secrets-scan.py`,
+`verify-input-validation.py`, `verify-authz-declared.py` existed as
+scripts but were never invoked from the test pipeline. Users ran
+`/vg:test 7.13` → zero B8 signal. SEC-2 fix:
+
+```bash
+# Narrate intent so audit log shows we actually ran them
+echo "━━━ 5f Tier 0: B8 security validators ━━━"
+SEC_TIER0_EXIT=0
+
+# Each validator reads --phase and emits Evidence JSON per _common contract.
+# Exit 1 = BLOCK, exit 0 = PASS/WARN (orchestrator dispatcher also re-runs
+# them at run-complete as defense-in-depth).
+for V in secrets-scan verify-input-validation verify-authz-declared verify-goal-security verify-goal-perf verify-security-baseline; do
+  OUT=$(${PYTHON_BIN:-python3} ".claude/scripts/validators/${V}.py" \
+        --phase "${PHASE_NUMBER}" 2>&1)
+  RC=$?
+  VERDICT=$(echo "$OUT" | ${PYTHON_BIN:-python3} -c \
+    "import json,sys; d=json.loads(sys.stdin.read().splitlines()[-1]); print(d.get('verdict','UNKNOWN'))" \
+    2>/dev/null || echo "UNKNOWN")
+  echo "  [${V}] verdict=${VERDICT} rc=${RC}"
+  # Surface structured evidence for transparency
+  echo "$OUT" | ${PYTHON_BIN:-python3} -c \
+    "import json,sys; d=json.loads(sys.stdin.read().splitlines()[-1]); [print('    ─', e.get('type'), e.get('message','')) for e in d.get('evidence', [])]" \
+    2>/dev/null || true
+  if [ "$RC" -ne 0 ]; then
+    SEC_TIER0_EXIT=1
+  fi
+done
+
+if [ "$SEC_TIER0_EXIT" -ne 0 ]; then
+  echo "  ⛔ Tier 0 BLOCK — fix B8 findings trước khi rerun /vg:test"
+  # Don't exit immediately — fall through to show Tier 1-4 findings as well
+  # so user has complete picture in one run. Exit code gets rolled into
+  # final 5f verdict below.
+fi
+```
+
+Config gate: `config.security.skip_tier0` (default false). Set true only for
+legacy phases where the dependency isn't importable yet — logs override-debt.
 
 ### Tier 1: Built-in Security Grep (always, <10 sec)
 
@@ -2355,12 +2436,17 @@ fi
 Display:
 ```
 5f Security:
+  Tier 0 B8 validators: {secrets,input-validation,authz} {PASS|BLOCK|WARN}
   Tier 1 grep: {findings} ({critical}/{high}/{medium}/{low})
   Tier 2 deep: {tool used|skipped}
   Tier 3 contract-code verify: {COPY_MISMATCHES} mismatches (auth role + error shape)
   Tier 4 runtime no-token: {NEG_FAILURES} open endpoints
   Result: {PASS|GAPS_FOUND|FAIL}
 ```
+
+Final verdict rule: if `SEC_TIER0_EXIT != 0` → result is FAIL regardless of
+Tier 1-4 outcome. B8 validators are structured truth gates; grep tiers are
+advisory complements.
 </step>
 
 <step name="5f_mobile_security_audit" profile="mobile-*">
@@ -2718,6 +2804,100 @@ Display:
 Performance failures → GAPS_FOUND (not FAIL — pre-prod is advisory). Production load test via `/vg:regression` or external tool.
 </step>
 
+<step name="5h_security_dynamic" profile="web-fullstack,web-backend-only">
+## Step 5h — DAST Dynamic Security Scan (v2.5 Phase B.5)
+
+Sau step 5a_deploy + 5b_runtime_contract_verify, server đang chạy trên
+sandbox. Spawn DAST tool (ZAP baseline active scan / Nuclei / fallback)
+để actually send malicious payload (SQLi, XSS, CSRF, SSRF, path traversal)
+lên endpoint live. Tầng 2 security — khác với Phase B.1/B.2/B.3 static.
+
+Findings severity route theo project risk_profile (config):
+- critical → High/Critical finding = HARD BLOCK
+- moderate → High = WARN, Medium = advisory
+- low → all advisory (không block)
+
+Skip cho `docs` profile + `cli-tool` không có HTTP endpoint.
+
+```bash
+echo ""
+echo "━━━ Step 5h — DAST (Dynamic Application Security Testing) ━━━"
+
+# Resolve deployed URL — sandbox uses config, local uses dev_command default
+SCAN_URL="${SANDBOX_URL:-}"
+if [ -z "$SCAN_URL" ]; then
+  # Fallback: read local dev URL from config or defaults
+  SCAN_URL="${LOCAL_API_URL:-http://localhost:3001}"
+fi
+
+SCAN_MODE="full"
+[[ "$ARGUMENTS" =~ --dast-baseline ]] && SCAN_MODE="baseline"
+[[ "$ARGUMENTS" =~ --skip-dast ]] && {
+  echo "⚠ DAST skipped via --skip-dast (logged to override-debt)"
+  type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+    "--skip-dast" "$PHASE_NUMBER" "test.5h" "user skipped DAST scan" \
+    "test-dast-skip-${PHASE_NUMBER}"
+  touch "${PHASE_DIR}/.step-markers/5h_security_dynamic.done"
+  # Skip rest of step
+  :
+}
+
+if [[ ! "$ARGUMENTS" =~ --skip-dast ]]; then
+  DAST_REPORT="${PHASE_DIR}/dast-report.json"
+
+  # Invoke cascade runner (ZAP → Nuclei → grep-only)
+  bash .claude/commands/vg/_shared/lib/dast-runner.sh \
+    "${PHASE_NUMBER}" "${SCAN_URL}" "${SCAN_MODE}" "${DAST_REPORT}"
+  RUNNER_RC=$?
+
+  if [ "$RUNNER_RC" -eq 2 ]; then
+    echo "⚠ DAST runner: no tool available (Docker/Nuclei missing), skipped."
+    echo "   Install ZAP (docker pull zaproxy/zaproxy) or nuclei để enable."
+  fi
+
+  # Parse report + route severity
+  RISK_PROFILE="${CONFIG_PROJECT_RISK_PROFILE:-moderate}"
+  REPORT_OUT=$(${PYTHON_BIN:-python3} \
+    .claude/scripts/validators/dast-scan-report.py \
+    --phase "${PHASE_NUMBER}" \
+    --report "${DAST_REPORT}" \
+    --risk-profile "${RISK_PROFILE}" 2>&1)
+  REPORT_RC=$?
+
+  echo "$REPORT_OUT" | tail -1 | ${PYTHON_BIN:-python3} -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    verdict = d.get('verdict', '?')
+    ev = d.get('evidence', [])
+    print(f'  DAST verdict: {verdict} ({len(ev)} finding-group(s))')
+    for e in ev[:5]:
+        print(f'    - {e.get(\"type\")}: {e.get(\"message\",\"\")[:200]}')
+except Exception:
+    pass
+" 2>/dev/null || true
+
+  if [ "$REPORT_RC" -ne 0 ]; then
+    if [[ "$ARGUMENTS" =~ --allow-dast-findings ]]; then
+      echo "⚠ DAST findings — OVERRIDE accepted via --allow-dast-findings"
+      type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+        "--allow-dast-findings" "$PHASE_NUMBER" "test.5h.dast" \
+        "Critical/High DAST findings accepted by user" \
+        "test-dast-${PHASE_NUMBER}"
+    else
+      echo ""
+      echo "⛔ DAST found Critical/High vulnerabilities at ${SCAN_URL}"
+      echo "   Fix each finding (check dast-report.json detail), re-run /vg:test."
+      echo "   Override: /vg:test ${PHASE_NUMBER} --allow-dast-findings"
+      exit 1
+    fi
+  fi
+fi
+
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5h_security_dynamic" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5h_security_dynamic.done"
+```
+</step>
+
 <step name="write_report">
 ## Write SANDBOX-TEST.md
 
@@ -2874,6 +3054,125 @@ Commit:
 git add ${PHASE_DIR}/*-SANDBOX-TEST.md ${SCREENSHOTS_DIR}/ ${GENERATED_TESTS_DIR}/
 git commit -m "test({phase}): goal verification — {verdict}, {passed}/{total} goals passed"
 ```
+</step>
+
+<step name="bootstrap_reflection">
+## End-of-Step Reflection (Human-Curated Learning — BOOT-1, 2026-04-23)
+
+Mirror of review.md `bootstrap_reflection`, adapted for test phase. Spawns
+the **reflector** subagent (isolated Haiku) to analyze this test run's
+artifacts + user messages + telemetry and draft learning candidates.
+
+**Important terminology:** Previously branded "Self-Healing" — corrected
+to **Human-Curated Learning**. The loop is reflector → candidate →
+`/vg:learn` approval (human gate) → ACCEPTED.md → inject into next
+phase. No autonomous rule promotion.
+
+**Skip conditions** (reflection does nothing, exit 0):
+- `.vg/bootstrap/` directory absent (project hasn't opted in)
+- `config.bootstrap.reflection_enabled == false` (user disabled)
+- Test verdict = fatal crash (reflect on next success instead)
+
+### Run
+
+```bash
+BOOTSTRAP_DIR=".vg/bootstrap"
+if [ ! -d "$BOOTSTRAP_DIR" ]; then
+  # Bootstrap not opted in — skip silently
+  :
+else
+  REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
+  REFLECT_OUT="${PHASE_DIR}/reflection-test-${REFLECT_TS}.yaml"
+  USER_MSG_FILE="${VG_TMP}/reflect-user-msgs-${REFLECT_TS}.txt"
+  : > "$USER_MSG_FILE"
+
+  # Filter telemetry to this phase + command=test within last 4 hours
+  TELEMETRY_SLICE="${VG_TMP}/reflect-telemetry-${REFLECT_TS}.jsonl"
+  grep -E "\"phase\":\"${PHASE_NUMBER}\".*\"command\":\"vg:test\"" \
+    "${PLANNING_DIR}/telemetry.jsonl" 2>/dev/null \
+    | tail -200 > "$TELEMETRY_SLICE" || true
+
+  # Override-debt entries created during test
+  OVERRIDE_SLICE="${VG_TMP}/reflect-overrides-${REFLECT_TS}.md"
+  grep -E "\"step\":\"test\"" "${PLANNING_DIR}/OVERRIDE-DEBT.md" 2>/dev/null \
+    > "$OVERRIDE_SLICE" || true
+
+  echo "📝 Running end-of-step reflection (Haiku, isolated context)..."
+fi
+```
+
+### Spawn reflector agent (isolated Haiku)
+
+Use Agent tool with skill `vg-reflector`, model `haiku`, fresh context:
+
+```
+Agent(
+  description="End-of-step reflection for test phase {PHASE}",
+  subagent_type="general-purpose",
+  prompt="""
+Use skill: vg-reflector
+
+Arguments:
+  STEP           = "test"
+  PHASE          = "{PHASE_NUMBER}"
+  PHASE_DIR      = "{PHASE_DIR absolute path}"
+  USER_MSG_FILE  = "{USER_MSG_FILE}"
+  TELEMETRY_FILE = "{TELEMETRY_SLICE}"
+  OVERRIDE_FILE  = "{OVERRIDE_SLICE}"
+  ACCEPTED_MD    = ".vg/bootstrap/ACCEPTED.md"
+  REJECTED_MD    = ".vg/bootstrap/REJECTED.md"
+  OUT_FILE       = "{REFLECT_OUT}"
+
+Read .claude/skills/vg-reflector/SKILL.md and follow workflow exactly.
+Do NOT read parent conversation transcript — echo chamber forbidden.
+Output max 3 candidates with evidence to OUT_FILE.
+"""
+)
+```
+
+### Interactive promote flow (user gates)
+
+After reflector exits, parse OUT_FILE. If candidates found, show to user:
+
+```
+📝 Reflection — test phase {PHASE_NUMBER} found {N} learning(s):
+
+[1] {title}
+    Type: {type}
+    Scope: {scope}
+    Evidence: {count} items — {sample}
+    Confidence: {confidence}
+
+    → Proposed: {target summary}
+
+    [y] ghi sổ tay  [n] reject  [e] edit inline  [s] skip lần này
+
+[2] ...
+
+User gõ: y/n/e/s cho từng item, hoặc "all-defer" để bỏ qua toàn bộ.
+```
+
+- `y` → delegate to `/vg:learn --promote L-{id}` (validates schema, dry-run preview, git commit)
+- `n` → append to REJECTED.md with user reason
+- `e` → interactive field-by-field edit loop
+- `s` → leave candidate in `.vg/bootstrap/CANDIDATES.md`, user reviews via `/vg:learn --review`
+
+### Emit telemetry
+
+```bash
+emit_telemetry "bootstrap.reflection_ran" PASS \
+  "{\"step\":\"test\",\"phase\":\"${PHASE_NUMBER}\",\"candidates\":${CANDIDATE_COUNT:-0}}"
+```
+
+### Failure mode
+
+Reflector crash/timeout → log warning, continue to `complete`. Never block test completion.
+
+```
+⚠ Reflection failed — test completes normally. Check .vg/bootstrap/logs/
+```
+
+Final action: `touch "${PHASE_DIR}/.step-markers/bootstrap_reflection.done"`
 </step>
 
 <step name="complete">

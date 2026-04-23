@@ -63,6 +63,69 @@ postcondition:
 verification: automated | manual | deferred | skipped
 tests: [TS-XX, TS-YY]         # bind to test files via TS-XX markers
 
+# ─────────────────────────────────────────────────────────────────────
+# v2.5 Phase B enrichment — Security + Performance
+# ─────────────────────────────────────────────────────────────────────
+# Optional but REQUIRED for critical_goal_domains (auth/payment/billing).
+# Severity logic in verify-goal-security.py:
+#   - critical_goal_domain + section empty → HARD BLOCK
+#   - mutation endpoint + csrf OR rate_limit empty → HARD BLOCK
+#   - read-only GET + section empty → WARN + override debt
+
+security_checks:
+  # OWASP Top 10 2021 subset relevant cho endpoint (không phải hết 10).
+  # Format: "AXX:name: justification" — validator cross-references với
+  # API-CONTRACTS schema để auto-tick (vd Zod schema → A03 injection OK).
+  owasp_top10_2021:
+    - "A01:Broken-Access-Control: owner check on update via ownerId middleware"
+    - "A03:Injection: Zod schema parameterized query via Prisma"
+    - "A05:Security-Misconfig: CSP default-src 'self' inherits project baseline"
+    # Relevant categories (add as applicable):
+    # - "A02:Cryptographic-Failures: bcrypt work factor 12, no SHA1"
+    # - "A04:Insecure-Design: rate-limit + step-up auth cho destructive op"
+    # - "A06:Vulnerable-Components: lockfile integrity + CVE scan CI"
+    # - "A07:Identification-Auth: session fixation prevented + logout server-side"
+    # - "A08:Software-Integrity: signed commits + dependency provenance"
+    # - "A09:Logging-Monitoring: audit log with user_id + IP + UA"
+    # - "A10:SSRF: URL whitelist, block 169.254/10/172.16/192.168"
+
+  # ASVS Level 2 controls (granular validation beyond OWASP Top 10).
+  # Free-form string citing ASVS ID + justification.
+  asvs_level2:
+    - "V5.1.1: input validation per field via Zod schema"
+    - "V5.3.3: output encoding context-aware (React auto-escape + CSP)"
+    # - "V7.1.1: session generation cryptographically strong"
+    # - "V9.1.2: TLS 1.2+ enforced cho all endpoints"
+
+  # Rate limiting: per-user + per-IP. Required cho mutation endpoints.
+  # Empty → HARD BLOCK cho mutation. Format: free-form description.
+  rate_limit: "10/min per user, 30/min per IP, 5/min anonymous"
+
+  # CSRF protection mechanism. Required cho state-changing endpoints
+  # (POST/PUT/PATCH/DELETE) nếu accept cookie auth. Empty → HARD BLOCK
+  # cho mutation + cookie auth (Bearer-only API có thể để trống).
+  csrf: "SameSite=Strict session cookie + double-submit token verify"
+
+  # XSS protection — framework default + explicit overrides.
+  xss_protection: "React auto-escape + CSP strict default-src 'self'"
+
+  # Auth model classification (cross-ref với API-CONTRACTS Block 1 auth line).
+  # Values: public | authenticated | role:<name> | owner_only | multi
+  auth_model: "owner_only"
+
+  # PII fields (if endpoint accepts/returns PII). Encryption + masking policy.
+  pii_fields: ["email", "phone", "dob"]
+
+# Performance budget — Required cho mutation + list endpoints.
+# Read-only single-record GET có thể để trống (default project baseline).
+perf_budget:
+  p50_ms: 80                    # median response time target
+  p95_ms: 250                   # 95th percentile target (alarm threshold)
+  p99_ms: 500                   # 99th percentile (outlier floor)
+  n_plus_one_max: 3             # max DB round-trips per request
+  bundle_kb_fe_route: 250       # FE route-split bundle size (only applicable cho ui surface)
+  cache_strategy: "Redis 5min TTL + tag-invalidate on mutation"
+
 # Evidence fields (populated by /vg:test, /vg:review)
 status: NOT_SCANNED | READY | BLOCKED | UNREACHABLE | FAILED | DEFERRED | INFRA_PENDING | MANUAL
 evidence_file: apps/web/e2e/xxx.spec.ts:42 | apps/api/test/xxx.test.ts

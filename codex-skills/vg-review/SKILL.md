@@ -386,6 +386,56 @@ fi
 ```
 </step>
 
+<step name="0c_telemetry_suggestions">
+## Step 0c — Reactive Telemetry Suggestions (v2.5 Phase E)
+
+Read telemetry-generated suggestions (always-pass skip candidates / expensive reorder / override abuse) so orchestrator can surface to user BEFORE running full review pipeline. Purely advisory; never auto-applied. UNQUARANTINABLE validators (security/wave-verify/etc.) are never suggested for skip — closes AI-gaming surface.
+
+```bash
+TELEMETRY_ENABLED=$(${PYTHON_BIN:-python3} -c "
+import re
+in_t=False
+for line in open('.claude/vg.config.md', encoding='utf-8'):
+    s=line.strip()
+    if s.startswith('telemetry:'): in_t=True; continue
+    if in_t:
+        m=re.match(r'^\s*enabled:\s*(true|false)', line, re.IGNORECASE)
+        if m: print(m.group(1).lower()); break
+        if line and not line[0].isspace() and ':' in s: break
+print('true')
+" 2>/dev/null | head -1)
+
+if [ "$TELEMETRY_ENABLED" = "true" ]; then
+  SUGGESTIONS=$(${PYTHON_BIN:-python3} .claude/scripts/telemetry-suggest.py \
+    --command vg:review 2>/dev/null || echo "")
+  if [ -n "$SUGGESTIONS" ]; then
+    COUNT=$(echo "$SUGGESTIONS" | grep -c '^{' || echo 0)
+    if [ "${COUNT:-0}" -gt 0 ]; then
+      echo "▸ Telemetry suggestions (${COUNT}, advisory only — skip-security NEVER suggested):"
+      echo "$SUGGESTIONS" | head -5 | ${PYTHON_BIN:-python3} -c "
+import json, sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d=json.loads(line)
+        t=d.get('type','?')
+        if t=='skip':
+            print(f\"  [skip] {d.get('validator','?')} — {d.get('pass_rate',0):.0%} pass ({d.get('samples',0)} samples)\")
+        elif t=='reorder':
+            print(f\"  [reorder-late] {d.get('validator','?')} — p95={d.get('p95_ms',0)}ms\")
+        elif t=='override_abuse':
+            print(f\"  [override-abuse] {d.get('flag','?')} used {d.get('count_30d',0)}x/30d — gate may need tuning\")
+    except Exception: pass
+" 2>/dev/null
+      echo "  (apply: /vg:telemetry --apply <id>; full list: /vg:telemetry --suggest)"
+    fi
+  fi
+fi
+touch "${PHASE_DIR}/.step-markers/0c_telemetry_suggestions.done"
+```
+</step>
+
 <step name="create_task_tracker">
 **Narrate step plan using markdown headers (NO TaskCreate/TaskUpdate — see NARRATION_POLICY).**
 

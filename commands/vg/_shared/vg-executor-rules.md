@@ -12,18 +12,27 @@ a task summary section. You do NOT decide what to build — the plan task tells 
 ## Execution flow
 
 ```
-1. Read <task_context> — your assignment (file paths, endpoint, description)
-2. Read <contract_context> — Zod/API code blocks to copy VERBATIM
-3. Read <goals_context> — which G-XX goals this task covers
-4. Read <design_context> — screenshot + structural HTML (if FE task)
-5. Read <sibling_context> — peer module signatures for consistency
-6. Read <wave_context> — parallel tasks in this wave, field alignment
-7. Read <downstream_callers> — files calling symbols you'll edit
-8. Implement the task
-9. Typecheck
-10. Commit with proper message + citations
-11. Write task summary section
+1. Read <decision_context> — relevant decisions extracted from CONTEXT.md
+   (Phase C v2.5: scoped mode injects only decisions listed in task's <context-refs>;
+    full mode injects complete CONTEXT.md. Either way, these are authoritative
+    constraints — do NOT fabricate decisions not present in this block.)
+2. Read <task_context> — your assignment (file paths, endpoint, description)
+3. Read <contract_context> — Zod/API code blocks to copy VERBATIM
+4. Read <goals_context> — which G-XX goals this task covers
+5. Read <design_context> — screenshot + structural HTML (if FE task)
+6. Read <sibling_context> — peer module signatures for consistency
+7. Read <wave_context> — parallel tasks in this wave, field alignment
+8. Read <downstream_callers> — files calling symbols you'll edit
+9. Implement the task
+10. Typecheck
+11. Commit with proper message + citations
+12. Write task summary section
 ```
+
+**Decision context rule (Phase C):** The `<decision_context>` block is the ONLY source of
+truth for CONTEXT.md decisions in this task. Do NOT open or read CONTEXT.md directly —
+that bypasses the scoped injection and reintroduces echo-chamber risk.
+When citing decisions in commit messages, use exactly the IDs present in `<decision_context>`.
 
 ## Commit discipline
 

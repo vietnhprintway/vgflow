@@ -136,21 +136,74 @@ vg_build_progress_commit_task() {
   local phase_dir="$1"
   local task_num="$2"
   local commit_sha="$3"
+  # Phase F v2.5: optional verification fields — when passed, /vg:recover
+  # can skip tasks with full verification record (no re-run after compact)
+  local typecheck_status="${4:-}"     # "PASS" | "FAIL" | "" (empty = not recorded)
+  local test_summary="${5:-}"         # JSON like {"passed":12,"failed":0} or ""
+  local wave_verify_status="${6:-}"   # "PASS" | "FAIL" | "SKIP" | ""
+  local run_id="${7:-}"               # UUID for run identity ancestry check
   local file
   file=$(_vg_progress_file "$phase_dir")
   [ ! -f "$file" ] && return 0
 
-  ${PYTHON_BIN:-python3} - "$file" "$task_num" "$commit_sha" "$(_vg_progress_now)" <<'PY' 2>/dev/null || true
+  ${PYTHON_BIN:-python3} - "$file" "$task_num" "$commit_sha" "$(_vg_progress_now)" \
+    "$typecheck_status" "$test_summary" "$wave_verify_status" "$run_id" <<'PY' 2>/dev/null || true
 import json, sys
-f, task, sha, now = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+args = sys.argv[1:]
+f, task, sha, now = args[0], int(args[1]), args[2], args[3]
+typecheck = args[4] if len(args) > 4 else ""
+test_summary_raw = args[5] if len(args) > 5 else ""
+wave_verify = args[6] if len(args) > 6 else ""
+run_id = args[7] if len(args) > 7 else ""
+
 d = json.load(open(f, encoding='utf-8'))
 # Clear from in_flight + failed (task may have been retried after prior fail)
 d['tasks_in_flight'] = [x for x in d['tasks_in_flight'] if x['task'] != task]
 d['tasks_failed']    = [x for x in d['tasks_failed']    if x['task'] != task]
 d['tasks_committed'] = [x for x in d['tasks_committed'] if x['task'] != task]
-d['tasks_committed'].append({'task': task, 'commit': sha, 'at': now})
+
+entry = {'task': task, 'commit': sha, 'at': now}
+# Phase F v2.5 verification fields (omit if not supplied to keep JSON clean)
+if typecheck:
+    entry['typecheck'] = typecheck
+if test_summary_raw:
+    try:
+        entry['test_summary'] = json.loads(test_summary_raw)
+    except Exception:
+        entry['test_summary'] = {'raw': test_summary_raw}
+if wave_verify:
+    entry['wave_verify'] = wave_verify
+if run_id:
+    entry['run_id'] = run_id
+
+d['tasks_committed'].append(entry)
 d['last_updated'] = now
 json.dump(d, open(f, 'w', encoding='utf-8'), indent=2)
+PY
+}
+
+# Phase F v2.5: check if task has full verification record so /vg:recover can skip.
+# Args: phase_dir, task_num
+# Stdout: "yes" if fully verified (typecheck=PASS + wave_verify=PASS), else "no"
+vg_build_progress_is_task_fully_verified() {
+  local phase_dir="$1"
+  local task_num="$2"
+  local file
+  file=$(_vg_progress_file "$phase_dir")
+  [ ! -f "$file" ] && { echo "no"; return 0; }
+
+  ${PYTHON_BIN:-python3} - "$file" "$task_num" <<'PY' 2>/dev/null || echo "no"
+import json, sys
+f, task = sys.argv[1], int(sys.argv[2])
+d = json.load(open(f, encoding='utf-8'))
+for t in d.get('tasks_committed', []):
+    if t.get('task') == task:
+        tc = t.get('typecheck', '')
+        wv = t.get('wave_verify', '')
+        if tc == 'PASS' and wv in ('PASS', 'SKIP'):
+            print('yes')
+            sys.exit(0)
+print('no')
 PY
 }
 

@@ -1297,7 +1297,21 @@ def _record_rule_outcomes(run_id: str, command: str, phase: str,
 COMMAND_VALIDATORS = {
     "vg:scope": ["phase-exists", "context-structure"],
     "vg:blueprint": ["phase-exists", "context-structure", "plan-granularity",
-                     "task-goal-binding", "vg-design-coherence"],
+                     "task-goal-binding", "vg-design-coherence",
+                     # Phase C (2026-04-23): warn when scoped mode tasks lack
+                     # <context-refs> — executor won't know which decisions to
+                     # inject. Advisory only (full fallback if missing).
+                     "verify-context-refs",
+                     # Phase D v2.5 (2026-04-23): FOUNDATION.md §9 Architecture
+                     # Lock present + all 8 subsections substantive. Phase >=
+                     # cutover (default 14) → HARD BLOCK if §9 missing.
+                     # Pre-cutover phases get WARN (grandfather). UNQUARANTINABLE.
+                     "verify-foundation-architecture",
+                     # Phase D v2.5 (2026-04-23): SECURITY-TEST-PLAN.md schema
+                     # check. Validates all 8 sections, enum values, cross-checks
+                     # with FOUNDATION §9.5 (GDPR consistency). Mandatory from
+                     # phase 14. critical+DAST=None → HARD BLOCK. UNQUARANTINABLE.
+                     "verify-security-test-plan"],
     # OHOK v2 Day 2 expansion — build previously had min enforcement (phase-exists
     # only). Now catches: commit format drift (R1), missing citations (R2),
     # goal-binding gap, plan granularity drift, override-debt balance per-step
@@ -1308,12 +1322,46 @@ COMMAND_VALIDATORS = {
     # /vg:doctor wired check.
     "vg:build": ["phase-exists", "commit-attribution", "task-goal-binding",
                  "plan-granularity", "override-debt-balance", "test-first",
+                 # B7.2 (2026-04-23): catch contract endpoints declared but
+                 # never implemented. Static presence check across framework
+                 # patterns (fastify/express/nest/hono). Previously drift only
+                 # surfaced at review curl / test 5b (1+ hour later).
+                 "verify-contract-runtime",
+                 # B8.2 (2026-04-23): catch dormant schemas — Zod/Pydantic/Joi
+                 # imported in route file but never .parse()'d. Contract
+                 # declares validation but runtime silently accepts anything.
+                 "verify-input-validation",
+                 # B8.3 (2026-04-23): contract must declare **Auth:** per
+                 # endpoint so downstream gates know authz intent. Unclear
+                 # declarations block; mutation-generic warns. Runtime
+                 # cross-role boundary test deferred (needs live API).
+                 "verify-authz-declared",
                  # OHOK-7 (2026-04-22): MANDATORY post-build CrossAI loop.
                  # Must see events.db evidence of ≥1 crossai iteration +
                  # a terminal event (loop_complete / loop_exhausted /
                  # loop_user_override). No way to pass this gate without
                  # actually running .claude/scripts/vg-build-crossai-loop.py.
-                 "build-crossai-required"],
+                 "build-crossai-required",
+                 # v2.5 Phase A (2026-04-23): post-wave independent verify.
+                 # Per-wave subprocess re-run of typecheck/tests/contract
+                 # catches "executor claimed PASS but actually failed"
+                 # divergence before next wave stacks on broken state.
+                 # Invoked by build.md step 8 sub-step 4b, UNQUARANTINABLE.
+                 "wave-verify-isolated",
+                 # v2.5 Phase B (2026-04-23): goal-level OWASP security
+                 # declaration check. critical_goal_domain missing
+                 # owasp_top10_2021 → HARD BLOCK; mutation endpoint
+                 # missing csrf/rate_limit → HARD BLOCK. UNQUARANTINABLE.
+                 "verify-goal-security",
+                 # v2.5 Phase B.2 (2026-04-23): perf_budget declaration.
+                 # Mutation endpoint missing budget → HARD BLOCK.
+                 # List GET missing p95_ms → HARD BLOCK.
+                 "verify-goal-perf",
+                 # v2.5 Phase B.3 (2026-04-23): project-wide security
+                 # baseline — TLS version, headers middleware,
+                 # secrets in .env.example, cookie flags, CORS, lockfile.
+                 # Fires per-phase at build (idempotent grep scan).
+                 "verify-security-baseline"],
     # Review doesn't enforce goal-coverage — tests land in /vg:test, so review
     # always fails before tests exist. Enforcement moved to /vg:test + /vg:accept
     # where tests MUST exist. Review's in-skill 0b gate warns advisory only.
@@ -1322,16 +1370,68 @@ COMMAND_VALIDATORS = {
     # OHOK v2 Day 3 — review-skip-guard catches skipped_no_browser with
     # critical UI goals (phase 14 dogfood pattern). deferred-evidence catches
     # @deferred-* tags without ticket link.
-    "vg:review": ["phase-exists", "runtime-evidence", "review-skip-guard"],
+    # SEC-1 (2026-04-23): Security validators fire at review as part of
+    # phase1_code_scan. Previously B8 validators (secrets/input/authz) only
+    # ran at build run-complete + pre-push — users running /vg:review saw
+    # zero security signal. Now review is a true security checkpoint.
+    # B9.1 (2026-04-23): accessibility-scan runs alongside security — UX
+    # violations blocking before browser discovery spawn.
+    "vg:review": ["phase-exists", "runtime-evidence", "review-skip-guard",
+                  "secrets-scan", "verify-input-validation",
+                  "verify-authz-declared",
+                  "accessibility-scan",
+                  # B9.2 (2026-04-23): i18n coverage — catches missing
+                  # locale keys + hardcoded strings before review browser
+                  # discovery. Config-driven (allowlist via .vg/).
+                  "i18n-coverage",
+                  # B11.2 (2026-04-23): cross-step telemetry feedback —
+                  # surface recent build BLOCK/FAIL events so phase 3
+                  # fix-loop pre-populates instead of re-discovering.
+                  # Non-blocking WARN (build already blocked them).
+                  "build-telemetry-surface",
+                  # v2.5 Phase B (2026-04-23): goal-level OWASP check at
+                  # review entry — catches missing security declarations
+                  # before browser discovery + defense-in-depth with build.
+                  "verify-goal-security",
+                  # v2.5 Phase B.2 (2026-04-23): perf_budget check at review.
+                  "verify-goal-perf",
+                  # v2.5 Phase B.3 (2026-04-23): project-wide security baseline.
+                  "verify-security-baseline"],
     "vg:test": ["phase-exists", "goal-coverage", "runtime-evidence",
-                "deferred-evidence"],
+                "deferred-evidence",
+                # SEC-2 (2026-04-23): test pipeline also runs security pre-ship.
+                # Duplication with review is intentional defense-in-depth —
+                # review fixes discovered issues, test re-verifies before UAT.
+                "secrets-scan", "verify-input-validation",
+                "verify-authz-declared",
+                # B12.1 (2026-04-23): mutation spec 3-layer verify — extends
+                # R7 console check from generated-only → all *.spec.ts.
+                # Catches ghost-save bugs (toast shown but data lost on reload).
+                "mutation-layers",
+                # B11.1 (2026-04-23): cross-step telemetry feedback at test
+                # entry. Defense-in-depth for "NOT_SCANNED không được defer
+                # sang /vg:test" rule — if review exit with intermediate-status
+                # goals (override/crash/bug), test blocks with actionable hints.
+                "not-scanned-replay",
+                # v2.5 Phase B.2+B.3 (2026-04-23): defense-in-depth security +
+                # perf gates at test pipeline. Duplicate with review per SEC-1
+                # pattern — review fixes, test re-verifies before UAT.
+                "verify-goal-perf",
+                "verify-security-baseline",
+                # v2.5 Phase B.5 (2026-04-23): DAST report severity routing.
+                # Report path via env or default PHASE_DIR/dast-report.json.
+                # Non-blocking if report missing (advisory).
+                "dast-scan-report"],
     # OHOK v2 Day 4 — add acceptance-reconciliation as final gate.
     # Catches: critical goals not passing, HARD override-debt active,
     # scope branching unresolved, step markers missing after build waves.
     "vg:accept": ["phase-exists", "event-reconciliation",
                   "override-debt-balance", "runtime-evidence",
                   "commit-attribution",
-                  "acceptance-reconciliation"],
+                  "acceptance-reconciliation",
+                  # Phase D v2.5 (2026-04-23): final gate — STP schema must
+                  # be valid before a phase is accepted as complete.
+                  "verify-security-test-plan"],
 }
 
 
@@ -1350,6 +1450,25 @@ UNQUARANTINABLE = {
     "runtime-evidence",           # actual test pass verification
     "build-crossai-required",     # OHOK-7 MANDATORY loop enforcement
     "context-structure",          # scope contract integrity
+    # v2.5 Phase A (2026-04-23): post-wave subprocess divergence check.
+    # AI cannot skip this — would defeat entire purpose of independent verify.
+    "wave-verify-isolated",
+    # v2.5 Phase B (2026-04-23): goal-level security declaration. AI
+    # can't game this by repeatedly failing to trigger quarantine —
+    # security checks must always fire.
+    "verify-goal-security",
+    # v2.5 Phase B.2 (2026-04-23): perf_budget declaration.
+    "verify-goal-perf",
+    # v2.5 Phase B.3 (2026-04-23): project-wide security baseline.
+    "verify-security-baseline",
+    # v2.5 Phase D (2026-04-23): FOUNDATION.md §9 Architecture Lock.
+    # Architecture constraints are critical — AI cannot game this by
+    # failing 3x to trigger quarantine. §9 gates blueprint planner.
+    "verify-foundation-architecture",
+    # v2.5 Phase D (2026-04-23): SECURITY-TEST-PLAN.md schema validation.
+    # critical+DAST=None is a hard security mismatch — AI cannot bypass
+    # by repeatedly failing to trigger quarantine.
+    "verify-security-test-plan",
 }
 
 

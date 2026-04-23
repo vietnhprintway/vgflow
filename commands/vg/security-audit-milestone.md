@@ -215,6 +215,60 @@ fi
 ```
 </step>
 
+<step name="5_pentest_checklist">
+## Step 5 — Generate Pen-Test Checklist (v2.5 Phase I)
+
+If `.vg/SECURITY-TEST-PLAN.md` present (Phase D v2.5 artifact), generate a HUMAN-curated pen-test checklist aggregating:
+- All HTTP endpoints from phase API-CONTRACTS grouped by auth model
+- OPEN threats carry-over from phase SECURITY-REGISTER files
+- Risk-profile-aware priority test vectors (critical → chain attacks; low → hygiene only)
+- Compliance control mapping based on framework declared in SECURITY-TEST-PLAN §6
+
+Output: `.vg/milestones/{milestone}/SECURITY-PENTEST-CHECKLIST.md` — artifact for external/internal pentesters.
+
+VG does NOT run pentests. It curates + formats info so humans can pentest effectively.
+
+```bash
+# Optional via flag --pentest-checklist, or auto when SECURITY-TEST-PLAN.md exists
+STP_FILE="${PLANNING_DIR:-.vg}/SECURITY-TEST-PLAN.md"
+MILESTONE_ID="${MILESTONE_ID:-}"
+
+# Resolve milestone from arg or STATE.md
+if [ -z "$MILESTONE_ID" ] && [[ "$ARGUMENTS" =~ --milestone=([A-Za-z0-9.-]+) ]]; then
+  MILESTONE_ID="${BASH_REMATCH[1]}"
+fi
+if [ -z "$MILESTONE_ID" ] && [ -f "${PLANNING_DIR:-.vg}/STATE.md" ]; then
+  MILESTONE_ID=$(grep -oE "current_milestone:\s*\S+" "${PLANNING_DIR:-.vg}/STATE.md" 2>/dev/null | awk '{print $2}')
+fi
+MILESTONE_ID="${MILESTONE_ID:-M1}"
+
+SHOULD_GEN=false
+[[ "$ARGUMENTS" =~ --pentest-checklist ]] && SHOULD_GEN=true
+[ -f "$STP_FILE" ] && SHOULD_GEN=true
+
+if [ "$SHOULD_GEN" = "true" ]; then
+  if [ ! -f "$STP_FILE" ]; then
+    echo "⚠ Pentest checklist requested via --pentest-checklist but SECURITY-TEST-PLAN.md missing."
+    echo "  Run /vg:project --update to populate Round 8 (Phase D), then retry."
+  else
+    echo ""
+    echo "━━━ Step 5 — Pen-Test Checklist Generation (Phase I v2.5) ━━━"
+    ${PYTHON_BIN:-python3} .claude/scripts/generate-pentest-checklist.py \
+      --milestone "$MILESTONE_ID"
+    GEN_RC=$?
+    if [ "$GEN_RC" -eq 0 ]; then
+      echo "  ✓ Checklist ready for pentester hand-off"
+      echo "    Location: ${PLANNING_DIR:-.vg}/milestones/${MILESTONE_ID}/SECURITY-PENTEST-CHECKLIST.md"
+    elif [ "$GEN_RC" -eq 2 ]; then
+      echo "  (milestone ${MILESTONE_ID} has no phases yet — skipped)"
+    else
+      echo "  ⚠ Checklist generation failed (rc=${GEN_RC}) — see stderr above"
+    fi
+  fi
+fi
+```
+</step>
+
 </process>
 
 <success_criteria>

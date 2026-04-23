@@ -750,6 +750,27 @@ Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
     @${PHASE_DIR}/CONTEXT.md
     </context>
 
+    <architecture_context>
+    # Phase D v2.5: FOUNDATION §9 Architecture Lock (injected if §9 exists)
+    # This is the authoritative architecture contract — every plan MUST respect:
+    # - §9.1 Tech stack (no substitutions without /vg:project --update)
+    # - §9.2 Module boundary (dependency direction rules)
+    # - §9.3 Folder convention (route layout, test colocation)
+    # - §9.4 Cross-cutting concerns (logging, error handling, async pattern)
+    # - §9.5 Security baseline (session/identity + server hardening rules)
+    # - §9.6 Performance baseline (p95 per tier, cache, bundle budget)
+    # - §9.7 Testing baseline (runner, E2E framework, coverage)
+    # - §9.8 Model-portable code style (imports, exports, naming, idioms)
+    # Plans MUST cite F-XX decisions when deviating; unreferenced deviation = drift.
+    @${PLANNING_DIR:-.vg}/FOUNDATION.md (section 9 only — verify-foundation-architecture.py enforces presence)
+    </architecture_context>
+
+    <security_test_plan>
+    # Phase D v2.5: SECURITY-TEST-PLAN.md (injected if exists)
+    # Drives DAST severity gate + compliance control mapping per risk_profile.
+    @${PLANNING_DIR:-.vg}/SECURITY-TEST-PLAN.md (if exists)
+    </security_test_plan>
+
     <contracts>
     @${PHASE_DIR}/API-CONTRACTS.md (if exists)
     </contracts>
@@ -787,6 +808,24 @@ Agent(subagent_type="general-purpose", model="${MODEL_PLANNER}"):
       format reload/rotation/storage đã establish trong ENV-CATALOG (90-day vault
       cho secrets, config-stable cho URLs, tuning-knob cho TTL/cache).
     - Không có lessons liên quan → OK, ignore block.
+
+    CONTEXT-REFS USAGE (Phase C v2.5 — context_injection.mode: scoped):
+    When config.context_injection.mode is "scoped" (or phase_number >= phase_cutover),
+    each task MUST include a <context-refs> element listing the specific decision IDs
+    from CONTEXT.md that the executor needs. Example:
+
+    ## Task 03: Add POST /api/v1/sites handler
+    <context-refs>P7.14.D-02,P7.14.D-05</context-refs>
+    <file-path>apps/api/src/modules/sites/routes.ts</file-path>
+    ...
+
+    Rules for picking refs:
+    - Only cite decisions that directly constrain the task's implementation choices
+    - Include D-XX for auth model, schema format, error handling idiom, naming
+    - EXCLUDE decisions about other subsystems the task doesn't touch
+    - If a task is infra-only (Ansible, env) → cite infra/env decisions only
+    - Maximum 5 refs per task (more = probably over-citing; executor gets too much noise)
+    When mode is "full" (phases 0-13), <context-refs> is optional but recommended.
 
     Output: ${PHASE_DIR}/PLAN.md with waves, task attributes, goal coverage.
 ```

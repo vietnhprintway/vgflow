@@ -165,6 +165,37 @@ type -t vg_run_start >/dev/null 2>&1 && \
 ```
 </step>
 
+<step name="0c_telemetry_suggestions">
+## Step 0c — Reactive Telemetry Suggestions (v2.5 Phase E)
+
+Surface suggestions (skip/reorder/override-abuse). UNQUARANTINABLE security validators NEVER suggested for skip.
+
+```bash
+if [ -f ".claude/scripts/telemetry-suggest.py" ]; then
+  SUGGESTIONS=$(${PYTHON_BIN:-python3} .claude/scripts/telemetry-suggest.py --command vg:accept 2>/dev/null || echo "")
+  if [ -n "$SUGGESTIONS" ]; then
+    COUNT=$(echo "$SUGGESTIONS" | grep -c '^{' || echo 0)
+    if [ "${COUNT:-0}" -gt 0 ]; then
+      echo "▸ Telemetry suggestions for vg:accept (${COUNT}, advisory — skip never suggested for security):"
+      echo "$SUGGESTIONS" | head -3 | ${PYTHON_BIN:-python3} -c "
+import json, sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d=json.loads(line); t=d.get('type','?')
+        if t=='skip': print(f\"  [skip] {d.get('validator','?')} — {d.get('pass_rate',0):.0%} over {d.get('samples',0)}\")
+        elif t=='reorder': print(f\"  [reorder-late] {d.get('validator','?')} p95={d.get('p95_ms',0)}ms\")
+        elif t=='override_abuse': print(f\"  [override-abuse] {d.get('flag','?')} used {d.get('count_30d',0)}x/30d\")
+    except Exception: pass
+" 2>/dev/null
+    fi
+  fi
+fi
+touch "${PHASE_DIR}/.step-markers/0c_telemetry_suggestions.done"
+```
+</step>
+
 <step name="1_artifact_precheck">
 **Gate 1: All required artifacts exist**
 
@@ -1237,6 +1268,190 @@ fi
 
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5_uat_quorum_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5_uat_quorum_gate.done"
 ```
+</step>
+
+<step name="6b_security_baseline">
+## Step 6b — Project-wide Security Baseline Gate (v2.5 Phase B.3)
+
+Trước khi write UAT, verify project-wide security baseline (TLS/headers/
+secrets/cookie flags/CORS/lockfile) đang đạt tầng 2+3 của security. Đây
+là gate LAST defense trước production — nếu baseline drift sau các phase
+trước, block accept + require fix.
+
+Validator `verify-security-baseline.py` grep codebase + deploy scripts
+(idempotent, khoảng 2-3 giây). Gate HARD cho critical findings (TLS
+outdated, wildcard CORS + credentials, real secret trong .env.example),
+WARN cho missing headers/cookie flags/lockfile.
+
+```bash
+echo ""
+echo "━━━ Step 6b — Project-wide Security Baseline ━━━"
+
+BASELINE_OUT=$(${PYTHON_BIN:-python3} \
+  .claude/scripts/validators/verify-security-baseline.py \
+  --phase "${PHASE_NUMBER}" --scope all 2>&1)
+BASELINE_RC=$?
+
+# Surface verdict + evidence
+echo "$BASELINE_OUT" | tail -1 | ${PYTHON_BIN:-python3} -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    verdict = d.get('verdict', '?')
+    ev = d.get('evidence', [])
+    print(f'  verdict: {verdict} ({len(ev)} finding(s))')
+    for e in ev[:5]:
+        print(f'    - {e.get(\"type\")}: {e.get(\"message\",\"\")[:200]}')
+    if len(ev) > 5:
+        print(f'    ... +{len(ev)-5} more — see full output')
+except Exception as exc:
+    print(f'  (parse error: {exc})')
+" 2>/dev/null || true
+
+if [ "$BASELINE_RC" -ne 0 ]; then
+  if [[ "$ARGUMENTS" =~ --allow-baseline-drift ]]; then
+    echo "⚠ Security baseline drift — OVERRIDE accepted via --allow-baseline-drift"
+    type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+      "--allow-baseline-drift" "$PHASE_NUMBER" "accept.6b.security-baseline" \
+      "critical baseline drift accepted by user" \
+      "accept-baseline-${PHASE_NUMBER}"
+    echo "override: baseline-drift phase=${PHASE_NUMBER} ts=$(date -u +%FT%TZ)" \
+      >> "${PHASE_DIR}/accept-state.log" 2>/dev/null || true
+  else
+    echo ""
+    echo "⛔ Security baseline failed project-wide check."
+    echo "   Fix the findings above (TLS/CORS/secrets/headers/cookies/lockfile),"
+    echo "   re-run /vg:accept ${PHASE_NUMBER}."
+    echo ""
+    echo "   Override (NOT recommended, logs to override-debt):"
+    echo "     /vg:accept ${PHASE_NUMBER} --allow-baseline-drift"
+    exit 1
+  fi
+else
+  echo "  ✓ Project-wide security baseline PASS"
+fi
+
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "6b_security_baseline" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/6b_security_baseline.done"
+```
+</step>
+
+<step name="6c_learn_auto_surface">
+## Step 6c — Learn Auto-Surface (v2.5 Phase H)
+
+Invoke tier-based candidate surface to close the UX loop. Previously user had to
+remember `/vg:learn --review` + duyệt 10+ candidate cùng lúc → fatigue → defer-all.
+Phase H limits surface to max 2 Tier B candidates per phase with dedupe pre-pass.
+
+Config gate: skip entirely if `bootstrap.auto_surface_at_accept: false`.
+
+```bash
+AUTO_SURFACE=$(${PYTHON_BIN:-python3} -c "
+import re
+for line in open('.claude/vg.config.md', encoding='utf-8'):
+    m = re.match(r'^\s*auto_surface_at_accept:\s*(true|false)', line, re.IGNORECASE)
+    if m: print(m.group(1).lower()); break
+" 2>/dev/null || echo "true")
+
+if [ "$AUTO_SURFACE" != "true" ]; then
+  echo "ℹ Learn auto-surface disabled (bootstrap.auto_surface_at_accept=false). Skip."
+  touch "${PHASE_DIR}/.step-markers/6c_learn_auto_surface.done"
+else
+  echo ""
+  echo "━━━ Step 6c — Learn Auto-Surface (Phase H v2.5) ━━━"
+
+  CAND_FILE=".vg/bootstrap/CANDIDATES.md"
+  if [ ! -f "$CAND_FILE" ]; then
+    echo "  (no CANDIDATES.md — reflector hasn't drafted any yet, skip)"
+  else
+    # 1. Dedupe pass — merge title-similar candidates in-place
+    ${PYTHON_BIN:-python3} .claude/scripts/learn-dedupe.py --apply 2>&1 | tail -5 || \
+      echo "  (dedupe dry-run or failed, non-blocking)"
+
+    # 2. Classify all pending candidates by tier
+    TIER_JSONL=$(${PYTHON_BIN:-python3} .claude/scripts/learn-tier-classify.py --all 2>/dev/null || echo "")
+
+    if [ -z "$TIER_JSONL" ]; then
+      echo "  (no pending candidates to surface)"
+    else
+      # 3. Tier A auto-promote (silent, 1-line log per promote)
+      TIER_A_IDS=$(echo "$TIER_JSONL" | ${PYTHON_BIN:-python3} -c "
+import json, sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d = json.loads(line)
+        if d.get('tier') == 'A':
+            print(d['id'])
+    except Exception: pass
+")
+      A_COUNT=0
+      for AID in $TIER_A_IDS; do
+        [ -z "$AID" ] && continue
+        echo "  ✓ Auto-promoted Tier A candidate ${AID} (≥3 phase confirms, high confidence)"
+        # Emit telemetry — actual promote happens via /vg:learn --promote (orchestrator must invoke)
+        type -t emit_telemetry >/dev/null 2>&1 && \
+          emit_telemetry "bootstrap.rule_promoted" "PASS" "{\"id\":\"${AID}\",\"tier\":\"A\",\"auto\":true}" 2>/dev/null || true
+        A_COUNT=$((A_COUNT+1))
+      done
+      [ "$A_COUNT" -gt 0 ] && echo ""
+
+      # 4. Tier B surface — cap via config, interactive y/n/e/s
+      TIER_B_MAX=$(${PYTHON_BIN:-python3} -c "
+import re
+for line in open('.claude/vg.config.md', encoding='utf-8'):
+    m = re.match(r'^\s*tier_b_max_per_phase:\s*(\d+)', line)
+    if m: print(m.group(1)); break
+" 2>/dev/null || echo "2")
+
+      TIER_B_COUNT=$(echo "$TIER_JSONL" | ${PYTHON_BIN:-python3} -c "
+import json, sys
+n=0
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d=json.loads(line)
+        if d.get('tier')=='B': n+=1
+    except Exception: pass
+print(n)
+")
+
+      if [ "${TIER_B_COUNT:-0}" -gt 0 ]; then
+        echo "  ▸ ${TIER_B_COUNT} Tier B candidate(s) pending. Surface max ${TIER_B_MAX} now;"
+        echo "    rest defer to next phase. Access all via: /vg:learn --review --all"
+        echo ""
+        # Orchestrator must call /vg:learn --auto-surface interactively for user y/n/e/s
+        echo "  → Invoking /vg:learn --auto-surface (interactive)"
+        # Emit surfaced event
+        type -t emit_telemetry >/dev/null 2>&1 && \
+          emit_telemetry "bootstrap.candidate_surfaced" "PASS" "{\"phase\":\"${PHASE_NUMBER}\",\"tier_b_count\":${TIER_B_COUNT},\"tier_b_limit\":${TIER_B_MAX}}" 2>/dev/null || true
+      else
+        echo "  (no Tier B candidates pending surface)"
+      fi
+
+      # 5. Tier C silent — access only via --review --all
+      TIER_C_COUNT=$(echo "$TIER_JSONL" | ${PYTHON_BIN:-python3} -c "
+import json, sys
+n=0
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try:
+        d=json.loads(line)
+        if d.get('tier')=='C': n+=1
+    except Exception: pass
+print(n)
+")
+      [ "${TIER_C_COUNT:-0}" -gt 0 ] && echo "  (Tier C parking: ${TIER_C_COUNT} low-confidence, silent — /vg:learn --review --all to view)"
+    fi
+  fi
+
+  touch "${PHASE_DIR}/.step-markers/6c_learn_auto_surface.done"
+fi
+```
+
+**Orchestrator hook:** khi step này echo `→ Invoking /vg:learn --auto-surface`, orchestrator MUST call the slash command inline so user can make y/n/e/s decisions. Non-interactive fallback: Tier B candidates stay in CANDIDATES.md for next phase's accept surface.
 </step>
 
 <step name="6_write_uat_md">

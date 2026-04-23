@@ -176,8 +176,22 @@ esac
   confidence: {0.7..1.0}
   recurrence: {cross-run count, 1 if first time; ≥3 boost confidence}
 
+  # v2.5 Phase H — tier auto-surface fields
+  impact: {critical|important|nice}       # critical = auth/payment/security/data-loss class; important = workflow discipline; nice = ergonomic
+  first_seen: "{iso timestamp — first time this dedupe_key seen}"
+  reject_count: 0                          # incremented when user rejects; ≥2 = retire forever
+  # tier field NOT set by reflector — computed downstream by learn-tier-classify.py
+  # on surface (at /vg:accept step 6c) based on confidence + impact + reject_count
+
   origin_incident: "phase-{number}-{short-desc}"
 ```
+
+**Impact field guidance:**
+- `critical` — security rule (auth bypass, rate limit, CSRF), data integrity (transaction safety, idempotency), deploy safety (rollback gate, migration verify). User rejection uncommon; auto-promote after N confirms appropriate.
+- `important` — workflow discipline (commit format, citation, contract alignment), test coverage, perf budget. Surface for confirm but don't auto-promote.
+- `nice` — ergonomic (narration style, doc tone, optional lint rule). Silent parking; user opts in via `--review --all`.
+
+When in doubt: default `important`. Never mark a new-unfamiliar rule as `critical` without an incident reference (origin_incident must cite a real breakage).
 
 ### Step 6: Dedupe check
 

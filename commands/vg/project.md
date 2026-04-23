@@ -879,9 +879,223 @@ models:
 Hỏi user chỉ những field có `<NEED_USER_INPUT>` placeholder. Không hỏi gì thêm nếu foundation đủ rõ.
 ```
 
-### Round 7: Atomic write + commit
+### Round 7: Architecture Lock (v2.5 Phase D)
 
-Write all 3 files trong 1 transaction.
+**Purpose:** Lock the 8 architectural subsections that govern every future phase. Without this, executors drift across models — FE naming conventions diverge between phases, security baseline degrades, performance budgets get reinvented each phase. This is the single most important section for cross-model code consistency.
+
+The 8 subsections are appended to `FOUNDATION.md` as `## 9. Architecture Lock` and get injected into every blueprint planner prompt as `<architecture_context>`.
+
+**Flow (each subsection = 1 Q with dimension-appropriate depth):**
+
+```
+"9.1 Tech stack matrix — xác nhận stack cụ thể:
+ [tự-fill từ F-01..F-08 discovered in rounds 1-5]
+ - Lang: {FE: React+TS, BE: Node+TS, RTB: Rust}
+ - DB: {primary: MongoDB, analytics: ClickHouse, cache: Redis}
+ - Auth: {session-cookie SameSite=Strict + argon2id}
+ - Deploy: {rsync+PM2 for Node, systemctl for Rust, ansible provisioning}
+ - CI: {GitHub Actions with turbo cache}
+
+ Confirm?  [y] keep  [e] edit specific field  [a] add alternative considered"
+
+"9.2 Module boundary — how do apps/packages/shared depend?
+ Example: apps/web → packages/ui-kit (allowed), apps/api → packages/schemas (allowed),
+ apps/web → apps/api (BANNED — go through HTTP only), packages/* → apps/* (BANNED).
+ Apply same pattern? Or project has specific boundaries?
+ [y] standard (apps→packages→shared) [e] custom rules [n] skip"
+
+"9.3 Folder convention — route layout + test colocation + asset org
+ Typical: apps/api/src/modules/{feature}/{routes,schemas,services}.ts
+          apps/web/src/features/{feature}/{components,hooks,pages}.tsx
+          tests colocated (.test.ts next to impl) + e2e in apps/web/e2e/
+ [y] adopt standard  [e] describe custom convention  [s] skip if existing codebase"
+
+"9.4 Cross-cutting concerns — logging, error handling, async pattern, i18n
+ Logging: {pino structured JSON? or winston? or console wrapper?}
+ Error handling: {throw + global error handler? Result<T,E>? both?}
+ Async: {async/await consistently | callbacks never | worker queues for long jobs}
+ i18n: {project has multi-locale? vi+en? keys format?}
+ Answer each or 'skip' for unused"
+
+"9.5 Security baseline (LOCK ONCE, applies to all phases):
+ Đây là tầng 2 (identity/session) + tầng 3 (server hardening).
+ - Session token: {JWT RS256 | opaque session cookie | both?}
+ - Lifetime: access ≤ 15min, refresh ≤ 7 days rotated
+ - Cookie flags: Secure + HttpOnly + SameSite=Strict
+ - CORS: whitelist origins (không wildcard với credentials)
+ - OAuth: PKCE mandatory cho public clients (SPA, mobile)
+ - Password: argon2id work factor min, length ≥ 12
+ - 2FA: {TOTP | SMS | none based on risk profile}
+ - Audit log events: {login/logout/role-change/data-export logged with user_id + IP}
+ - TLS: version ≥ 1.2, HSTS max-age ≥ 31536000 + includeSubDomains
+ - Security headers: CSP default-src 'self', X-Frame-Options DENY, X-Content-Type-Options nosniff
+ - Secret management: {Vault | SOPS | KMS | .env + never commit}
+ - Dependency: lockfile + CVE scan (deps-security-scan validator)
+ - Backup: encrypted at rest (AES-256), {daily|weekly} offsite copy
+ - Compliance flags: {GDPR|HIPAA|SOC2|PCI-DSS|none} applicability
+
+ Quan trọng: những giá trị này sẽ đi vào verify-security-baseline gate.
+ Nếu không sure, dùng default sensible — sau vẫn /vg:project --update được.
+ [f] fill template [q] quick defaults [s] skip (phase chỉ có demo/prototype)"
+
+"9.6 Performance baseline — p95 per tier + cache + bundle + CDN
+ - API tier default: read p95 ≤ 250ms, write p95 ≤ 500ms
+ - RTB tier (low-latency): p99 ≤ 50ms (OpenRTB constraint)
+ - Cache strategy: {Redis 5min TTL + tag-invalidate | in-memory LRU | none}
+ - Bundle budget FE route: 250KB default (adjust per project)
+ - n_plus_one_max query count per endpoint: 3 (triggers warning)
+ - CDN: {Cloudflare | Fastly | none}
+ [y] adopt defaults [e] custom per-tier"
+
+"9.7 Testing baseline — runner, E2E framework, coverage, mock strategy
+ - Unit runner: {vitest | jest | pytest | cargo test}
+ - E2E framework: {Playwright | Cypress | native selenium}
+ - Coverage threshold: {80%/70%/60% per app?}
+ - Mock strategy: {MSW for API | never mock DB | fixtures for ClickHouse}
+ - Fixture location: apps/*/e2e/fixtures/
+ [y] standard [e] custom]"
+
+"9.8 Model-portable code style — rules that transcend Claude/GPT/Gemini
+ - Imports: explicit (no wildcard * imports)
+ - Exports: named > default (default export only cho React.lazy)
+ - Type annotations: mandatory function signatures (params + return)
+ - Comment density: 1 per ~10 SLOC khi có WHY (no WHAT comments)
+ - Import ordering: external → internal packages → relative
+ - File naming: {kebab-case.ts | camelCase.ts | PascalCase.tsx for components}
+ - Error handling idiom: {throw + narrow catches | Result<T,E> | neither}
+ Cross-model validation: CrossAI 2d-6 will diff code style across AI outputs.
+ [y] standard [e] project-specific]"
+```
+
+**Append to draft.foundation_md_content:**
+```python
+foundation_section_9 = f'''
+
+---
+
+## 9. Architecture Lock
+
+> Locked {iso_timestamp} via `/vg:project` round 7.
+> Section 9 is authoritative — every blueprint planner prompt injects this as <architecture_context>.
+> Changes here require `/vg:project --update` + re-running affected phases' scope (CONTEXT drift detection).
+
+### 9.1 Tech stack matrix
+{tech_stack_block}
+
+### 9.2 Module boundary
+{module_boundary_block}
+
+### 9.3 Folder convention
+{folder_convention_block}
+
+### 9.4 Cross-cutting concerns
+{cross_cutting_block}
+
+### 9.5 Security baseline
+{security_baseline_block}
+
+### 9.6 Performance baseline
+{perf_baseline_block}
+
+### 9.7 Testing baseline
+{testing_baseline_block}
+
+### 9.8 Model-portable code style
+{code_style_block}
+'''
+draft["foundation_md_content"] += foundation_section_9
+```
+
+**Migration:** For projects running `/vg:project --migrate` (extracting FOUNDATION from legacy PROJECT.md), auto-scan codebase to pre-fill §9 where possible (tech_stack from package.json, folder convention from existing dirs, testing baseline from existing test scripts). Mark any unresolved fields with `<NEED_USER_INPUT>` — user must fill before section 9 locks.
+
+### Round 8: Security Testing Strategy (v2.5 Phase D)
+
+**Purpose:** After FOUNDATION §9.5 locks security baseline (implementation rules), Round 8 locks security testing strategy — who tests, how often, what framework. This is a separate artifact `.vg/SECURITY-TEST-PLAN.md` that drives DAST severity gate (Phase B.5/B.6) and pentest checklist gen (Phase I).
+
+4 questions, each with config consequences:
+
+```
+"10.1 Risk profile classification
+ Determines DAST severity gate + pen-test frequency:
+
+ [c] critical — payment/PII/healthcare/auth-SaaS-multi-tenant
+     → High DAST finding = BLOCK, pen-test annual external, SOC2-equivalent
+ [m] moderate — internal tool with external users
+     → High = WARN, pen-test quarterly internal, compliance as needed
+ [l] low — read-only dashboard, marketing site, blog
+     → all DAST advisory, no pen-test required
+
+ Select:"
+
+"10.2 DAST tool choice (dynamic scan at /vg:test step 5h)
+ [z] OWASP ZAP — docker-based, full HTTP active scan (recommended web)
+ [n] Nuclei — binary-based, CVE templates (lightweight, fast)
+ [c] Custom — describe tool
+ [x] None — read-only project, no HTTP endpoints
+
+ Select:"
+
+"10.3 Pen-test strategy (manual tier, cannot automate)
+ [e] external-vendor-annual — budget-heavy, highest quality
+ [i] internal-team-quarterly — in-house pen-test rotation
+ [b] bug-bounty-continuous — HackerOne/Bugcrowd public/private
+ [n] none — low-risk project OR pre-launch
+
+ Select:"
+
+"10.4 Compliance framework mapping
+ Drives audit artifact requirements + control coverage check:
+
+ [s] SOC2 Type II
+ [i] ISO 27001
+ [p1] PCI-DSS Level 1 (millions of tx/year)
+ [p4] PCI-DSS Level 4 (small merchant)
+ [h] HIPAA (healthcare/PHI)
+ [g] GDPR only (EU user data)
+ [n] none
+
+ Select (can pick multiple, comma-separated):"
+```
+
+**Write SECURITY-TEST-PLAN.md.staged:**
+```bash
+# Fill template from template file
+cp .claude/commands/vg/_shared/templates/SECURITY-TEST-PLAN-template.md "${STP_FILE}.staged"
+
+# Substitute answers (sed or Python script reading DRAFT_FILE)
+${PYTHON_BIN} - <<'PY'
+import json, os, re
+from pathlib import Path
+from datetime import datetime
+
+draft = json.loads(Path(os.environ["DRAFT_FILE"]).read_text(encoding="utf-8"))
+stp = Path(os.environ["STP_FILE"] + ".staged")
+text = stp.read_text(encoding="utf-8")
+
+# Placeholders: {PROJECT_NAME}, {ISO_TIMESTAMP}, {FOUNDATION_PATH},
+# {CRITICAL|MODERATE|LOW}, {ZAP|Nuclei|Custom|None}, etc.
+text = text.replace("{PROJECT_NAME}", draft["project_name"])
+text = text.replace("{ISO_TIMESTAMP}", datetime.utcnow().isoformat() + "Z")
+text = text.replace("{FOUNDATION_PATH}", os.environ["FOUNDATION_FILE"])
+# ... answers from round 8
+text = text.replace("{CRITICAL|MODERATE|LOW}", draft["security"]["risk_profile"])
+# ...
+stp.write_text(text, encoding="utf-8")
+print(f"✓ SECURITY-TEST-PLAN.md.staged written")
+PY
+```
+
+**Side-effect on `.claude/vg.config.md`:** Round 8 answers also update config:
+- `project.risk_profile: {critical|moderate|low}` (drives DAST severity)
+- `security_testing.dast_tool: {ZAP|Nuclei|Custom|None}`
+- `security_testing.payload_profile: owasp-top10-2021` (default)
+- `security_testing.dast_cascade: [zap,nuclei,grep-only]` (if dast_tool empty → cascade auto-detect)
+
+These get written via `vg_generate_config.py` in Round 9 (was Round 7) atomic step.
+
+### Round 9: Atomic write + commit
+
+Write all 4 files trong 1 transaction.
 
 **v1.13.0 (2026-04-18) — template-based config generation.**
 The old inline placeholder heredoc is gone. Config rendering is delegated to
@@ -945,16 +1159,21 @@ if ! validate_d_xx_namespace "${FOUNDATION_FILE}.staged" "foundation"; then
   exit 1
 fi
 
-# Atomic promote (mv all-or-nothing)
+# v2.5 Phase D: also promote SECURITY-TEST-PLAN.md if Round 8 wrote it
+STP_FILE="${PLANNING_DIR:-.vg}/SECURITY-TEST-PLAN.md"
+
+# Atomic promote (mv all-or-nothing — now 4 files)
 mv "${PROJECT_FILE}.staged"     "$PROJECT_FILE"
 mv "${FOUNDATION_FILE}.staged" "$FOUNDATION_FILE"
 mv "${CONFIG_FILE}.staged"     "$CONFIG_FILE"
+[ -f "${STP_FILE}.staged" ] && mv "${STP_FILE}.staged" "$STP_FILE"
 
 # Remove draft
 rm -f "$DRAFT_FILE"
 
 # Commit
 git add "$PROJECT_FILE" "$FOUNDATION_FILE" "$CONFIG_FILE"
+[ -f "$STP_FILE" ] && git add "$STP_FILE"
 git commit -m "project: foundation locked
 
 Per discussion rounds 1-7. See FOUNDATION.md for F-XX decisions (F = Foundation namespace, stable across milestones; per-phase decisions use P{phase}.D-XX).

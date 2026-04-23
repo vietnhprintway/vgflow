@@ -91,15 +91,54 @@ If argument-hint in source frontmatter is not empty and user provides no args, a
 
 User gate for bootstrap overlay changes. Primary entry point: **end-of-step reflection** auto-drafts candidates into `.vg/bootstrap/CANDIDATES.md`. This command reviews them.
 
+## v2.5 Phase H: tiered auto-surface (fixes UX fatigue)
+
+Problem before v2.5: user had to remember `/vg:learn --review` + sort through 10+ candidates → fatigue → "all-defer" → promotion loop never closed. Fix: automatic tier classification + silent auto-promote for high-confidence + hard cap on Tier B per phase.
+
+**Tier A** (confidence ≥ 0.85 + impact=critical): auto-promote after N=3 phase confirms (configured via `bootstrap.tier_a_auto_promote_after_confirms`). User sees 1-line notification only.
+
+**Tier B** (confidence 0.6-0.85 OR impact=important): surfaced at end of `/vg:accept` via `--auto-surface` mode, MAX 2 per phase (config `bootstrap.tier_b_max_per_phase`). 3 lines per candidate: rule + evidence count + target. Prompt: `y/n/e/s`.
+
+**Tier C** (confidence < 0.6 or impact=nice): silent parking. Access via `/vg:learn --review --all` (user initiates when willing).
+
+**Retirement**: candidate rejected ≥ 2 times → marked RETIRED, never surfaced again.
+
+**Dedupe**: before surfacing, candidates with title similarity ≥ 0.8 are merged (evidence combined, one ID kept).
+
 ## Load config
 
 Read `.claude/commands/vg/_shared/config-loader.md` first. Sets `${PLANNING_DIR}`, `${PYTHON_BIN}`, etc.
 
 ## Subcommands
 
+### `/vg:learn --auto-surface` (v2.5 Phase H)
+
+Invoked automatically at end of `/vg:accept` (unless `bootstrap.auto_surface_at_accept: false`).
+
+**Flow:**
+1. Run `learn-dedupe.py` — merge title-similar candidates (threshold 0.8) in-place into CANDIDATES.md
+2. Run `learn-tier-classify.py --all` to tier every pending candidate
+3. Auto-promote Tier A candidates with ≥ N confirms (config `tier_a_auto_promote_after_confirms`, default 3) — silent 1-line log
+4. Surface first `tier_b_max_per_phase` (default 2) Tier B candidates interactively, 3 lines each:
+   ```
+   L-042 — "Playwright required for UI phases when surfaces contains 'web'" (tier B, 8 evidence)
+     Target: review.step-2 (discovery)
+     Action: must_run before skip
+   Promote? [y]es / [n]o / [e]dit / [s]kip-rest → _
+   ```
+5. If user hits 's' → defer remaining Tier B candidates this phase (resurfaced next phase)
+6. Tier C is silent (not mentioned) — access via `/vg:learn --review --all`
+
+**Telemetry per candidate:**
+- `bootstrap.candidate_surfaced` when shown to user
+- `bootstrap.rule_promoted` when user approves
+- `bootstrap.rule_retired` when reject count hits threshold
+
+**Transparency after promote:** show 1-line "injected into next phase executor prompt at section R{N}" — so user knows rule is live, not just "y but did anything happen?"
+
 ### `/vg:learn --review [id]`
 
-List pending candidates. With `<id>`, show full evidence + dry-run preview.
+List pending candidates (legacy interface, still supported). With `<id>`, show full evidence + dry-run preview.
 
 **Without `<id>`** — list all:
 ```bash

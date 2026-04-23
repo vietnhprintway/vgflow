@@ -84,7 +84,7 @@ Why: those tools persist items in Claude Code's status tail across sessions. Wav
 
 <rules>
 1. **Blueprint required** — phase must have PLAN*.md AND API-CONTRACTS.md before build. Missing = BLOCK.
-2. **Contract injection** — every executor agent receives relevant contract sections as context.
+2. **Contract injection + runtime verification** — every executor agent receives relevant contract sections as context. At run-complete, orchestrator dispatches `verify-contract-runtime` validator: for each `## METHOD /path` endpoint declared in API-CONTRACTS.md, static presence check across framework patterns (fastify / express / nest / hono); missing routes → BLOCK. Catches phantom endpoints at wave-commit boundary instead of surfacing at review/test 1+ hour later (OHOK A2, v2.4).
 3. **Orchestrator coordinates, not executes** — discover plans, group waves, spawn agents, collect results.
 4. **Context budget per agent ~2000 lines** — each executor gets 7 context blocks (task/contract/goals/design/sibling/wave/execution). Modern Claude 200k comfortable; starving context causes drift. See step 8c for per-block line budgets.
 5. **Wave execution** — sequential between waves, parallel within.
@@ -1222,6 +1222,83 @@ fi
 source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/bootstrap-inject.sh"
 BOOTSTRAP_RULES_BLOCK=$(vg_bootstrap_render_block "${BOOTSTRAP_PAYLOAD_FILE:-}" "build")
 vg_bootstrap_emit_fired "${BOOTSTRAP_PAYLOAD_FILE:-}" "build" "${PHASE_NUMBER}"
+
+# Phase C (v2.5): Scoped context injection
+# Read context_injection.mode from config. Default "full" (backward-compat).
+CTX_INJECT_MODE=$(${PYTHON_BIN} -c "
+import re
+for line in open('.claude/vg.config.md', encoding='utf-8'):
+    m = re.match(r'^\s*mode:\s*[\'\"]{0,1}(full|scoped)[\'\"]{0,1}', line)
+    if m: print(m.group(1)); break
+" 2>/dev/null || echo "full")
+CTX_INJECT_FALLBACK=$(${PYTHON_BIN} -c "
+import re
+for line in open('.claude/vg.config.md', encoding='utf-8'):
+    m = re.match(r'^\s*scoped_fallback_on_missing:\s*(true|false)', line, re.IGNORECASE)
+    if m: print(m.group(1)); break
+" 2>/dev/null || echo "true")
+
+# Phase cutover: phases >= cutover default to scoped if config says "full" + phase is new
+CTX_CUTOVER=$(${PYTHON_BIN} -c "
+import re
+for line in open('.claude/vg.config.md', encoding='utf-8'):
+    m = re.match(r'^\s*phase_cutover:\s*(\d+)', line)
+    if m: print(int(m.group(1))); break
+" 2>/dev/null || echo "14")
+PHASE_NUM_FLOAT=$(echo "${PHASE_NUMBER}" | awk '{printf "%.0f", $1}' 2>/dev/null || echo "0")
+if [ "$CTX_INJECT_MODE" = "full" ] && [ "${PHASE_NUM_FLOAT:-0}" -ge "${CTX_CUTOVER:-14}" ] 2>/dev/null; then
+  CTX_INJECT_MODE="scoped"
+  echo "⚠ Phase ${PHASE_NUMBER} >= cutover ${CTX_CUTOVER} — auto-upgrading context_injection.mode to scoped"
+fi
+
+# Resolve DECISION_CONTEXT block for executor prompt
+DECISION_CONTEXT=""
+TASK_FILE="${PHASE_DIR}/.wave-tasks/task-${TASK_NUM}.md"
+if [ "$CTX_INJECT_MODE" = "scoped" ] && [ -f "$TASK_FILE" ]; then
+  # Extract <context-refs> from task file
+  CTX_REFS=$(${PYTHON_BIN} -c "
+import re, sys
+text = open('${TASK_FILE}', encoding='utf-8').read()
+m = re.search(r'<context-refs>(.*?)</context-refs>', text, re.DOTALL)
+if m:
+    refs = [r.strip() for r in re.split(r'[,\s]+', m.group(1).strip()) if r.strip()]
+    print(','.join(refs))
+" 2>/dev/null || echo "")
+
+  if [ -n "$CTX_REFS" ] && [ -f "${PHASE_DIR}/CONTEXT.md" ]; then
+    # Extract only the referenced decision blocks from CONTEXT.md
+    DECISION_CONTEXT=$(${PYTHON_BIN} - "${PHASE_DIR}/CONTEXT.md" "$CTX_REFS" <<'PY'
+import re, sys
+from pathlib import Path
+ctx_text = Path(sys.argv[1]).read_text(encoding='utf-8', errors='replace')
+refs = sys.argv[2].split(',') if sys.argv[2] else []
+blocks = []
+# Split on ### header — each decision is a block
+parts = re.split(r'^(#{2,3}\s+(?:P[\d.]+\.)?D-\d+.*?)$', ctx_text, flags=re.MULTILINE)
+for i, part in enumerate(parts):
+    header_m = re.match(r'^#{2,3}\s+((?:P[\d.]+\.)?D-\d+)', part)
+    if header_m:
+        did = header_m.group(1)
+        body = parts[i+1] if i+1 < len(parts) else ""
+        if any(r == did or did.endswith(r) or r.endswith(did) for r in refs):
+            blocks.append(part + body)
+if blocks:
+    print('Relevant decisions from CONTEXT.md:\n' + '\n---\n'.join(blocks).strip())
+else:
+    print('(no matching decisions found for refs: ' + ', '.join(refs) + ')')
+PY
+    )
+    elif [ "$CTX_INJECT_FALLBACK" = "true" ] && [ -f "${PHASE_DIR}/CONTEXT.md" ]; then
+      # Fallback: inject full CONTEXT.md when refs missing + fallback enabled
+      DECISION_CONTEXT="$(cat "${PHASE_DIR}/CONTEXT.md")"
+      echo "⚠ Task ${TASK_NUM} has no <context-refs>, falling back to full CONTEXT.md inject."
+    fi
+  elif [ "$CTX_INJECT_MODE" = "full" ] && [ -f "${PHASE_DIR}/CONTEXT.md" ]; then
+    DECISION_CONTEXT="$(cat "${PHASE_DIR}/CONTEXT.md")"
+  fi
+elif [ "$CTX_INJECT_MODE" = "full" ] && [ -f "${PHASE_DIR}/CONTEXT.md" ]; then
+  DECISION_CONTEXT="$(cat "${PHASE_DIR}/CONTEXT.md")"
+fi
 ```
 
 **Spawn executor agent (one per plan task):**
@@ -1243,6 +1320,14 @@ Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
     phase: ${PHASE_NUMBER}
     plan: ${PLAN_NUM}
     </build_config>
+
+    <decision_context>
+    # Phase C (v2.5): decisions extracted from CONTEXT.md per context_injection.mode.
+    # mode=scoped: only decisions listed in task's <context-refs> element.
+    # mode=full:   full CONTEXT.md (backward-compat for phases 0-13).
+    # Empty = task has no relevant decisions OR CONTEXT.md unavailable.
+    ${DECISION_CONTEXT}
+    </decision_context>
 
     <task_context>
     @${TASKS_DIR}/task-${TASK_NUM}.md  (~100-300 lines)
@@ -2120,6 +2205,66 @@ fi
 ```bash
 # Append wave status to blueprint-state or build-state
 echo "wave-${N}: ${FAILED_GATE:-passed} (retries: ${RETRY_COUNT})" >> "${PHASE_DIR}/build-state.log"
+```
+
+**Step 4b — Post-wave independent verify (v2.5 Phase A, 2026-04-23):**
+
+Spawn fresh subprocess to re-run typecheck/tests/contract scoped to wave's changed files. Compare with executor's claims in commit messages. Divergence → rollback wave via `git reset --soft` + set FAILED_GATE.
+
+Critical: runs AFTER commit mutex released (commit_sha stable) but BEFORE next wave starts mutating index. Outside commit-queue to avoid serializing parallelism.
+
+```bash
+# Only run if wave succeeded and bash log integrity passed
+if [ -z "$FAILED_GATE" ] && [ "${CONFIG_INDEPENDENT_VERIFY_ENABLED:-true}" = "true" ]; then
+  WAVE_TAG="vg-build-${PHASE_NUMBER}-wave-${N}-start"
+
+  echo "▸ Wave ${N} independent verify (post-mutex) — subprocess re-run typecheck/tests/contract"
+
+  VERIFY_OUT=$(${PYTHON_BIN:-python3} \
+    .claude/scripts/validators/wave-verify-isolated.py \
+    --phase "${PHASE_NUMBER}" \
+    --wave-tag "${WAVE_TAG}" 2>&1)
+  VERIFY_RC=$?
+
+  # Surface verdict + evidence for audit log
+  echo "$VERIFY_OUT" | tail -1 | ${PYTHON_BIN:-python3} -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    print(f\"  wave-verify verdict: {d.get('verdict','?')} ({len(d.get('evidence',[]))} evidence)\")
+    for e in d.get('evidence', [])[:3]:
+        print(f\"    ─ {e.get('type')}: {e.get('message','')[:200]}\")
+except Exception:
+    pass
+" 2>/dev/null || true
+
+  if [ "$VERIFY_RC" -ne 0 ]; then
+    # Divergence in strict mode → rollback wave commits
+    if [[ "$ARGUMENTS" =~ --allow-verify-divergence ]]; then
+      echo "⚠ Wave ${N} verify divergence — OVERRIDE accepted via --allow-verify-divergence"
+      type -t log_override_debt >/dev/null 2>&1 && log_override_debt \
+        "--allow-verify-divergence" "$PHASE_NUMBER" "build.wave-${N}.verify" \
+        "executor claim vs subprocess divergence accepted by user" \
+        "build-wave-${N}-verify"
+      echo "override: wave=${N} gate=wave-verify reason=user-allow ts=$(date -u +%FT%TZ)" \
+        >> "${PHASE_DIR}/build-state.log"
+    else
+      echo "⛔ Wave ${N} verify divergence — executor claim does NOT match subprocess re-run."
+      echo "   Rolling back wave commits via: git reset --soft ${WAVE_TAG}"
+      git reset --soft "${WAVE_TAG}" 2>/dev/null || echo "   (tag missing — manual rollback needed)"
+      FAILED_GATE="wave-verify-divergence"
+      echo "wave-${N}: FAILED (wave-verify-divergence, retries: ${RETRY_COUNT})" \
+        >> "${PHASE_DIR}/build-state.log"
+      echo ""
+      echo "  Fix paths:"
+      echo "    (a) Fix underlying code issue, re-run wave"
+      echo "    (b) If environment flaky: --allow-verify-divergence + reason"
+      echo "    (c) Check stderr_tail in evidence for subprocess failure detail"
+    fi
+  else
+    echo "  ✓ wave-verify PASS — executor claims match subprocess reality"
+  fi
+fi
 ```
 
 Only proceed to next wave if `$FAILED_GATE` empty.

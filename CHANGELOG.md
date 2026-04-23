@@ -1,5 +1,164 @@
 # Changelog
 
+## [2.5.0] - 2026-04-23
+
+### Workflow Hardening — 8 phases closing B+ → Best-in-class workflow discipline
+
+v2.5 implements the approved 8-phase hardening plan. Goal: move VG from a
+B+ harness into **best-in-class workflow discipline for structured-domain
+Claude Code projects** — verifiable autonomy with auditable gate enforcement,
+cross-phase artifact integrity, and model-portable executor contracts.
+
+### Phase A — Post-wave independent verification
+
+Post-wave-complete subprocess re-runs typecheck + affected tests + contract
+verify OUTSIDE commit mutex. Divergence → soft reset + escalate. Wave-level
+(not per-task) to avoid 5× mutex pressure. `--allow-verify-divergence`
+override logs to debt register.
+
+### Phase B — Security 3-tier + Perf Budget + DAST
+
+**Tier 1 static (per-endpoint, inline TEST-GOALS frontmatter):** full OWASP
+Top 10 2021 coverage + ASVS Level 2 per goal; mutation endpoints require
+CSRF + rate_limit; auth_model cross-check against API-CONTRACTS.
+
+**Tier 2 dynamic (DAST at /vg:test step 5h):** ZAP/Nuclei cascade spawns
+active scan against deployed sandbox. Risk-profile-aware severity gate:
+`critical` = High finding BLOCKs, `low` = all advisory. `--skip-dast` +
+`--allow-dast-findings` overrides log to debt.
+
+**Tier 3 project-wide baseline (`verify-security-baseline.py`):** grep
+codebase + deploy scripts for TLS version / HSTS header / wildcard CORS +
+credentials / real secrets in .env.example / cookie flags / lockfile
+integrity. Fires at /vg:review phase 1 + /vg:accept step 6b. HARD BLOCK at
+accept on critical drift.
+
+**Perf budget:** `verify-goal-perf.py` enforces p95_ms per tier declared in
+TEST-GOALS `perf_budget:` block. Mutation endpoint missing budget = BLOCK.
+
+### Phase C — Executor context isolation
+
+`context_injection.mode: full | scoped` in config. Scoped mode extracts only
+decisions listed in task's `<context-refs>P{phase}.D-XX</context-refs>`
+attribute. Blueprint planner instructed to emit refs per task; executor
+reads `<decision_context>` block, MUST NOT read CONTEXT.md directly.
+`phase_cutover=14` auto-upgrades scoped for new phases. New validator
+`verify-context-refs.py` WARNs on missing refs (advisory).
+
+### Phase D — FOUNDATION §9 architecture lock + SECURITY-TEST-PLAN
+
+`/vg:project` round 7 locks 8 architectural subsections in FOUNDATION.md §9
+(tech stack, module boundary, folder convention, cross-cutting concerns,
+security baseline, performance baseline, testing baseline, model-portable
+code style). Round 8 writes `.vg/SECURITY-TEST-PLAN.md` via 4 strategic Q&A
+(risk profile, DAST tool, pen-test strategy, compliance framework).
+New validators `verify-foundation-architecture.py` + `verify-security-test-plan.py`
+(both UNQUARANTINABLE).
+
+Blueprint planner prompt injected with `<architecture_context>` +
+`<security_test_plan>` blocks — planner sees the authoritative contract.
+
+### Phase E — Reactive telemetry suggestions
+
+`telemetry-suggest.py` emits 3 advisory types from events.db + telemetry.jsonl:
+skip candidates (pass_rate>=0.98 + samples>=10), expensive reorder
+(p95>threshold → late in sequence), override abuse warning (flag used
+>=3× in 30 days → gate may need tuning).
+
+**UNQUARANTINABLE safety:** security validators NEVER suggested for skip,
+regardless of pass rate. Hardcoded safety baseline union-merged with parsed
+set — parsing failure can never remove a security validator from protected
+set. `--apply skip X` hard-refuses UNQUARANTINABLE. Closes "AI gaming via
+reactive skip suggestions" surface.
+
+### Phase F — Build-progress task checkpoint extension
+
+`.build-progress.json` per-task entry now carries optional verification
+fields (typecheck/test_summary/wave_verify/run_id). New helper
+`vg_build_progress_is_task_fully_verified` — `/vg:recover` skips tasks with
+full verification record (no re-run after compact). Backward compat:
+legacy commits without these fields treated as "not fully verified"
+(safer default).
+
+### Phase G — Cost budget tracker + model portability guide
+
+`cost-tracker.py` aggregates token_usage events per phase or milestone,
+compares against config budgets (phase=500k, milestone=5M default), warns
+at 80%, blocks over hard budget. Consumable by accept gate.
+
+`.vg/MODEL-PORTABILITY.md` — doc-only artifact on cross-model consistency.
+Points to FOUNDATION §9.8 model-portable style rules + CrossAI 2d-6 as
+multi-model review mechanism (no new diff tool, per plan consensus).
+
+### Phase H — Learn auto-surface + tier (UX fatigue fix)
+
+Closes bootstrap learning loop by eliminating review-fatigue anti-pattern.
+New step `6c_learn_auto_surface` at end of /vg:accept. Tiered candidates:
+
+- **Tier A** (conf≥0.85 + impact=critical): auto-promote after 3 phase
+  confirms, 1-line notification only
+- **Tier B** (conf 0.6-0.85): surfaced MAX 2 per phase, 3-line y/n/e/s
+  prompt each
+- **Tier C** (conf<0.6): silent parking, access via `/vg:learn --review --all`
+- **RETIRED** (reject_count≥2): never surfaced again
+
+`learn-tier-classify.py` computes tier from confidence + impact + history.
+`learn-dedupe.py` merges title-similar candidates (difflib ≥ 0.8) before
+surface. Reflector schema extended with `impact` + `first_seen` + `reject_count`
+fields.
+
+### Phase I — Milestone pentest checklist generator
+
+`/vg:security-audit-milestone` step 5 generates
+`.vg/milestones/{M}/SECURITY-PENTEST-CHECKLIST.md` — human-curated
+artifact for pentesters. Aggregates SECURITY-TEST-PLAN risk profile +
+endpoints grouped by auth model + OPEN threats carry-over from
+SECURITY-REGISTER + risk-profile-aware priority vectors + compliance
+control mapping (SOC2 / ISO 27001 / HIPAA / GDPR / PCI-DSS predefined).
+VG does NOT run pentests — curates info so humans can.
+
+### Migration
+
+- Phase 0-13: grandfather on all new gates (warn/skip), `context_injection.mode=full`
+- Phase 14+: hard enforcement, `scoped` mode auto-upgrade via `phase_cutover=14`
+- Override handlers: `--allow-verify-divergence`, `--allow-missing-security`,
+  `--allow-missing-perf`, `--allow-missing-architecture`, `--allow-full-context-mode`,
+  `--allow-baseline-drift`, `--skip-dast`, `--allow-dast-findings`
+
+### Test coverage
+
+- 198 new integration tests across 12 test files
+- 530/530 regression pass (A-I cumulative, skipping 16 WSL-broken pre-existing)
+
+### Files changed
+
+**17 new scripts:** wave-verify-isolated, verify-goal-security, verify-goal-perf,
+verify-security-baseline, verify-context-refs, verify-foundation-architecture,
+verify-security-test-plan, dast-scan-report, telemetry-suggest, cost-tracker,
+learn-tier-classify, learn-dedupe, generate-pentest-checklist, _i18n helper,
+dast-runner.sh, etc.
+
+**3 new templates:** SECURITY-TEST-PLAN, SECURITY-PENTEST-CHECKLIST,
+TEST-GOAL-enriched (extended with security_checks + perf_budget blocks).
+
+**1 new doc:** MODEL-PORTABILITY.md
+
+**Skill files edited:** build.md, blueprint.md, review.md, test.md,
+accept.md, project.md, learn.md, security-audit-milestone.md,
+vg-executor-rules.md, vg-reflector/SKILL.md, 4 narration string keys.
+
+**Config new keys:** `context_injection`, `cost`, `bootstrap` (auto-surface
++ tier thresholds), `security_testing.dast_*`, `visual_regression` (already
+present, no change).
+
+### Drops (out of scope per CrossAI consensus)
+
+- Cross-model build comparison tool (reuse CrossAI 2d-6)
+- `/vg:architect` new command (extended `/vg:project` round 7 instead)
+- `ARCHITECTURE.md` new artifact (FOUNDATION §9 instead)
+- `task-frame.json` new file (extended `.build-progress.json` instead)
+- R8 commit-message citation rule (conflict with R1)
+
 ## [2.3.1] - 2026-04-23
 
 ### Level 5 push — close 3 autonomy gaps from v2.3 review
