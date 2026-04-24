@@ -1630,12 +1630,36 @@ def _verify_contract(contract: dict | None, run_id: str, command: str,
         return (len(violations) == 0), violations
 
     # must_write — profile-aware + glob-aware (v2.2 OHOK-9)
+    # v2.5 anti-forge patch: honor required_unless_flag + glob_min_count
     must_write = contracts.normalize_must_write(contract.get("must_write") or [])
     phase_profile = contracts.detect_phase_profile(phase)
     missing_files = []
     profile_skipped = []  # WARN, not BLOCK
+    waived_artifacts = []  # flag waiver → INFO event
     for item in must_write:
+        # v2.5: flag-waiver check (anti-forge: user must opt-out explicitly
+        # via --skip-crossai etc. — separate from profile-based skip)
+        waiver = item.get("required_unless_flag")
+        if waiver and waiver in (run_args or ""):
+            waived_artifacts.append({"path": item["path"], "flag": waiver})
+            continue
+
         rendered = contracts.substitute(item["path"], phase, phase_dir)
+
+        # v2.5: glob_min_count support — path treated as glob, ≥N matches required
+        glob_min = item.get("glob_min_count")
+        if glob_min is not None:
+            import glob as _glob
+            abs_path = rendered if Path(rendered).is_absolute() else str(Path(os.getcwd()) / rendered)
+            matches = _glob.glob(abs_path)
+            if len(matches) < int(glob_min):
+                missing_files.append({
+                    "path": rendered,
+                    "reason": f"glob matches {len(matches)} < required {glob_min} "
+                              f"(pattern matches no files — artifact not produced)",
+                })
+            continue
+
         p = Path(rendered)
         if not p.is_absolute():
             p = Path(os.getcwd()) / p
@@ -1655,6 +1679,21 @@ def _verify_contract(contract: dict | None, run_id: str, command: str,
             })
             continue
         missing_files.append({"path": str(p), "reason": result["reason"]})
+
+    # v2.5: emit INFO event for waived artifacts (audit trail)
+    if waived_artifacts:
+        try:
+            for wa in waived_artifacts:
+                db.append_event(
+                    run_id=run_id,
+                    event_type="contract.artifact_waived",
+                    phase=phase,
+                    command=command,
+                    outcome="INFO",
+                    payload={"path": wa["path"], "flag": wa["flag"]},
+                )
+        except Exception:
+            pass
 
     if profile_skipped:
         # Emit WARN event — visible in telemetry, not a violation
@@ -1767,6 +1806,7 @@ def _verify_contract(contract: dict | None, run_id: str, command: str,
                                "missing": block_missing})
 
     # must_emit_telemetry
+    # v2.5 anti-forge patch: honor required_unless_flag per telemetry spec
     telemetry_specs = contracts.normalize_telemetry(
         contract.get("must_emit_telemetry") or []
     )
@@ -1774,8 +1814,34 @@ def _verify_contract(contract: dict | None, run_id: str, command: str,
         if is_partial_wave:
             telemetry_specs = [t for t in telemetry_specs
                                if t.get("event_type") not in PARTIAL_EXEMPT_EVENTS]
+
+        # Separate flag-waived from always-checked
+        checked_specs = []
+        waived_specs = []
+        for t in telemetry_specs:
+            waiver = t.get("required_unless_flag")
+            if waiver and waiver in (run_args or ""):
+                waived_specs.append(t)
+            else:
+                checked_specs.append(t)
+
+        if waived_specs:
+            try:
+                for ws in waived_specs:
+                    db.append_event(
+                        run_id=run_id,
+                        event_type="contract.telemetry_waived",
+                        phase=phase,
+                        command=command,
+                        outcome="INFO",
+                        payload={"event_type": ws["event_type"],
+                                 "flag": ws.get("required_unless_flag")},
+                    )
+            except Exception:
+                pass
+
         events = db.query_events(run_id=run_id)
-        missing_tel = evidence.check_telemetry(telemetry_specs, events)
+        missing_tel = evidence.check_telemetry(checked_specs, events)
         if missing_tel:
             violations.append({"type": "must_emit_telemetry",
                                "missing": missing_tel})

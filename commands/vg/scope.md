@@ -14,13 +14,20 @@ runtime_contract:
   # Scope MUST produce CONTEXT.md (enriched decisions) + DISCUSSION-LOG.md.
   # Without these, blueprint has nothing to plan against.
   must_write:
-    - "${PHASE_DIR}/CONTEXT.md"
+    # v2.5.1 anti-forge: CONTEXT.md must have at least 1 decision heading
+    # (### D-XX or ### P{phase}.D-XX) — prevents empty stub.
+    - path: "${PHASE_DIR}/CONTEXT.md"
+      content_min_bytes: 500
+      content_required_sections: ["D-"]
     - "${PHASE_DIR}/DISCUSSION-LOG.md"
   must_touch_markers:
     - "0_parse_and_validate"
     - "1_deep_discussion"
     - "2_artifact_generation"
   must_emit_telemetry:
+    # v2.5.1 anti-forge: tasklist visibility
+    - event_type: "scope.tasklist_shown"
+      phase: "${PHASE_NUMBER}"
     - event_type: "scope.started"
       phase: "${PHASE_NUMBER}"
     - event_type: "scope.completed"
@@ -207,6 +214,12 @@ fi
   echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
   exit 1
 }
+
+# v2.5.1 anti-forge: show task list at flow start so user sees planned steps
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:scope" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 0_parse_and_validate 2>/dev/null || true
 ```

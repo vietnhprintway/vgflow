@@ -22,6 +22,14 @@ runtime_contract:
     - "${PHASE_DIR}/PLAN.md"
     - "${PHASE_DIR}/API-CONTRACTS.md"
     - "${PHASE_DIR}/TEST-GOALS.md"
+    # v2.5 anti-forge (2026-04-23): CrossAI XML result files REQUIRED
+    # unless explicit --skip-crossai flag. Previously AI could touch
+    # 2d_crossai_review.done marker without actually invoking CLIs
+    # (observed gap in phase 7.14 blueprint run — 0 crossai events + empty
+    # crossai/ dir despite marker present). Closes forge surface.
+    - path: "${PHASE_DIR}/crossai/result-*.xml"
+      glob_min_count: 1
+      required_unless_flag: "--skip-crossai"
   must_touch_markers:
     # Subset of filter-steps.py output (feature profile). Missing any =
     # step silently skipped = BLOCK Stop.
@@ -37,10 +45,23 @@ runtime_contract:
   must_emit_telemetry:
     # Events that MUST land in .vg/telemetry.jsonl for this phase+command.
     # Hook greps event_type + phase + command match.
+    # v2.5.1 anti-forge (2026-04-24): tasklist visibility — user MUST see
+    # authoritative step list at flow start. emit-tasklist.py helper runs
+    # filter-steps.py + echoes list + emits event. Missing = AI started
+    # flow without showing user what it plans to do = contract violation.
+    - event_type: "blueprint.tasklist_shown"
+      phase: "${PHASE_NUMBER}"
     - event_type: "blueprint.plan_written"
       phase: "${PHASE_NUMBER}"
     - event_type: "blueprint.contracts_generated"
       phase: "${PHASE_NUMBER}"
+    # v2.5 anti-forge (2026-04-23): crossai.verdict event proves the CrossAI
+    # step actually invoked the CLIs + computed a verdict. Paired with
+    # must_write crossai/result-*.xml files. Together they eliminate
+    # the "touch marker but skip work" forge surface. Waived by --skip-crossai.
+    - event_type: "crossai.verdict"
+      phase: "${PHASE_NUMBER}"
+      required_unless_flag: "--skip-crossai"
   forbidden_without_override:
     # If these flags present, hook also checks override-debt register updated.
     # OHOK v2 Day 1: added --skip-design-check + --skip-crossai. These were
@@ -178,6 +199,14 @@ Rule 2 khai "4 sub-steps in order". `--from=X` là resume feature, nhưng phải
 # (blueprint has no session_start; explicit call here.)
 type -t vg_run_start >/dev/null 2>&1 && \
   vg_run_start "vg:blueprint" "${PHASE_NUMBER:-unknown}" "${ARGUMENTS:-}"
+
+# v2.5.1 anti-forge (2026-04-24): user sees authoritative step list at start.
+# Emits blueprint.tasklist_shown event proving user had visibility.
+# Required by runtime_contract — AI cannot silently skip this.
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:blueprint" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 
 FROM_STEP=""
 if [[ "$ARGUMENTS" =~ --from=(2b|2c|2d|2b5|2b6|2b7) ]]; then

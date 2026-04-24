@@ -162,6 +162,12 @@ echo "Phase: $PHASE_NUMBER ($PHASE_DIR)"
 # v1.15.2 — register run so Stop hook can verify runtime_contract evidence
 type -t vg_run_start >/dev/null 2>&1 && \
   vg_run_start "vg:accept" "${PHASE_NUMBER}" "${ARGUMENTS:-}"
+
+# v2.5.1 anti-forge: show task list at flow start so user sees planned steps
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:accept" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 ```
 </step>
 

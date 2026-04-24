@@ -18,9 +18,11 @@ runtime_contract:
   # Previously contract listed only 3 markers — UAT theatre (step 5 skip-all)
   # could not be detected. Now 11 markers + forced response persistence gate.
   must_write:
-    - "${PHASE_DIR}/${PHASE_NUMBER}-UAT.md"
-    # Batch 3 B4: response JSON must be persisted by AI during step 5
-    # (read by step 5_uat_quorum_gate). Missing / empty = BLOCK.
+    # v2.5.1 anti-forge: UAT.md must have Verdict: line — prevents
+    # empty/stub UAT without human decision recorded.
+    - path: "${PHASE_DIR}/${PHASE_NUMBER}-UAT.md"
+      content_min_bytes: 200
+      content_required_sections: ["Verdict:"]
     - "${PHASE_DIR}/.uat-responses.json"
   must_touch_markers:
     # Hard gates — foundational + verdict enforcement
@@ -40,6 +42,9 @@ runtime_contract:
       severity: "warn"
     - "7_post_accept_actions"
   must_emit_telemetry:
+    # v2.5.1 anti-forge: tasklist visibility at flow start
+    - event_type: "accept.tasklist_shown"
+      phase: "${PHASE_NUMBER}"
     - event_type: "accept.started"
       phase: "${PHASE_NUMBER}"
     - event_type: "accept.completed"
@@ -132,6 +137,12 @@ echo "Phase: $PHASE_NUMBER ($PHASE_DIR)"
 # v1.15.2 — register run so Stop hook can verify runtime_contract evidence
 type -t vg_run_start >/dev/null 2>&1 && \
   vg_run_start "vg:accept" "${PHASE_NUMBER}" "${ARGUMENTS:-}"
+
+# v2.5.1 anti-forge: show task list at flow start so user sees planned steps
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:accept" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 ```
 </step>
 

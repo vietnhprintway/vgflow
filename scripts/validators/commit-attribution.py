@@ -113,9 +113,13 @@ def _goal_exists(phase_dir: Path, goal_num: str) -> bool:
     """Check phase's TEST-GOALS.md has this goal ID.
 
     Accepts multiple header formats observed across phases:
-      - `### G-01:` or `### G-01 ` (standard)
-      - `### Goal G-01:` (phase 14 format, with "Goal" prefix)
+      - `## G-01:` / `### G-01:` / `#### G-01:` (standard, any depth 2-4)
+      - `## Goal G-01:` (phase 7.x + 14 format, with "Goal" prefix)
       - Table row `| G-01 | ...`
+
+    Header depth is flexible (##..####): phases 7.3/7.8/7.12/7.13/7.14/7.15/7.16
+    use `## Goal G-XX`, phases 07.10/14 use `### Goal G-XX`, phase 06 uses `## G-XX`.
+    All are valid TEST-GOALS dialects — accept all.
 
     Both zero-padded (G-01) and unpadded (G-1) accepted.
     """
@@ -130,8 +134,8 @@ def _goal_exists(phase_dir: Path, goal_num: str) -> bool:
     # Build both zero-padded + unpadded forms
     ids = {f"G-{n:02d}", f"G-{n}"}
     for gid in ids:
-        # `### <maybe "Goal ">G-XX[:|\s]` or `| G-XX |`
-        if re.search(rf"^###\s+(?:Goal\s+)?{re.escape(gid)}\b", text, re.MULTILINE):
+        # `##..#### <maybe "Goal ">G-XX[:|\s]` or `| G-XX |`
+        if re.search(rf"^#{{2,4}}\s+(?:Goal\s+)?{re.escape(gid)}\b", text, re.MULTILINE):
             return True
         if re.search(rf"^\|\s*{re.escape(gid)}\s*\|", text, re.MULTILINE):
             return True

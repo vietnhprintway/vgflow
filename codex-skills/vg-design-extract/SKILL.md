@@ -105,7 +105,7 @@ Normalize any design format into AI-consumable visual + structural refs. Output 
 </objective>
 
 <available_agent_types>
-- gsd-executor — general-purpose executor (used for Haiku scanner prompt when Task tool spawns)
+- general-purpose — used for Haiku scanner prompt when Task tool spawns
 </available_agent_types>
 
 <process>

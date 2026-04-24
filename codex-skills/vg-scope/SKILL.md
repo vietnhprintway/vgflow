@@ -266,6 +266,12 @@ fi
   exit 1
 }
 
+# v2.5.1 anti-forge: show task list at flow start so user sees planned steps
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:scope" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
+
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step scope 0_parse_and_validate 2>/dev/null || true
 ```
 

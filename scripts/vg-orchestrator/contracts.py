@@ -295,12 +295,19 @@ def artifact_applicable(profile: str, path: str) -> bool:
 
 
 def normalize_must_write(items: list) -> list[dict]:
-    """Normalize mixed string/dict items to unified dict shape."""
+    """Normalize mixed string/dict items to unified dict shape.
+
+    v2.5 extensions (anti-forge patch):
+    - glob_min_count: int — path is treated as a glob pattern; ≥N matches required
+    - required_unless_flag: str — check waived when flag appears in run_args
+    """
     result = []
     for item in items or []:
         if isinstance(item, str):
             result.append({"path": item, "content_min_bytes": 1,
-                           "content_required_sections": []})
+                           "content_required_sections": [],
+                           "glob_min_count": None,
+                           "required_unless_flag": None})
         elif isinstance(item, dict) and "path" in item:
             result.append({
                 "path": item["path"],
@@ -308,6 +315,8 @@ def normalize_must_write(items: list) -> list[dict]:
                 "content_required_sections": item.get(
                     "content_required_sections", []
                 ),
+                "glob_min_count": item.get("glob_min_count"),
+                "required_unless_flag": item.get("required_unless_flag"),
             })
     return result
 
@@ -342,16 +351,23 @@ def normalize_markers(items: list) -> list[dict]:
 
 
 def normalize_telemetry(items: list) -> list[dict]:
-    """Normalize telemetry requirements to unified dict shape."""
+    """Normalize telemetry requirements to unified dict shape.
+
+    v2.5 extension (anti-forge patch):
+    - required_unless_flag: str — check waived when flag appears in run_args.
+      Closes gap where AI touched marker but skipped actual CrossAI invoke.
+    """
     result = []
     for item in items or []:
         if isinstance(item, str):
-            result.append({"event_type": item, "min_count": 1})
+            result.append({"event_type": item, "min_count": 1,
+                           "required_unless_flag": None})
         elif isinstance(item, dict) and "event_type" in item:
             result.append({
                 "event_type": item["event_type"],
                 "phase": item.get("phase"),
                 "min_count": int(item.get("min_count", 1)),
                 "must_pair_with": item.get("must_pair_with"),
+                "required_unless_flag": item.get("required_unless_flag"),
             })
     return result

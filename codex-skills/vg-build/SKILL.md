@@ -191,6 +191,13 @@ else
 fi
 
 session_start "build" "${PHASE_ARG:-unknown}"
+# v2.5.1 anti-forge (2026-04-24): emit tasklist so user sees authoritative
+# step plan before N-wave execution. Contract requires build.tasklist_shown
+# event — AI cannot silently start build without visible task plan.
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:build" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_ARG:-unknown}" 2>&1 | head -40 || true
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "build" "$PHASE_DIR_CANDIDATE"
 [ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
 session_mark_step "1-parse-args"
@@ -498,7 +505,7 @@ Result routing:
 **Load artifacts + resolve all context-injection variables BEFORE spawning executors.**
 
 **Resume-safe:** This step MUST run even on `--resume` if its artifacts are missing.
-The prior build may have used gsd-executor (no graphify) — new build needs step 4 data.
+Prior builds may have lacked graphify context — new build needs step 4 data.
 
 **⛔ HARD RULE (tightened 2026-04-17):** On `--resume`, step 4 MUST re-run UNLESS user explicitly passes `--skip-context-rebuild`. Reason: graphify may have been rebuilt since prior run, config may have changed, and stale sibling/caller context causes cross-module breaks. Reusing is OPT-IN, not default.
 

@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.5.1] - 2026-04-24
+
+### Anti-Forge Hardening — evidence-backed contracts
+
+v2.5.1 closes the forge surface where `/vg:blueprint 7.14` reported PASS but
+CrossAI never actually ran (only the marker file was touched — empty
+`crossai/` dir, 0 `crossai.*` events). Marker alone is forgeable; evidence
+must bind to (artifact presence) + (telemetry event) pairs with optional
+flag waiver.
+
+### Schema extensions (runtime-contract.json)
+
+- `glob_min_count: N` — path treated as glob, require ≥N matches
+- `required_unless_flag: "--flag"` — waiver mechanism; logs
+  `contract.artifact_waived` / `contract.telemetry_waived` INFO events
+
+### Task-list visibility gate
+
+Every pipeline command entry step now invokes `emit-tasklist.py` helper
+(authoritative step list from `filter-steps.py`) + emits `{cmd}.tasklist_shown`
+event so AI cannot start a flow silently without showing the user the plan.
+
+Wired into: `specs`, `scope`, `blueprint`, `build`, `review`, `test`, `accept`.
+
+### Prose cleanup — gsd-executor tag removal
+
+3 skill files had lingering `gsd-executor` prose references that caused
+orchestrator to spawn wrong agent type despite explicit `subagent_type=
+"general-purpose"` declaration:
+- `build.md:503` — resume-safe note
+- `design-extract.md:36` — available_agent_types block
+- `_shared/vg-executor-rules.md:4` — header comment
+
+Cleaned → VG-native "no external workflow dependency" language.
+
+### New files
+
+- `.claude/scripts/emit-tasklist.py` — tasklist visibility helper
+- `.claude/scripts/tests/test_contract_antiforge.py` — 13 cases
+- `.claude/scripts/tests/test_tasklist_visibility.py` — 28 cases
+
+### Enforcement proof
+
+- Forge attempt WITHOUT `--skip-crossai` + no real crossai/*.xml → Stop hook
+  BLOCK with `[must_write] crossai/result-*.xml (glob matches 0 < required 1)`
+  + `[must_emit_telemetry] crossai.verdict (expected ≥1, got 0)`
+- Waiver path WITH `--skip-crossai` + override 50+ chars + commit SHA →
+  PASS, emits `contract.*_waived` INFO events + OD-XXXX debt entry
+
+### Codex skill mirror sync restored
+
+`.codex/skills/` and `~/.codex/skills/` had drifted pre-v2.5.0. Full sync
+restored parity across 4 locations (RTB source, vgflow-repo, .codex local,
+~/.codex global). All 41 skills hash-match.
+
+---
+
 ## [2.5.0] - 2026-04-23
 
 ### Workflow Hardening — 8 phases closing B+ → Best-in-class workflow discipline

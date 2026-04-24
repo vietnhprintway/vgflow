@@ -191,6 +191,10 @@ else
 fi
 
 session_start "test" "${PHASE_NUMBER:-unknown}"
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:test" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "test" "$PHASE_DIR_CANDIDATE"
 [ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
 session_mark_step "0-parse-args"

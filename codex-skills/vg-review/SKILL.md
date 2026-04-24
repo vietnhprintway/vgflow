@@ -209,6 +209,10 @@ fi
 
 # Emit session-start banner → distinct separator for Claude Code tail UI
 session_start "review" "${PHASE_NUMBER:-unknown}"
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:review" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 # Register EXIT trap emitting "━━━ review Phase X EXITED at step=Y ━━━" on any exit path
 # Sweep stale state from previous interrupted runs (>config.session.stale_hours old)
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "review" "$PHASE_DIR_CANDIDATE"

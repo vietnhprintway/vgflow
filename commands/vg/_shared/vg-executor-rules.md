@@ -1,8 +1,8 @@
 # VG Executor Rules (Self-Contained)
 
 Injected into every executor agent prompt by `/vg:build` step 8c.
-This file replaces `gsd-executor` agent type + `execute-plan.md` + `summary.md` template.
-The executor reads ONLY this + task-specific context blocks. No CLAUDE.md, no GSD files.
+VG-native executor rules — self-contained, no external workflow dependency.
+The executor reads ONLY this + task-specific context blocks. No CLAUDE.md, no external files.
 
 ## Identity
 

@@ -22,6 +22,12 @@ runtime_contract:
   must_write:
     - "${PHASE_DIR}/RUNTIME-MAP.json"
     - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
+    # v2.5.1 anti-forge: Haiku scan JSON files prove step 2b-2 actually
+    # spawned scanners instead of just touching marker. Waived for
+    # non-web profiles (no browser discovery needed).
+    - path: "${PHASE_DIR}/scan-*.json"
+      glob_min_count: 1
+      required_unless_flag: "--skip-discovery"
   must_touch_markers:
     # ─── Hard gates (block) — foundational, always run ───
     - "00_gate_integrity_precheck"
@@ -82,6 +88,9 @@ runtime_contract:
     - name: "bootstrap_reflection"
       severity: "warn"
   must_emit_telemetry:
+    # v2.5.1 anti-forge: tasklist visibility at flow start
+    - event_type: "review.tasklist_shown"
+      phase: "${PHASE_NUMBER}"
     - event_type: "review.started"
       phase: "${PHASE_NUMBER}"
     - event_type: "review.completed"
@@ -219,6 +228,10 @@ fi
 
 # Emit session-start banner → distinct separator for Claude Code tail UI
 session_start "review" "${PHASE_NUMBER:-unknown}"
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:review" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 # Register EXIT trap emitting "━━━ review Phase X EXITED at step=Y ━━━" on any exit path
 # Sweep stale state from previous interrupted runs (>config.session.stale_hours old)
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "review" "$PHASE_DIR_CANDIDATE"

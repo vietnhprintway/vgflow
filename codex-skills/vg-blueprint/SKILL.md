@@ -208,6 +208,14 @@ Rule 2 khai "4 sub-steps in order". `--from=X` là resume feature, nhưng phải
 type -t vg_run_start >/dev/null 2>&1 && \
   vg_run_start "vg:blueprint" "${PHASE_NUMBER:-unknown}" "${ARGUMENTS:-}"
 
+# v2.5.1 anti-forge (2026-04-24): user sees authoritative step list at start.
+# Emits blueprint.tasklist_shown event proving user had visibility.
+# Required by runtime_contract — AI cannot silently skip this.
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:blueprint" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
+
 FROM_STEP=""
 if [[ "$ARGUMENTS" =~ --from=(2b|2c|2d|2b5|2b6|2b7) ]]; then
   FROM_STEP="${BASH_REMATCH[1]}"

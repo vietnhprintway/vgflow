@@ -23,6 +23,11 @@ runtime_contract:
   # what this contract catches. See .claude/scripts/vg-verify-claim.py.
   must_write:
     - "${PHASE_DIR}/SUMMARY.md"
+    # v2.5.1 anti-forge: build progress file proves wave actually ran.
+    # Phase F v2.5 extended schema stores per-task commit_sha + typecheck +
+    # wave_verify fields. Missing = AI forged summary without real commits.
+    - path: "${PHASE_DIR}/.build-progress.json"
+      content_min_bytes: 50
   must_touch_markers:
     # OHOK Batch 4 C3 (2026-04-22): contract 8 → 15 markers.
     # Previously 8 steps (1/4/7/8/9/10/11/12) were validated — 11 other
@@ -57,7 +62,15 @@ runtime_contract:
     # v1.15.2 — names match vg_run_start/vg_run_complete auto-emits.
     # Previously declared build.phase_start/build.phase_end but 0 emit calls
     # existed anywhere in body → hook always failed this check.
+    # v2.5.1 anti-forge: tasklist visibility at flow start
+    - event_type: "build.tasklist_shown"
+      phase: "${PHASE_NUMBER}"
     - event_type: "build.started"
+      phase: "${PHASE_NUMBER}"
+    # v2.5.1 anti-forge: wave execution evidence — at least 1 wave.started
+    # event proves executor subagents actually spawned. Missing = AI claimed
+    # build complete without wave work. Partial-wave runs exempt via is_partial_wave.
+    - event_type: "wave.started"
       phase: "${PHASE_NUMBER}"
     - event_type: "build.completed"
       phase: "${PHASE_NUMBER}"
@@ -173,6 +186,13 @@ else
 fi
 
 session_start "build" "${PHASE_ARG:-unknown}"
+# v2.5.1 anti-forge (2026-04-24): emit tasklist so user sees authoritative
+# step plan before N-wave execution. Contract requires build.tasklist_shown
+# event — AI cannot silently start build without visible task plan.
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:build" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_ARG:-unknown}" 2>&1 | head -40 || true
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "build" "$PHASE_DIR_CANDIDATE"
 [ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
 session_mark_step "1-parse-args"
@@ -480,7 +500,7 @@ Result routing:
 **Load artifacts + resolve all context-injection variables BEFORE spawning executors.**
 
 **Resume-safe:** This step MUST run even on `--resume` if its artifacts are missing.
-The prior build may have used gsd-executor (no graphify) — new build needs step 4 data.
+Prior builds may have lacked graphify context — new build needs step 4 data.
 
 **⛔ HARD RULE (tightened 2026-04-17):** On `--resume`, step 4 MUST re-run UNLESS user explicitly passes `--skip-context-rebuild`. Reason: graphify may have been rebuilt since prior run, config may have changed, and stale sibling/caller context causes cross-module breaks. Reusing is OPT-IN, not default.
 

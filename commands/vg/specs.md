@@ -14,7 +14,9 @@ runtime_contract:
   # Previously zero enforcement — step 1 of pipeline was 100% performative.
   # Now orchestrator validates markers + artifact + approval at run-complete.
   must_write:
-    - "${PHASE_DIR}/SPECS.md"
+    - path: "${PHASE_DIR}/SPECS.md"
+      content_min_bytes: 300
+      content_required_sections: ["Goal:", "Scope:"]
   must_touch_markers:
     - "parse_args"
     - "check_existing"
@@ -27,6 +29,8 @@ runtime_contract:
     - "write_specs"
     - "commit_and_next"
   must_emit_telemetry:
+    - event_type: "specs.tasklist_shown"
+      phase: "${PHASE_NUMBER}"
     - event_type: "specs.started"
       phase: "${PHASE_NUMBER}"
     - event_type: "specs.approved"
@@ -63,6 +67,12 @@ Store: `phase_goal`, `phase_success_criteria`, `project_constraints`, `prior_pha
   exit 1
 }
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "specs.started" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+
+# v2.5.1 anti-forge: show task list at flow start so user sees planned steps
+${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
+  --command "vg:specs" \
+  --profile "${PROFILE:-web-fullstack}" \
+  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
 ```
 
 <step name="parse_args">

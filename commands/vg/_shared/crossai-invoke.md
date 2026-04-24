@@ -208,6 +208,32 @@ Read the result files. Parse `<verdict>`, `<score>`, `<findings>` from each.
 
 Write consensus XML to `$OUTPUT_DIR/$LABEL.xml`. Format per vg-crossai SKILL.md.
 
+## Emit verdict telemetry (v2.5 anti-forge — 2026-04-23)
+
+**MANDATORY** — after CROSSAI_VERDICT is finalized, emit `crossai.verdict` event
+to telemetry so the runtime_contract can verify CrossAI actually ran (not just
+marker touched). Without this emit, /vg:blueprint + /vg:review contracts will
+BLOCK at run-complete with "missing crossai.verdict" evidence.
+
+```bash
+# Emit verdict event — pairs with must_write crossai/result-*.xml files
+# to prove CrossAI invocation actually happened (no silent skip).
+if [ -n "${CROSSAI_VERDICT:-}" ]; then
+  ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
+    "crossai.verdict" \
+    --payload "$(${PYTHON_BIN:-python3} -c "
+import json
+print(json.dumps({
+    'verdict': '${CROSSAI_VERDICT}',
+    'ok_count': int('${OK_COUNT:-0}'),
+    'total_clis': int('${TOTAL_CLIS:-0}'),
+    'label': '${LABEL:-crossai}',
+    'phase': '${PHASE_NUMBER:-unknown}',
+}))
+")" 2>/dev/null || true
+fi
+```
+
 ## Cleanup
 
 ```bash
