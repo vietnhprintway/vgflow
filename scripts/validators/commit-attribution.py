@@ -369,6 +369,42 @@ def _validate_single_commit(msg_path: str, out: Output) -> None:
         ))
 
 
+def _print_hook_guidance(out: Output) -> None:
+    """v2.5.2.6: human-readable stderr summary when commit-msg hook BLOCKs.
+
+    stdout JSON stays canonical for orchestrator/log consumers. stderr is
+    what the human running `git commit` actually reads. Before this, users
+    saw only a one-line JSON blob + 'husky - commit-msg script failed
+    (code 1)' and had to parse JSON mentally.
+
+    After: clear multi-line guidance distilled from Evidence.{type,message,
+    fix_hint} already populated by _validate_single_commit. i18n-aware
+    (message + fix_hint come from narration-strings-validators.yaml).
+    """
+    if out.verdict != "BLOCK":
+        return
+    print("", file=sys.stderr)
+    print("⛔ Commit blocked by VG commit-attribution gate", file=sys.stderr)
+    print("─" * 60, file=sys.stderr)
+    for ev in out.evidence:
+        ev_type = getattr(ev, "type", "") or "issue"
+        msg = (getattr(ev, "message", "") or "").strip()
+        hint = (getattr(ev, "fix_hint", "") or "").strip()
+        if msg:
+            print(f"• [{ev_type}] {msg}", file=sys.stderr)
+        if hint:
+            # indent multi-line hint for readability
+            for line in hint.splitlines():
+                if line.strip():
+                    print(f"    {line.rstrip()}", file=sys.stderr)
+    print("─" * 60, file=sys.stderr)
+    print("Retry:  git commit --amend       (edit message in editor)",
+          file=sys.stderr)
+    print("   or:  git reset HEAD~1; <edit>; git commit   (if hook ran "
+          "but commit didn't record)", file=sys.stderr)
+    print("", file=sys.stderr)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=False,
@@ -392,8 +428,10 @@ def main() -> None:
                     message=t("commit_attr.args_error.message"),
                     fix_hint=t("commit_attr.args_error.fix_hint"),
                 ))
+                _print_hook_guidance(out)  # v2.5.2.6
                 emit_and_exit(out)
             _validate_single_commit(args.msg_file, out)
+            _print_hook_guidance(out)  # v2.5.2.6
             emit_and_exit(out)
 
         # Legacy phase-history mode (unchanged — used at run-complete / accept)

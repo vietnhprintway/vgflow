@@ -223,6 +223,50 @@ def test_code_commit_missing_citation_blocks(tmp_path):
     assert "missing_citation" in r.stdout
 
 
+def test_block_emits_human_readable_stderr(tmp_path):
+    """v2.5.2.6: when hook BLOCKs, stderr must carry human-readable guidance
+    (distilled from Evidence.message + fix_hint) in addition to JSON on
+    stdout. Users reading `git commit` output see the guidance."""
+    repo, _ = _setup_repo(tmp_path)
+    _stage(repo, "apps/api/src/routes.ts")
+
+    r = _run_validator(
+        repo,
+        "feat(7.6-06): add handler\n\nSome random body, no citation.\n",
+        tmp_path=tmp_path,
+    )
+    assert r.returncode == 1
+    # stdout still has canonical JSON for orchestrator
+    assert "missing_citation" in r.stdout
+    assert "verdict" in r.stdout
+    # stderr now has multi-line human guidance
+    assert "Commit blocked" in r.stderr
+    assert "missing_citation" in r.stderr  # evidence type surfaced
+    assert "Retry:" in r.stderr
+    assert "git commit --amend" in r.stderr  # retry instruction present
+    # NOTE: Evidence.message + fix_hint content flow through `t()` i18n,
+    # which reads narration-strings-validators.yaml relative to
+    # VG_REPO_ROOT. In this test VG_REPO_ROOT → tmp git repo (isolated,
+    # no yaml) so `t()` falls back to key literal. In prod (real repo),
+    # users see the localized fix_hint which enumerates citation patterns.
+    # Hardcoded framing (above) is what we verify is always present.
+
+
+def test_pass_does_not_emit_stderr_guidance(tmp_path):
+    """v2.5.2.6: PASS verdict → stderr stays clean (don't spam on success)."""
+    repo, _ = _setup_repo(tmp_path)
+    _stage(repo, "apps/api/src/routes.ts")
+
+    r = _run_validator(
+        repo,
+        "feat(7.6-06): add handler\n\nPer API-CONTRACTS.md\n",
+        tmp_path=tmp_path,
+    )
+    assert r.returncode == 0
+    # No guidance block printed on success
+    assert "Commit blocked" not in r.stderr
+
+
 def test_empty_message_blocks(tmp_path):
     """Empty commit message → BLOCK."""
     repo, _ = _setup_repo(tmp_path)
