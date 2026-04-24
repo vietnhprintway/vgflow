@@ -43,7 +43,14 @@ from typing import Optional
 
 DEFAULT_APPROVER_ENV_VAR = "VG_HUMAN_OPERATOR"
 STRICT_MODE_ENV_VAR = "VG_ALLOW_FLAGS_STRICT_MODE"
+LEGACY_RAW_ENV_VAR = "VG_ALLOW_FLAGS_LEGACY_RAW"  # opt-out for raw-string
 APPROVER_KEY_DIR_ENV = "VG_APPROVER_KEY_DIR"  # test override
+
+# v2.5.2.2: default is STRICT (reversed from v2.5.2.1). Closes Codex
+# round-4 finding: "non-strict default = raw env forge unchanged".
+# Projects migrating from v2.5.1 that need raw-env compat must
+# explicitly set VG_ALLOW_FLAGS_LEGACY_RAW=true (audit flags it).
+DEFAULT_STRICT = True
 
 
 def _is_tty() -> bool:
@@ -187,9 +194,16 @@ def verify_human_operator(
     if _is_tty():
         return True, _tty_user() or "unknown-tty-user"
 
+    # v2.5.2.2: strict default True. Non-strict only via explicit opt-out
+    # env VG_ALLOW_FLAGS_LEGACY_RAW=true. STRICT_MODE_ENV_VAR kept for
+    # backward compat (can force-strict even under legacy opt-out).
     if strict is None:
-        strict = os.environ.get(STRICT_MODE_ENV_VAR, "").lower() in \
-                 ("1", "true", "yes", "on")
+        legacy_raw = os.environ.get(LEGACY_RAW_ENV_VAR, "").lower() in \
+                     ("1", "true", "yes", "on")
+        force_strict = os.environ.get(STRICT_MODE_ENV_VAR, "").lower() in \
+                       ("1", "true", "yes", "on")
+        # Default strict unless explicit legacy opt-in; force-strict wins
+        strict = force_strict or (not legacy_raw and DEFAULT_STRICT)
 
     env_val = os.environ.get(approver_env_var, "").strip()
     if not env_val:
@@ -206,7 +220,7 @@ def verify_human_operator(
         # (someone tried to forge; don't fall through to raw-string path)
         return False, None
 
-    # Raw-string env var path
+    # Raw-string env var path — only reachable when legacy opt-in set
     if strict:
         return False, None
     return True, f"{env_val} [unsigned-warning]"

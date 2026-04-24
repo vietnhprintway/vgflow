@@ -211,16 +211,25 @@ def gate_mod():
 
 class TestAllowFlagGate:
     def test_verify_human_env_override(self, gate_mod, monkeypatch):
-        # v2.5.2.1: raw-string env in non-strict mode now appends
-        # [unsigned-warning] suffix to surface that this is legacy
-        # compat, not a cryptographically verified approval.
+        # v2.5.2.2: default is strict — raw string BLOCKED. Must opt-in
+        # to legacy raw-env path via VG_ALLOW_FLAGS_LEGACY_RAW=true.
         monkeypatch.setenv("VG_HUMAN_OPERATOR", "alice@co")
         monkeypatch.delenv("VG_ALLOW_FLAGS_STRICT_MODE", raising=False)
+        monkeypatch.setenv("VG_ALLOW_FLAGS_LEGACY_RAW", "true")
         is_human, approver = gate_mod.verify_human_operator("--skip-x")
         assert is_human is True
         assert approver is not None
         assert "alice@co" in approver
         assert "unsigned-warning" in approver
+
+    def test_verify_human_env_default_strict(self, gate_mod, monkeypatch):
+        # v2.5.2.2: without legacy opt-in, raw string is blocked by default
+        monkeypatch.setenv("VG_HUMAN_OPERATOR", "alice@co")
+        monkeypatch.delenv("VG_ALLOW_FLAGS_STRICT_MODE", raising=False)
+        monkeypatch.delenv("VG_ALLOW_FLAGS_LEGACY_RAW", raising=False)
+        is_human, approver = gate_mod.verify_human_operator("--skip-x")
+        assert is_human is False
+        assert approver is None
 
     def test_verify_human_blocked_no_tty_no_env(self, gate_mod, monkeypatch):
         # Test harness is already non-TTY; clear env

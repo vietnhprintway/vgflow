@@ -179,6 +179,34 @@ class TestVerifyHumanOperator:
             "allow-X", strict=True)
         assert not is_human
 
+    def test_default_is_strict_v2_5_2_2(self, isolated_key_dir, no_tty,
+                                        monkeypatch):
+        """v2.5.2.2: default behavior (no strict arg, no env) MUST block
+        raw-string env. Closes Codex round-4 finding."""
+        monkeypatch.setenv("VG_HUMAN_OPERATOR", "alice")
+        # No VG_ALLOW_FLAGS_STRICT_MODE, no VG_ALLOW_FLAGS_LEGACY_RAW
+        is_human, _a = _gate.verify_human_operator("allow-X")
+        assert not is_human  # default is strict now
+
+    def test_legacy_raw_opt_in_allows_raw(self, isolated_key_dir, no_tty,
+                                          monkeypatch):
+        """Explicit VG_ALLOW_FLAGS_LEGACY_RAW=true re-opens raw-string path
+        for projects migrating from v2.5.1."""
+        monkeypatch.setenv("VG_HUMAN_OPERATOR", "alice")
+        monkeypatch.setenv("VG_ALLOW_FLAGS_LEGACY_RAW", "true")
+        is_human, approver = _gate.verify_human_operator("allow-X")
+        assert is_human
+        assert "unsigned-warning" in (approver or "")
+
+    def test_force_strict_beats_legacy_optin(self, isolated_key_dir, no_tty,
+                                             monkeypatch):
+        """STRICT_MODE=true wins even if LEGACY_RAW=true also set."""
+        monkeypatch.setenv("VG_HUMAN_OPERATOR", "alice")
+        monkeypatch.setenv("VG_ALLOW_FLAGS_LEGACY_RAW", "true")
+        monkeypatch.setenv("VG_ALLOW_FLAGS_STRICT_MODE", "true")
+        is_human, _a = _gate.verify_human_operator("allow-X")
+        assert not is_human
+
     def test_strict_mode_via_env(self, isolated_key_dir, no_tty,
                                  monkeypatch):
         monkeypatch.setenv("VG_HUMAN_OPERATOR", "alice")
@@ -246,21 +274,32 @@ class TestVgAuthCli:
     # LOGIC is covered by the monkeypatch tests above (test_no_env_blocks,
     # test_tty_session_passes_without_env). The CLI merely delegates.
 
-    def test_approve_force_no_tty_mints_token(self, tmp_path):
+    def test_approve_ci_mode_mints_token(self, tmp_path):
+        """v2.5.2.2: --force-no-tty removed. CI fallback requires both
+        VG_AUTH_CI_MODE=1 and VG_AUTH_OPERATOR_ACK=<oob-code>."""
         result = _run_cli(
             ["approve", "--flag", "allow-X", "--ttl-days", "1",
-             "--force-no-tty", "--handle", "alice", "--quiet"],
-            env_extra={"VG_APPROVER_KEY_DIR": str(tmp_path)},
+             "--handle", "alice", "--quiet"],
+            env_extra={"VG_APPROVER_KEY_DIR": str(tmp_path),
+                       "VG_AUTH_CI_MODE": "1",
+                       "VG_AUTH_OPERATOR_ACK": "oob-code-from-email"},
         )
         assert result.returncode == 0
         token = result.stdout.strip()
-        assert "." in token  # payload.sig
+        assert "." in token
+
+    # NOTE: "CI_MODE=1 alone (no OPERATOR_ACK) blocks" can't be reliably
+    # tested via subprocess on Windows (subprocess stdin inherits TTY).
+    # The logic is covered by the env-handling unit test below; the
+    # subprocess test would only falsely pass on Windows-like systems.
 
     def test_verify_cli_accepts_valid_token(self, tmp_path):
         mint = _run_cli(
             ["approve", "--flag", "allow-X", "--ttl-days", "1",
-             "--force-no-tty", "--handle", "alice", "--quiet"],
-            env_extra={"VG_APPROVER_KEY_DIR": str(tmp_path)},
+             "--handle", "alice", "--quiet"],
+            env_extra={"VG_APPROVER_KEY_DIR": str(tmp_path),
+                       "VG_AUTH_CI_MODE": "1",
+                       "VG_AUTH_OPERATOR_ACK": "oob"},
         )
         assert mint.returncode == 0
         token = mint.stdout.strip()
