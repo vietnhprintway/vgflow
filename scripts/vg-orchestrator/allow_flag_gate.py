@@ -426,3 +426,53 @@ def check_rubber_stamp(
             continue
         hit += 1
     return hit >= threshold
+
+
+def check_skip_flag_rubber_stamp(
+    events: list[dict],
+    flag_name: str,
+    reason: str,
+    current_phase: str,
+    threshold: int = 2,
+) -> tuple[bool, int, list[str]]:
+    """Detect rubber-stamp pattern on --skip-* overrides across DIFFERENT phases.
+
+    For --allow-* flags, check_rubber_stamp gates on approver identity.
+    For --skip-crossai / --skip-crossai-build-loop and similar skip flags,
+    there is no approver — the pattern we care about is "same reason
+    fingerprint copy-pasted across ≥N phases in a row", which is what user
+    observed in phases 7.14/7.15/7.16 (reason "UI-only no API change,
+    CrossAI marginal value" verbatim across 3 phases).
+
+    Returns:
+        (rubber_stamp_detected, hit_count, matching_phases)
+        - rubber_stamp_detected: True if hit_count >= threshold AND at least
+          `threshold` DIFFERENT phases matched (excluding current_phase).
+        - matching_phases: list of phase IDs where the same fp was used.
+    """
+    fp = _reason_fingerprint(reason)
+    matching_phases: list[str] = []
+
+    for ev in events:
+        if ev.get("event_type") != "override.used":
+            continue
+        payload = ev.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                continue
+        if payload.get("flag") != flag_name:
+            continue
+
+        # Compare fingerprints — recompute if not present in payload
+        ev_reason = payload.get("reason", "")
+        ev_fp = _reason_fingerprint(ev_reason) if ev_reason else ""
+        if ev_fp != fp:
+            continue
+
+        ev_phase = ev.get("phase") or ""
+        if ev_phase and ev_phase != current_phase and ev_phase not in matching_phases:
+            matching_phases.append(ev_phase)
+
+    return (len(matching_phases) >= threshold, len(matching_phases), matching_phases)

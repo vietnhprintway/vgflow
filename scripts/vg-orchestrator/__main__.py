@@ -1415,6 +1415,91 @@ def cmd_override(args) -> int:
         except Exception:
             pass
 
+    # v2.5.2.10 — rubber-stamp guard for skip-crossai* overrides.
+    # Observed in 7.14 → 7.15 → 7.16: reason "UI-only no API change, CrossAI
+    # marginal value" copy-pasted across 3 phases. Each entry passed proof
+    # gate (cited prior commit SHA), but the pattern was unchecked.
+    # This guard fires when the same reason fingerprint appears on the same
+    # flag across ≥2 DIFFERENT phases, blocking unless VG_ALLOW_RUBBER_STAMP
+    # env is set (which itself logs a new meta-debt entry).
+    _skip_flag_family = (
+        "--skip-crossai",
+        "--skip-crossai-build-loop",
+        "skip-crossai",
+        "skip-crossai-build-loop",
+    )
+    if args.flag in _skip_flag_family and _allow_flag_gate is not None:
+        try:
+            recent = db.query_events(event_type="override.used", limit=500)
+            rs_hit, rs_count, rs_phases = \
+                _allow_flag_gate.check_skip_flag_rubber_stamp(
+                    recent, args.flag, args.reason,
+                    current["phase"], threshold=2,
+                )
+        except Exception:
+            rs_hit, rs_count, rs_phases = False, 0, []
+
+        if rs_hit and os.environ.get("VG_ALLOW_RUBBER_STAMP") != "1":
+            phases_str = ", ".join(rs_phases)
+            print(
+                f"\n⛔ Rubber-stamp detected — lý do skip CrossAI này đã dùng "
+                f"y hệt ở {rs_count} phase trước: {phases_str}\n\n"
+                f"   Flag:   {args.flag}\n"
+                f"   Phase:  {current['phase']} (current)\n"
+                f"   Reason dùng lại nguyên xi từ các phase trước → pattern\n"
+                f"   copy-paste không chứng minh CrossAI thực sự không cần\n"
+                f"   ở phase này.\n\n"
+                f"   Cách sửa:\n"
+                f"     1. Bỏ --skip-crossai → để CrossAI chạy thật (khuyến nghị)\n"
+                f"     2. Viết reason khác hẳn, chứng minh cụ thể tại sao\n"
+                f"        phase NÀY không cần CrossAI (VD: chỉ edit comments,\n"
+                f"        không đổi logic, CrossAI zero signal)\n"
+                f"     3. Bypass khẩn cấp: export VG_ALLOW_RUBBER_STAMP=1\n"
+                f"        trước khi retry → log thêm 1 meta-debt entry\n",
+                file=sys.stderr,
+            )
+            try:
+                db.append_event(
+                    run_id=current["run_id"],
+                    event_type="override.rubber_stamp_blocked",
+                    phase=current["phase"],
+                    command=current["command"],
+                    actor="orchestrator",
+                    outcome="BLOCK",
+                    payload={
+                        "flag": args.flag,
+                        "matching_phases": rs_phases,
+                        "reason_head": args.reason[:120],
+                    },
+                )
+            except Exception:
+                pass
+            return 2
+
+        if rs_hit and os.environ.get("VG_ALLOW_RUBBER_STAMP") == "1":
+            # Log bypass as meta-debt — user consciously skipped the guard
+            try:
+                db.append_event(
+                    run_id=current["run_id"],
+                    event_type="override.rubber_stamp_bypassed",
+                    phase=current["phase"],
+                    command=current["command"],
+                    actor="user",
+                    outcome="WARN",
+                    payload={
+                        "flag": args.flag,
+                        "matching_phases": rs_phases,
+                        "bypass_env": "VG_ALLOW_RUBBER_STAMP=1",
+                    },
+                )
+            except Exception:
+                pass
+            print(
+                f"⚠ Rubber-stamp BYPASSED qua VG_ALLOW_RUBBER_STAMP=1 — "
+                f"matching phases: {', '.join(rs_phases)}. Meta-debt ghi rồi.",
+                file=sys.stderr,
+            )
+
     ev = db.append_event(
         run_id=current["run_id"],
         event_type="override.used",
