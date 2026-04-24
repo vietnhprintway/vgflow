@@ -1,0 +1,9 @@
+# VG (vgflow) Python dependencies — v2.5.2.4+
+#
+# Install: pip install -r requirements.txt
+#
+# Note: most of VG is stdlib-only (hashlib, secrets, sqlite3, json, pathlib).
+# These are the only third-party deps required:
+
+pyyaml>=6.0          # validator registry (scripts/validators/registry.yaml) loader
+pytest>=7.0          # regression suite (scripts/tests/) — optional at runtime, required for CI

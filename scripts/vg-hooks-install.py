@@ -32,9 +32,12 @@ HOOK_ENTRY = {
             "hooks": [
                 {
                     "type": "command",
+                    # v2.5.2.4: quote ${CLAUDE_PROJECT_DIR} so paths with spaces
+                    # (e.g. "D:\AI CODE PROJECT") don't break shell argv parsing
+                    # when Claude Code expands the variable.
                     "command": (
-                        "python "
-                        "${CLAUDE_PROJECT_DIR}/.claude/scripts/vg-verify-claim.py"
+                        'python '
+                        '"${CLAUDE_PROJECT_DIR}/.claude/scripts/vg-verify-claim.py"'
                     ),
                     "comment": (
                         "VG runtime-contract verifier. Reads last /vg:* command's "
@@ -52,8 +55,8 @@ HOOK_ENTRY = {
                 {
                     "type": "command",
                     "command": (
-                        "python "
-                        "${CLAUDE_PROJECT_DIR}/.claude/scripts/vg-edit-warn.py"
+                        'python '
+                        '"${CLAUDE_PROJECT_DIR}/.claude/scripts/vg-edit-warn.py"'
                     ),
                     "comment": (
                         "VG skill-edit reload-required warning. If Claude edits a "
@@ -66,18 +69,45 @@ HOOK_ENTRY = {
             ]
         }
     ],
+    "UserPromptSubmit": [
+        {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": (
+                        'python '
+                        '"${CLAUDE_PROJECT_DIR}/.claude/scripts/vg-entry-hook.py"'
+                    ),
+                    "comment": (
+                        "VG orchestrator pre-seed. On /vg:* prompts, registers "
+                        "run-start with orchestrator BEFORE Claude loads the "
+                        "skill-MD — closes 'AI rationalizes past init' gap. "
+                        "Non-/vg messages fast-path approve in <5ms."
+                    ),
+                }
+            ]
+        }
+    ],
 }
 
 
 def merge_hooks(existing: dict, new_hooks: dict) -> tuple[dict, list[str]]:
-    """Idempotent merge. Appends VG hook to existing events; skips if already present.
+    """Idempotent merge + auto-repair.
+
+    v2.5.2.4: also REPAIRS existing hook commands that use unquoted
+    ${CLAUDE_PROJECT_DIR} — those break on paths with spaces (e.g. 'D:\\AI
+    CODE PROJECT'). When we see a VG script already installed but with the
+    old unquoted form, we rewrite the command in-place.
+
     Returns (updated_settings, changelog).
     """
     changelog = []
     existing.setdefault("hooks", {})
 
     # Match any VG-owned hook script name; allows adding more hooks later.
-    VG_SCRIPTS = ("vg-verify-claim", "vg-edit-warn", "vg-hooks-selftest")
+    VG_SCRIPTS = (
+        "vg-verify-claim", "vg-edit-warn", "vg-hooks-selftest", "vg-entry-hook",
+    )
 
     for event, new_matchers in new_hooks.items():
         existing["hooks"].setdefault(event, [])
@@ -96,18 +126,35 @@ def merge_hooks(existing: dict, new_hooks: dict) -> tuple[dict, list[str]]:
                     break
 
             already_present = False
+            repaired = False
             for existing_matcher in existing["hooks"][event]:
                 for h in existing_matcher.get("hooks", []):
                     existing_cmd = h.get("command", "")
                     # Match by script name (command strings may differ in whitespace)
                     if vg_script_name and vg_script_name in existing_cmd:
                         already_present = True
+                        # v2.5.2.4 auto-repair: detect unquoted CLAUDE_PROJECT_DIR
+                        # ("${CLAUDE_PROJECT_DIR}/..." vs '"${CLAUDE_PROJECT_DIR}/..."').
+                        # A properly-quoted command must contain '"${CLAUDE_PROJECT_DIR}'.
+                        has_var = "${CLAUDE_PROJECT_DIR}" in existing_cmd
+                        is_quoted = '"${CLAUDE_PROJECT_DIR}' in existing_cmd
+                        if has_var and not is_quoted and vg_command:
+                            h["command"] = vg_command
+                            repaired = True
                         break
                 if already_present:
                     break
 
             if already_present:
-                changelog.append(f"  = {event}: VG {vg_script_name} already installed")
+                if repaired:
+                    changelog.append(
+                        f"  ~ {event}: REPAIRED unquoted path in "
+                        f"VG {vg_script_name} (was broken on paths with spaces)"
+                    )
+                else:
+                    changelog.append(
+                        f"  = {event}: VG {vg_script_name} already installed"
+                    )
                 continue
 
             existing["hooks"][event].append(new_matcher)

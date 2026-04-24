@@ -82,13 +82,34 @@ fi
 # shipped under the same umbrella. Any future script dropped into
 # vgflow/scripts/ is installed automatically.
 if [ -d "$SCRIPT_DIR/scripts" ]; then
+  # Flat top-level scripts
   cp "$SCRIPT_DIR/scripts/"*.py "$TARGET/.claude/scripts/" 2>/dev/null || true
   cp "$SCRIPT_DIR/scripts/"*.js "$TARGET/.claude/scripts/" 2>/dev/null || true
   cp "$SCRIPT_DIR/scripts/"*.sh "$TARGET/.claude/scripts/" 2>/dev/null || true
+  cp "$SCRIPT_DIR/scripts/"*.yaml "$TARGET/.claude/scripts/" 2>/dev/null || true
+
+  # v2.5.2.4: copy sub-directories (previously skipped — caused validators +
+  # orchestrator + tests to be missing in every new install).
+  # validators/ — 60 validator scripts + registry.yaml (core of v2.5.2.x gates)
+  # vg-orchestrator/ — __main__.py, allow_flag_gate.py, prompt_capture.py,
+  #                    lock.py, journal.py, db.py (run-start/abort, HMAC gate)
+  # tests/        — regression suite (so CI can run pytest .claude/scripts/tests/)
+  for subdir in validators vg-orchestrator tests; do
+    if [ -d "$SCRIPT_DIR/scripts/$subdir" ]; then
+      mkdir -p "$TARGET/.claude/scripts/$subdir"
+      cp -r "$SCRIPT_DIR/scripts/$subdir/"* "$TARGET/.claude/scripts/$subdir/" 2>/dev/null || true
+    fi
+  done
+
   chmod +x "$TARGET/.claude/scripts/"*.py 2>/dev/null || true
   chmod +x "$TARGET/.claude/scripts/"*.sh 2>/dev/null || true
+  chmod +x "$TARGET/.claude/scripts/validators/"*.py 2>/dev/null || true
+  chmod +x "$TARGET/.claude/scripts/vg-orchestrator/"*.py 2>/dev/null || true
+
   SCRIPT_COUNT=$(ls "$TARGET/.claude/scripts/"*.py "$TARGET/.claude/scripts/"*.sh 2>/dev/null | wc -l | tr -d ' ')
-  echo "  → ${SCRIPT_COUNT} helper scripts installed (python + shell — design, filter-steps, verify-*, mobile tooling setup)"
+  VALIDATOR_COUNT=$(ls "$TARGET/.claude/scripts/validators/"*.py 2>/dev/null | wc -l | tr -d ' ')
+  ORCH_COUNT=$(ls "$TARGET/.claude/scripts/vg-orchestrator/"*.py 2>/dev/null | wc -l | tr -d ' ')
+  echo "  → ${SCRIPT_COUNT} top-level scripts + ${VALIDATOR_COUNT} validators + ${ORCH_COUNT} orchestrator modules installed"
 fi
 
 # Commit-msg hook template (deployed to .git/hooks/commit-msg by /vg:init)
