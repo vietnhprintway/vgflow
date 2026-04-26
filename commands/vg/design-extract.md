@@ -108,11 +108,14 @@ Write `{OUTPUT_DIR}/inventory.json`:
 Display:
 ```
 Design Inventory — Phase {SCOPE}
-  HTML prototypes: {N}
-  PNG/JPG images: {N}
-  PenBoard (.pb):  {N}
-  Pencil XML:      {N}
-  Figma files:     {N}
+  HTML prototypes:           {N}
+  PNG/JPG images (default):  {N}
+  PNG (.structural.png OCR): {N}    ← Phase 15 D-01 — opt-in marker triggers OCR pipeline
+  PenBoard legacy (.pb):     {N}
+  PenBoard MCP (.penboard/.flow):  {N}   ← Phase 15 D-01 — live workspace via mcp__penboard__*
+  Pencil legacy (.xml):      {N}
+  Pencil MCP (.pen):         {N}    ← Phase 15 D-01 — encrypted file via mcp__pencil__*
+  Figma files:               {N}
   Total: {total}
   → Inventory: {OUTPUT_DIR}/inventory.json
 ```
@@ -125,6 +128,50 @@ For EACH asset in inventory, spawn 1 Haiku agent via Task tool.
 
 **Parallelism:** up to `config.design_assets.max_parallel_haiku` (default 5).
 
+### Phase 15 D-01 — MCP delegation pattern (handler ∈ {pencil_mcp, penboard_mcp})
+
+Pencil `.pen` files are ENCRYPTED (only readable via `mcp__pencil__*`); Penboard
+`.penboard`/`.flow` workspaces are MCP-managed. Python normalizer subprocess
+**cannot call MCP tools directly** (those are AI-context tools).
+
+For these handlers, Haiku scanner MUST run in **2-step extraction**:
+
+**Step A (MCP extraction — AI tool calls):**
+- For `pencil_mcp`:
+  ```
+  mcp__pencil__open_document(asset.path)
+  state = mcp__pencil__get_editor_state
+  nodes = mcp__pencil__batch_get(<root pattern>)
+  boxes = mcp__pencil__export_nodes(state.selectedNodeIds or all)
+  png   = mcp__pencil__get_screenshot
+  → Save combined as JSON to {OUTPUT_DIR}/.tmp/{slug}.pencil-raw.json
+  → Save png to {OUTPUT_DIR}/.tmp/{slug}.pencil-screenshot.png
+  ```
+- For `penboard_mcp`:
+  ```
+  flows      = mcp__penboard__list_flows
+  flow_data  = [mcp__penboard__read_flow(f.name) for f in flows]
+  docs       = [mcp__penboard__read_doc(...) for each doc id]
+  entities   = mcp__penboard__manage_entities({operation: 'list'})
+  conns      = mcp__penboard__manage_connections({operation: 'list'})
+  preview    = mcp__penboard__generate_preview(...)
+  → Save combined as JSON to {OUTPUT_DIR}/.tmp/{slug}.penboard-raw.json
+  → Save preview png to {OUTPUT_DIR}/.tmp/{slug}.penboard-preview.png
+  ```
+
+**Step B (normalizer subprocess):**
+Call normalizer with same args as other handlers. Python handler reads pre-saved
+raw + screenshot from `.tmp/`, converts to canonical `structural-json.v1.json`,
+copies screenshot to `screenshots/{slug}.default.png`. If raw missing → handler
+returns error (Step A did not complete).
+
+**Cleanup:** `.tmp/` artifacts may be deleted by Layer 4 merge after manifest
+finalization (kept by default for debugging — gitignore the path).
+
+### Standard handlers (HTML, PNG passthrough/OCR, legacy XML/PB, Figma)
+
+Haiku invokes normalizer directly (1-step):
+
 **Haiku prompt (fixed, no discretion):**
 ```
 Read skill: vg-design-scanner (at .claude/skills/vg-design-scanner/SKILL.md)
@@ -136,11 +183,13 @@ Follow exactly. Inject these args:
   OUTPUT_DIR   = "{config.design_assets.output_dir}"
   CAPTURE_STATES = {true|false from --no-states flag}
   NORMALIZER_SCRIPT = "${NORMALIZER_SCRIPT}"  (absolute — orchestrator resolves before Haiku spawn)
+  MCP_DELEGATION = {true if handler ∈ {pencil_mcp, penboard_mcp} else false}
 
 The skill will:
-  1. Call normalizer script → produce PNG + structural
-  2. If HTML: read interactions.md + structural.html, enumerate modals/tabs/states
-  3. Produce per-asset summary: what pages/states/modals discovered
+  1. If MCP_DELEGATION: run Step A (MCP tool calls + save raw to .tmp/) FIRST
+  2. Call normalizer script → produce PNG + structural (or convert MCP raw → structural)
+  3. If HTML: read interactions.md + structural.html, enumerate modals/tabs/states
+  4. Produce per-asset summary: what pages/states/modals discovered
 
 Output: {OUTPUT_DIR}/scans/{slug}.scan.json
 Do NOT invent content. ONLY consume normalizer output.
@@ -197,11 +246,13 @@ Aggregate to `{OUTPUT_DIR}/manifest.json`:
       "path": "...",
       "slug": "...",
       "handler": "...",
+      "mcp_handler_used": false,   // Phase 15 D-01 — true for pencil_mcp/penboard_mcp; false for legacy + HTML/PNG
       "screenshots": [
         "screenshots/{slug}.default.png",
         "screenshots/{slug}.trigger-2-add_new_site.png"
       ],
-      "structural": "refs/{slug}.structural.html",
+      "structural": "refs/{slug}.structural.html",     // legacy: path to .html/.xml/.pb-derived
+      "structural_json": "refs/{slug}.structural.json", // Phase 15 D-01 — AST/box-list per structural-json.v1.json (HTML cheerio + PNG OCR + Pencil/Penboard MCP)
       "interactions": "refs/{slug}.interactions.md",
       "pages": [...],           // PenBoard only
       "modals_discovered": [...],
