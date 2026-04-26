@@ -23,6 +23,11 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
+// Phase 15 D-01 — cheerio AST output. Lazy-required so script still runs if
+// cheerio not installed (downgrades to no-AST mode + warning in result).
+let cheerio = null;
+try { cheerio = require('cheerio'); } catch (_) { /* optional dep */ }
+
 // ---------------------------------------------------------------------------
 // Cleaned HTML extraction
 // ---------------------------------------------------------------------------
@@ -44,6 +49,69 @@ async function extractCleanedHtml(page) {
     // Keep class, id, data-*, onclick, onchange, href, src (structural + behavioral signals).
     return '<!DOCTYPE html>\n' + root.outerHTML;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15 D-01 — Cheerio AST extraction for structural diff
+// ---------------------------------------------------------------------------
+//
+// Walks the cleaned HTML DOM via cheerio and emits a unified node tree that
+// matches schemas/structural-json.v1.json. Compared by drift validators
+// (verify-ui-structure.py wave-scoped + verify-holistic-drift.py) against
+// generate-ui-map.mjs as-built scan.
+
+function extractStructuralAst(cleanedHtml) {
+  if (!cheerio) {
+    return null; // caller emits warning in result payload
+  }
+  const $ = cheerio.load(cleanedHtml);
+
+  function walk(el) {
+    const $el = $(el);
+    const tag = (el.tagName || el.name || 'unknown').toLowerCase();
+    const classAttr = $el.attr('class') || '';
+    const classes = classAttr.trim() ? classAttr.trim().split(/\s+/) : [];
+    const role = $el.attr('role') || null;
+
+    // Static text content: only when el has direct text + no element children.
+    // (Otherwise text is mixed with descendants — leave as null = dynamic.)
+    const directText = $el.contents()
+      .filter(function () { return this.type === 'text'; })
+      .text()
+      .trim();
+    const hasElementChildren = $el.children().length > 0;
+    const text = (directText && !hasElementChildren) ? directText : null;
+
+    // Props: data-* + aria-* + name/href/src + onclick markers
+    const props = {};
+    if (el.attribs) {
+      for (const [k, v] of Object.entries(el.attribs)) {
+        if (k === 'class' || k === 'style') continue;
+        if (k.startsWith('data-') || k.startsWith('aria-') ||
+            ['id', 'name', 'href', 'src', 'type', 'value', 'placeholder'].includes(k) ||
+            k.startsWith('on')) {
+          props[k] = v;
+        }
+      }
+    }
+
+    const children = [];
+    $el.children().each((_, child) => { children.push(walk(child)); });
+
+    return { tag, classes, role, text, props, children };
+  }
+
+  // Start from <body> if present (skips <html>/<head> noise), else root.
+  const bodyEl = $('body').get(0);
+  const rootEl = bodyEl || $.root().children().get(0);
+  if (!rootEl) return null;
+
+  return {
+    format_version: '1.0',
+    source_format: 'html',
+    extracted_at: new Date().toISOString(),
+    root: walk(rootEl),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +265,7 @@ async function main() {
       handler: 'playwright_render',
       screenshots: [],
       structural: null,
+      structural_json: null, // Phase 15 D-01 — cheerio AST output path
       interactions: null,
       states: [],
     };
@@ -211,6 +280,18 @@ async function main() {
     const structuralPath = path.join(refsDir, `${slug}.structural.html`);
     fs.writeFileSync(structuralPath, cleanedHtml, 'utf-8');
     result.structural = path.relative(outputDir, structuralPath);
+
+    // Phase 15 D-01 — Cheerio AST → structural.json
+    const ast = extractStructuralAst(cleanedHtml);
+    if (ast) {
+      const astPath = path.join(refsDir, `${slug}.structural.json`);
+      ast.source_path = inputPath;
+      fs.writeFileSync(astPath, JSON.stringify(ast, null, 2), 'utf-8');
+      result.structural_json = path.relative(outputDir, astPath);
+    } else {
+      result.warning = (result.warning ? result.warning + '; ' : '') +
+        'cheerio not installed — structural.json AST not emitted (run: npm i cheerio in vgflow-repo to enable)';
+    }
 
     // Interactions
     const interactions = await extractInteractions(page);
