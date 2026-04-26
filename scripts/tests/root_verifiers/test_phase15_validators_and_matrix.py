@@ -283,6 +283,133 @@ class TestFilterCodegen:
         assert _verdict(r.stdout) in ("PASS", "WARN")
 
 
+# ─── D-02 verify-design-ref-required.py (profile gate, regression for B1) ─
+
+PLAN_UI_NO_REF = """## Tasks
+
+<task id="T-1">
+  <file-path>apps/web/src/sites/SitesList.tsx</file-path>
+  <description>Render sites list with table.</description>
+</task>
+"""
+
+PLAN_UI_WITH_REF = """## Tasks
+
+<task id="T-1">
+  <file-path>apps/web/src/sites/SitesList.tsx</file-path>
+  <design-ref slug="sites-list"/>
+  <description>Render sites list with table.</description>
+</task>
+"""
+
+
+class TestDesignRefRequiredProfile:
+    """B1 regression: caller passes --profile production; without the flag
+    arg accepted, argparse exited 2 → silent SKIP. These tests exercise
+    the flag end-to-end so the bypass cannot recur."""
+
+    def _run(self, tmp_path: Path, args: list[str]) -> subprocess.CompletedProcess:
+        return _run_validator(VALIDATORS / "verify-design-ref-required.py",
+                              args, tmp_path)
+
+    def test_profile_flag_accepted(self, tmp_path):
+        # Phase dir present but no PLAN — exits cleanly when flag is recognized
+        _seed_phase_dir(tmp_path)
+        r = self._run(tmp_path, ["--phase", "15", "--profile", "production"])
+        assert "unrecognized arguments" not in (r.stderr or ""), (
+            f"--profile must be a recognized arg — stderr={r.stderr}"
+        )
+        # rc 0 OR 1 (PASS / BLOCK) both indicate the script ran; rc 2 means argparse failure.
+        assert r.returncode in (0, 1), f"argparse failure? rc={r.returncode} stderr={r.stderr}"
+
+    def test_production_profile_blocks_missing_ref(self, tmp_path):
+        phase = _seed_phase_dir(tmp_path)
+        (phase / "PLAN.md").write_text(PLAN_UI_NO_REF, encoding="utf-8")
+        r = self._run(tmp_path, ["--phase", "15", "--profile", "production"])
+        assert r.returncode == 1, f"production + missing ref must BLOCK — stdout={r.stdout}"
+        assert _verdict(r.stdout) == "BLOCK"
+
+    def test_default_profile_warns_missing_ref(self, tmp_path):
+        phase = _seed_phase_dir(tmp_path)
+        (phase / "PLAN.md").write_text(PLAN_UI_NO_REF, encoding="utf-8")
+        r = self._run(tmp_path, ["--phase", "15", "--profile", "default"])
+        assert r.returncode == 0, f"default + missing ref must NOT BLOCK — stdout={r.stdout}"
+        assert _verdict(r.stdout) == "WARN"
+
+    def test_prototype_profile_advisory_only(self, tmp_path):
+        phase = _seed_phase_dir(tmp_path)
+        (phase / "PLAN.md").write_text(PLAN_UI_NO_REF, encoding="utf-8")
+        r = self._run(tmp_path, ["--phase", "15", "--profile", "prototype"])
+        assert r.returncode == 0, f"prototype must PASS — stdout={r.stdout}"
+        assert _verdict(r.stdout) == "PASS"
+
+
+# ─── D-12a verify-uimap-injection.py (regression for B2) ─────────────────
+
+PROMPT_BOTH_MARKERS = """<!-- audit trail -->
+
+## UI-MAP-SUBTREE-FOR-THIS-WAVE
+
+- `PageLayout`
+  - `SitesTable.w-full` (data: state.sites)
+
+## DESIGN-REF
+
+apps/web/src/sites/SitesList.tsx — uses sites-list.default.png reference.
+"""
+
+PROMPT_MISSING_UIMAP = """## DESIGN-REF
+
+apps/web/src/sites/SitesList.tsx — uses sites-list.default.png reference.
+"""
+
+PROMPT_MISSING_DESIGN = """## UI-MAP-SUBTREE-FOR-THIS-WAVE
+
+- `PageLayout`
+  - `SitesTable.w-full` (data: state.sites)
+
+apps/web/src/sites/SitesList.tsx — task body without DESIGN-REF section.
+"""
+
+
+class TestUimapInjection:
+    """B2 regression: build.md previously injected `<ui_map_subtree>` XML tag
+    and never persisted prompts to disk; validator soft-passed because no
+    prompts to inspect. Tests below assert the H2 marker contract is
+    enforced when prompts ARE persisted."""
+
+    def _seed_prompts(self, tmp_path: Path, prompts: dict[str, str]) -> Path:
+        phase = _seed_phase_dir(tmp_path)
+        prompt_dir = phase / ".build" / "wave-1" / "executor-prompts"
+        prompt_dir.mkdir(parents=True)
+        for name, body in prompts.items():
+            (prompt_dir / name).write_text(body, encoding="utf-8")
+        return phase
+
+    def test_prompt_with_both_markers_passes(self, tmp_path):
+        self._seed_prompts(tmp_path, {"task-1.md": PROMPT_BOTH_MARKERS})
+        r = _run_validator(VALIDATORS / "verify-uimap-injection.py",
+                           ["--phase", "15"], tmp_path)
+        assert r.returncode == 0, f"both markers should PASS — stdout={r.stdout}"
+        assert _verdict(r.stdout) in ("PASS", "WARN")
+
+    def test_prompt_missing_uimap_marker_blocks(self, tmp_path):
+        self._seed_prompts(tmp_path, {"task-1.md": PROMPT_MISSING_UIMAP})
+        r = _run_validator(VALIDATORS / "verify-uimap-injection.py",
+                           ["--phase", "15"], tmp_path)
+        assert r.returncode == 1, f"missing UI-MAP marker should BLOCK — stdout={r.stdout}"
+        assert _verdict(r.stdout) == "BLOCK"
+        assert "UI-MAP-SUBTREE-FOR-THIS-WAVE" in r.stdout
+
+    def test_prompt_missing_design_ref_marker_blocks(self, tmp_path):
+        self._seed_prompts(tmp_path, {"task-1.md": PROMPT_MISSING_DESIGN})
+        r = _run_validator(VALIDATORS / "verify-uimap-injection.py",
+                           ["--phase", "15"], tmp_path)
+        assert r.returncode == 1, f"missing DESIGN-REF should BLOCK — stdout={r.stdout}"
+        assert _verdict(r.stdout) == "BLOCK"
+        assert "DESIGN-REF" in r.stdout
+
+
 # ─── D-12a + D-14 extract-subtree-haiku.mjs ──────────────────────────────
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node required for subtree extractor")

@@ -1319,22 +1319,57 @@ if [ -f "${PHASE_DIR}/UI-MAP.md" ] \
     SUBTREE_LINES=$(wc -l < "$UIMAP_TMP" 2>/dev/null || echo 0)
     if [ "${SUBTREE_LINES:-0}" -gt 1 ]; then
       UI_MAP_SUBTREE=$(cat "$UIMAP_TMP")
-      UI_MAP_SUBTREE_BLOCK="<ui_map_subtree>
-# Wave-scoped subtree from planner UI-MAP.md (Phase 15 D-12a + D-14).
-# Owner filter: wave-${N} / T-${TASK_NUM}. ~${SUBTREE_LINES} lines.
-# Build the components listed below — names, classes, props, text are the
-# planned target. Reviewer post-wave drift gate (D-12b) compares your code
-# against this subtree.
+      # H2 marker required by verify-uimap-injection.py (D-12a). Don't change
+      # `## UI-MAP-SUBTREE-FOR-THIS-WAVE` — validator greps that exact string.
+      UI_MAP_SUBTREE_BLOCK="## UI-MAP-SUBTREE-FOR-THIS-WAVE
+
+Wave-scoped subtree from planner UI-MAP.md (Phase 15 D-12a + D-14).
+Owner filter: wave-${N} / T-${TASK_NUM}. ~${SUBTREE_LINES} lines.
+Build the components listed below — names, classes, props, text are the
+planned target. Reviewer post-wave drift gate (D-12b) compares your code
+against this subtree.
+
 ${UI_MAP_SUBTREE}
-</ui_map_subtree>"
+"
       echo "✓ UI-MAP subtree (${SUBTREE_LINES} lines) extracted for wave-${N}/T-${TASK_NUM}"
     else
       # Empty subtree — task likely doesn't own UI nodes (e.g., backend task
       # within a mixed-profile wave). Inject explicit NONE marker so executor
       # doesn't accidentally invent components.
-      UI_MAP_SUBTREE_BLOCK="<ui_map_subtree>NONE — task has no owned UI subtree (backend / non-FE task in mixed wave)</ui_map_subtree>"
+      UI_MAP_SUBTREE_BLOCK="## UI-MAP-SUBTREE-FOR-THIS-WAVE
+
+NONE — task has no owned UI subtree (backend / non-FE task in mixed wave).
+"
     fi
   fi
+fi
+
+# ─── Phase 15 D-12a — persist composed prompt for verify-uimap-injection ──
+# Validator (verify-uimap-injection.py) audits prepared executor prompts on
+# disk to confirm both ## UI-MAP-SUBTREE-FOR-THIS-WAVE + ## DESIGN-REF
+# headers were injected. Without persisting we can't audit — orchestrator
+# only sees the prompt in-flight via Agent() / Task tool call.
+#
+# Skip when neither subtree nor design context populated (pure backend task).
+if [ -n "$UI_MAP_SUBTREE_BLOCK" ] || [ -n "$DESIGN_CONTEXT" ]; then
+  PROMPT_PERSIST_DIR="${PHASE_DIR}/.build/wave-${N}/executor-prompts"
+  mkdir -p "$PROMPT_PERSIST_DIR" 2>/dev/null
+  PROMPT_PERSIST="${PROMPT_PERSIST_DIR}/${TASK_NUM}.md"
+  {
+    echo "<!-- Wave ${N} / Task ${TASK_NUM} executor prompt audit trail (Phase 15 D-12a). -->"
+    echo "<!-- Auto-written by /vg:build step 8c BEFORE Agent() spawn — verifier reads this. -->"
+    echo ""
+    echo "${UI_MAP_SUBTREE_BLOCK:-## UI-MAP-SUBTREE-FOR-THIS-WAVE\n\nNONE}"
+    echo ""
+    echo "## DESIGN-REF"
+    echo ""
+    if [ -n "$DESIGN_CONTEXT" ]; then
+      echo "$DESIGN_CONTEXT"
+    else
+      echo "NONE — task has no <design-ref> attribute (non-UI task)."
+    fi
+  } > "$PROMPT_PERSIST"
+  echo "✓ Executor prompt persisted → $PROMPT_PERSIST"
 fi
 
 # Script auto-builds siblings + callers if missing (runs find-siblings.py + build-caller-graph.py)
@@ -1899,6 +1934,35 @@ if [ -f "$INTEGRITY_SCRIPT" ]; then
   esac
 else
   echo "⚠ verify-wave-integrity.py missing — skipping integrity check (older install)"
+fi
+```
+
+**Phase 15 D-12a — UI-MAP + design-ref injection audit (NEW, 2026-04-27):**
+
+Audits the executor prompts persisted in step 8c to confirm BOTH
+`## UI-MAP-SUBTREE-FOR-THIS-WAVE` and `## DESIGN-REF` H2 sections were
+injected for every UI-touching task. Catches regressions like Wave 7
+B2 where the inject path silently dropped the markers.
+
+```bash
+INJ_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-uimap-injection.py"
+WAVE_PROMPT_DIR="${PHASE_DIR}/.build/wave-${N}/executor-prompts"
+if [ -x "$INJ_VAL" ] && [ -d "$WAVE_PROMPT_DIR" ]; then
+  ${PYTHON_BIN} "$INJ_VAL" --phase "${PHASE_NUMBER}" \
+      --prompts-dir "$WAVE_PROMPT_DIR" \
+      > "${VG_TMP:-${PHASE_DIR}/.vg-tmp}/uimap-injection-w${N}.json" 2>&1 || true
+  IV=$(${PYTHON_BIN} -c "import json,sys; print(json.load(open(sys.argv[1])).get('verdict','SKIP'))" \
+       "${VG_TMP:-${PHASE_DIR}/.vg-tmp}/uimap-injection-w${N}.json" 2>/dev/null)
+  case "$IV" in
+    PASS|WARN) echo "✓ D-12a UI-MAP+design-ref injection audit: $IV" ;;
+    BLOCK)
+      echo "⛔ D-12a injection audit: BLOCK — see ${VG_TMP}/uimap-injection-w${N}.json" >&2
+      echo "   Step 8c persist did not write both ## UI-MAP-SUBTREE-FOR-THIS-WAVE +" >&2
+      echo "   ## DESIGN-REF headers into ${WAVE_PROMPT_DIR}/<task>.md." >&2
+      if [[ ! "$ARGUMENTS" =~ --skip-uimap-injection-audit ]]; then exit 1; fi
+      ;;
+    *) echo "ℹ D-12a injection audit: $IV" ;;
+  esac
 fi
 ```
 

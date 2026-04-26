@@ -74,6 +74,17 @@ def _registry_slugs(registry: dict) -> set[str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", required=True)
+    ap.add_argument(
+        "--profile",
+        default=None,
+        choices=("prototype", "default", "production"),
+        help=(
+            "Phase 15 D-08 fidelity profile. When 'production', missing "
+            "<design-ref> on UI tasks is BLOCK (was WARN in default). When "
+            "'prototype', missing refs degrade to advisory only. Resolved "
+            "upstream by scope.md / blueprint.md via threshold-resolver.py."
+        ),
+    )
     args = ap.parse_args()
 
     out = Output(validator="design-ref-required")
@@ -96,6 +107,21 @@ def main() -> None:
         registry = _load_slug_registry()
         valid_slugs = _registry_slugs(registry)
 
+        # D-08 profile gate (Phase 15): production = BLOCK on missing ref;
+        # default = WARN; prototype = advisory (no escalation). Default to
+        # 'default' when caller didn't pass --profile so behavior matches the
+        # legacy WARN convention.
+        profile = (args.profile or "default").lower()
+
+        def _emit_missing(evidence: Evidence) -> None:
+            if profile == "production":
+                out.add(evidence)               # escalate → BLOCK
+            elif profile == "prototype":
+                evidence.type = "info"
+                out.evidence.append(evidence)   # advisory; no escalation
+            else:
+                out.warn(evidence)              # escalate → WARN
+
         any_ui_task = False
         for plan_path in plan_files:
             text = plan_path.read_text(encoding="utf-8", errors="ignore")
@@ -113,16 +139,18 @@ def main() -> None:
 
                 refs = DESIGN_REF_RE.findall(body)
                 if not refs:
-                    out.add(Evidence(
+                    _emit_missing(Evidence(
                         type="missing_file",
                         message=(f"Task {task_id} touches UI file(s) but has no "
-                                 f"<design-ref slug='...'/> child"),
+                                 f"<design-ref slug='...'/> child "
+                                 f"(profile={profile})"),
                         file=str(plan_path),
                         actual=ui_paths[:5],
                         fix_hint=(
                             "Add `<design-ref slug=\"<slug>\"/>` inside the <task>...</task> "
                             "block. Slug must exist in slug-registry.json (run "
-                            "/vg:design-extract first if registry missing)."
+                            "/vg:design-extract first if registry missing). "
+                            "OR relax via --fidelity-profile default (logs override-debt)."
                         ),
                     ))
                     continue

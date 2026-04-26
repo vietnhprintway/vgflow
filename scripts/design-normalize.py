@@ -426,6 +426,7 @@ def handler_pencil_mcp(input_path: Path, output_dir: Path, slug: str, **kwargs) 
     tmp_dir = output_dir / '.tmp'
     refs_dir.mkdir(parents=True, exist_ok=True)
     screenshots_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
     raw_path = tmp_dir / f'{slug}.pencil-raw.json'
     screenshot_src = tmp_dir / f'{slug}.pencil-screenshot.png'
@@ -534,6 +535,7 @@ def handler_penboard_mcp(input_path: Path, output_dir: Path, slug: str, **kwargs
     tmp_dir = output_dir / '.tmp'
     refs_dir.mkdir(parents=True, exist_ok=True)
     screenshots_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
     raw_path = tmp_dir / f'{slug}.penboard-raw.json'
     preview_src = tmp_dir / f'{slug}.penboard-preview.png'

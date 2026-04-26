@@ -44,7 +44,9 @@ test.describe('{{var.goal_id}} · pagination ' + PAGINATION + ' · envelope', ()
   test(`pagination {{var.pagination_name}} · envelope · meta_total`, async ({ page }) => {
     const meta = await captureMeta(page, () => applyPagination(page, { page: 1 }));
     expect(meta).not.toBeNull();
-    expect(typeof (meta as Record<string, unknown>).total ?? (meta as Record<string, unknown>).count).toBe('number');
+    // Parens around `??` are required: `typeof X ?? Y` always yields the typeof
+    // string (never falsy), so the fallback never fires without grouping.
+    expect(typeof ((meta as Record<string, unknown>).total ?? (meta as Record<string, unknown>).count)).toBe('number');
   });
 
   // ─── envelope / meta_page ────────────────────────────────────────────
