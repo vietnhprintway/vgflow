@@ -22,6 +22,7 @@ import argparse
 import json
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,13 +34,17 @@ from typing import Optional
 FORMAT_HANDLERS = {
     '.html': 'playwright_render',
     '.htm': 'playwright_render',
-    '.png': 'passthrough',
+    '.png': 'passthrough',         # may upgrade to passthrough_ocr if .structural.png (D-01)
     '.jpg': 'passthrough',
     '.jpeg': 'passthrough',
     '.webp': 'passthrough',
     '.fig': 'figma_fallback',
-    '.pb': 'penboard_render',
-    '.xml': 'pencil_xml',
+    '.pb': 'penboard_render',      # legacy JSON file parser
+    '.xml': 'pencil_xml',          # legacy XML parser
+    # Phase 15 D-01 — MCP-based handlers (Pencil + Penboard, 2 separate MCP servers)
+    '.pen': 'pencil_mcp',          # encrypted Pencil file via mcp__pencil__*
+    '.penboard': 'penboard_mcp',   # PenBoard workspace via mcp__penboard__*
+    '.flow': 'penboard_mcp',       # PenBoard flow file via mcp__penboard__*
 }
 
 
@@ -66,7 +71,14 @@ def detect_format(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def handler_passthrough(input_path: Path, output_dir: Path, slug: str, **kwargs) -> dict:
-    """PNG/JPG/WEBP: copy (or convert JPG→PNG) to screenshots/."""
+    """PNG/JPG/WEBP: copy (or convert JPG→PNG) to screenshots/.
+
+    Phase 15 D-01: when input is *.structural.png OR sibling marker file
+    {input_path.stem}.structural.marker exists, ALSO run OCR + region detection
+    pipeline → emit refs/<slug>.structural.json (box-list per
+    structural-json.v1.json). Default passthrough preserved for photo
+    screenshots.
+    """
     screenshots_dir = output_dir / 'screenshots'
     screenshots_dir.mkdir(parents=True, exist_ok=True)
     out = screenshots_dir / f'{slug}.default.png'
@@ -84,12 +96,107 @@ def handler_passthrough(input_path: Path, output_dir: Path, slug: str, **kwargs)
     else:
         shutil.copy(input_path, out)
 
-    return {
+    result = {
         'slug': slug,
         'handler': 'passthrough',
         'screenshots': [str(out.relative_to(output_dir))],
         'structural': None,
         'interactions': None,
+    }
+
+    # Phase 15 D-01: opt-in OCR + region detection for *.structural.png marker.
+    # User decision #3: chỉ apply khi marker; default passthrough giữ cho photo.
+    is_structural = (
+        input_path.name.lower().endswith('.structural.png') or
+        (input_path.parent / f'{input_path.stem}.structural.marker').exists()
+    )
+    if ext == '.png' and is_structural:
+        refs_dir = output_dir / 'refs'
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        ocr_result = _ocr_structural_png(input_path)
+        if ocr_result is None:
+            result['warning'] = (
+                'PNG marked .structural.png but opencv-python + pytesseract not '
+                'installed. Run: pip install opencv-python pytesseract  (also '
+                'requires Tesseract binary in PATH). Falling back to passthrough only.'
+            )
+        else:
+            structural_path = refs_dir / f'{slug}.structural.json'
+            structural_path.write_text(
+                json.dumps(ocr_result, indent=2), encoding='utf-8',
+            )
+            result['structural'] = str(structural_path.relative_to(output_dir))
+            result['handler'] = 'passthrough_ocr'  # signal upgraded variant
+
+    return result
+
+
+def _ocr_structural_png(input_path: Path) -> Optional[dict]:
+    """OCR + region detection for structural PNG mockup (Phase 15 D-01).
+
+    Returns box-list per structural-json.v1.json schema, or None if cv2 +
+    pytesseract unavailable (caller falls back to passthrough + warning).
+
+    Pipeline:
+      1. opencv: grayscale → Canny edges → morph close → contour detection
+      2. Filter contours: drop tiny (<20px) and page-spanning (>90%)
+      3. Per region: pytesseract OCR with --psm 6 (single uniform block)
+      4. Emit unified node tree (page root + region children)
+    """
+    try:
+        import cv2  # opencv-python
+        import pytesseract
+    except ImportError:
+        return None
+
+    img = cv2.imread(str(input_path))
+    if img is None:
+        return None
+
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Region detection: edge → close → contour
+    edges = cv2.Canny(gray, 50, 150)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    regions = []
+    for c in contours:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if cw < 20 or ch < 20:                      # tiny noise
+            continue
+        if cw * ch > w * h * 0.9:                   # page-spanning frame
+            continue
+        region_img = gray[y:y + ch, x:x + cw]
+        try:
+            text = pytesseract.image_to_string(region_img, config='--psm 6').strip()
+        except Exception:
+            text = ''
+        regions.append({
+            'tag': 'region',
+            'id': f'r{len(regions)}',
+            'classes': [],
+            'role': None,
+            'text': text if text else None,
+            'bbox': {'x': int(x), 'y': int(y), 'w': int(cw), 'h': int(ch)},
+            'children': [],
+        })
+
+    return {
+        'format_version': '1.0',
+        'source_format': 'png-structural',
+        'extracted_at': datetime.now(timezone.utc).isoformat(),
+        'source_path': str(input_path),
+        'root': {
+            'tag': 'page',
+            'classes': [],
+            'role': None,
+            'text': None,
+            'bbox': {'x': 0, 'y': 0, 'w': int(w), 'h': int(h)},
+            'children': regions,
+        },
     }
 
 
@@ -293,6 +400,269 @@ def handler_pencil_xml(input_path: Path, output_dir: Path, slug: str, **kwargs) 
     return result
 
 
+def handler_pencil_mcp(input_path: Path, output_dir: Path, slug: str, **kwargs) -> dict:
+    """Pencil .pen → MCP-extracted structural via mcp__pencil__* (Phase 15 D-01).
+
+    .pen files are ENCRYPTED — only readable through Pencil MCP server tools.
+    Python subprocess cannot call MCP tools directly (those are AI-context tools).
+
+    DELEGATION CONVENTION:
+    The AI orchestrator (Haiku scanner in /vg:design-extract Layer 2) MUST call
+    these MCP tools BEFORE invoking this normalizer:
+      - mcp__pencil__open_document(input_path)
+      - mcp__pencil__get_editor_state
+      - mcp__pencil__batch_get        → node tree
+      - mcp__pencil__export_nodes     → element box-list
+      - mcp__pencil__get_screenshot   → default screenshot
+    Save raw outputs to:
+      {output_dir}/.tmp/{slug}.pencil-raw.json     # combined node tree + boxes
+      {output_dir}/.tmp/{slug}.pencil-screenshot.png
+
+    This handler then converts raw → structural-json.v1.json + copies screenshot.
+    See commands/vg/design-extract.md Layer 2 MCP delegation pattern.
+    """
+    refs_dir = output_dir / 'refs'
+    screenshots_dir = output_dir / 'screenshots'
+    tmp_dir = output_dir / '.tmp'
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_path = tmp_dir / f'{slug}.pencil-raw.json'
+    screenshot_src = tmp_dir / f'{slug}.pencil-screenshot.png'
+
+    if not raw_path.exists():
+        return {
+            'slug': slug, 'handler': 'pencil_mcp',
+            'screenshots': [], 'structural': None, 'interactions': None,
+            'mcp_handler_used': True,
+            'error': (
+                f'Pencil MCP raw output not found at {raw_path}. AI orchestrator '
+                f'must call mcp__pencil__* tools first and save outputs to .tmp/. '
+                f'See commands/vg/design-extract.md Layer 2 MCP delegation pattern.'
+            ),
+        }
+
+    try:
+        raw = json.loads(raw_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        return {
+            'slug': slug, 'handler': 'pencil_mcp',
+            'screenshots': [], 'structural': None, 'interactions': None,
+            'mcp_handler_used': True,
+            'error': f'Invalid Pencil MCP raw JSON ({raw_path}): {e}',
+        }
+
+    structural = _convert_pencil_mcp_to_structural(raw, input_path)
+    structural_path = refs_dir / f'{slug}.structural.json'
+    structural_path.write_text(json.dumps(structural, indent=2), encoding='utf-8')
+
+    screenshots = []
+    if screenshot_src.exists():
+        screenshot_dst = screenshots_dir / f'{slug}.default.png'
+        shutil.copy(screenshot_src, screenshot_dst)
+        screenshots.append(str(screenshot_dst.relative_to(output_dir)))
+
+    return {
+        'slug': slug, 'handler': 'pencil_mcp',
+        'screenshots': screenshots,
+        'structural': str(structural_path.relative_to(output_dir)),
+        'interactions': None,
+        'mcp_handler_used': True,
+    }
+
+
+def _convert_pencil_mcp_to_structural(raw: dict, source_path: Path) -> dict:
+    """Convert mcp__pencil__batch_get / get_editor_state output → structural-json.v1.json.
+
+    Pencil node format (from MCP):
+      {"id": "...", "type": "rect|text|group|...", "x": N, "y": N,
+       "width": N, "height": N, "fill": "...", "fontSize": N,
+       "text": "...", "children": [...]}
+    """
+    def convert_node(n: dict) -> dict:
+        node = {
+            'tag': n.get('type', 'unknown'),
+            'id': n.get('id'),
+            'classes': [],          # Pencil doesn't use CSS classes
+            'role': None,
+            'text': n.get('text'),
+            'children': [convert_node(c) for c in n.get('children', []) if isinstance(c, dict)],
+        }
+        if any(k in n for k in ('x', 'y', 'width', 'height')):
+            node['bbox'] = {
+                'x': n.get('x', 0),
+                'y': n.get('y', 0),
+                'w': n.get('width', 0),
+                'h': n.get('height', 0),
+            }
+        style_keys = ('fill', 'stroke', 'fontSize', 'fontFamily', 'opacity', 'strokeWidth')
+        style = {k: n[k] for k in style_keys if k in n}
+        if style:
+            node['style'] = style
+        return node
+
+    # Raw can be: full document {"root": ...} or {"document": ...} or just the node
+    root_raw = raw.get('root') or raw.get('document') or raw
+    return {
+        'format_version': '1.0',
+        'source_format': 'pencil-mcp',
+        'extracted_at': datetime.now(timezone.utc).isoformat(),
+        'source_path': str(source_path),
+        'root': convert_node(root_raw),
+    }
+
+
+def handler_penboard_mcp(input_path: Path, output_dir: Path, slug: str, **kwargs) -> dict:
+    """Penboard .penboard / .flow → MCP-extracted structural via mcp__penboard__* (Phase 15 D-01).
+
+    DELEGATION CONVENTION (parallel to handler_pencil_mcp):
+    AI orchestrator (Haiku in /vg:design-extract Layer 2) MUST call:
+      - mcp__penboard__list_flows
+      - mcp__penboard__read_flow(flow_name)        per flow
+      - mcp__penboard__read_doc(doc_id)            for doc nodes
+      - mcp__penboard__manage_entities             entity bindings
+      - mcp__penboard__manage_connections          data flow
+      - mcp__penboard__generate_preview            screenshot
+    Save raw outputs to:
+      {output_dir}/.tmp/{slug}.penboard-raw.json   # combined flows + docs + entities + connections
+      {output_dir}/.tmp/{slug}.penboard-preview.png
+
+    This handler converts raw → structural-json.v1.json + copies preview screenshot.
+    """
+    refs_dir = output_dir / 'refs'
+    screenshots_dir = output_dir / 'screenshots'
+    tmp_dir = output_dir / '.tmp'
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_path = tmp_dir / f'{slug}.penboard-raw.json'
+    preview_src = tmp_dir / f'{slug}.penboard-preview.png'
+
+    if not raw_path.exists():
+        return {
+            'slug': slug, 'handler': 'penboard_mcp',
+            'screenshots': [], 'structural': None, 'interactions': None,
+            'mcp_handler_used': True,
+            'error': (
+                f'Penboard MCP raw output not found at {raw_path}. AI orchestrator '
+                f'must call mcp__penboard__* tools first and save outputs to .tmp/. '
+                f'See commands/vg/design-extract.md Layer 2 MCP delegation pattern.'
+            ),
+        }
+
+    try:
+        raw = json.loads(raw_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        return {
+            'slug': slug, 'handler': 'penboard_mcp',
+            'screenshots': [], 'structural': None, 'interactions': None,
+            'mcp_handler_used': True,
+            'error': f'Invalid Penboard MCP raw JSON ({raw_path}): {e}',
+        }
+
+    structural = _convert_penboard_mcp_to_structural(raw, input_path)
+    structural_path = refs_dir / f'{slug}.structural.json'
+    structural_path.write_text(json.dumps(structural, indent=2), encoding='utf-8')
+
+    # Interactions map from connections (data flow edges)
+    interactions_path = None
+    connections = raw.get('connections', [])
+    if connections:
+        lines = [f'# Interactions — {slug} (Penboard MCP)\n', f'\nExtracted from: {input_path}\n']
+        lines.append(f'\n## Data flow connections ({len(connections)})\n\n')
+        for conn in connections[:100]:
+            src = conn.get('source') or conn.get('from') or '?'
+            dst = conn.get('target') or conn.get('to') or '?'
+            label = conn.get('label') or conn.get('type') or ''
+            lines.append(f'- `{src}` → `{dst}`{(" — " + label) if label else ""}\n')
+        interactions_path = refs_dir / f'{slug}.interactions.md'
+        interactions_path.write_text(''.join(lines), encoding='utf-8')
+
+    screenshots = []
+    if preview_src.exists():
+        preview_dst = screenshots_dir / f'{slug}.default.png'
+        shutil.copy(preview_src, preview_dst)
+        screenshots.append(str(preview_dst.relative_to(output_dir)))
+
+    return {
+        'slug': slug, 'handler': 'penboard_mcp',
+        'screenshots': screenshots,
+        'structural': str(structural_path.relative_to(output_dir)),
+        'interactions': str(interactions_path.relative_to(output_dir)) if interactions_path else None,
+        'mcp_handler_used': True,
+    }
+
+
+def _convert_penboard_mcp_to_structural(raw: dict, source_path: Path) -> dict:
+    """Convert mcp__penboard__read_flow + read_doc + manage_entities → structural-json.v1.json.
+
+    Penboard raw shape (combined by orchestrator):
+      {
+        "flows": [{"id": ..., "name": ..., "pages": [{"nodes": [...]}]}, ...],
+        "docs":  [{"id": ..., "content": ...}, ...],
+        "entities": [{"id": ..., "type": ..., "fields": [...]}, ...],
+        "connections": [{"source": ..., "target": ..., ...}, ...]
+      }
+    """
+    def convert_pb_node(n: dict) -> dict:
+        node = {
+            'tag': n.get('type') or n.get('kind') or 'unknown',
+            'id': n.get('id'),
+            'classes': [],
+            'role': None,
+            'text': n.get('text') or n.get('label'),
+            'children': [convert_pb_node(c) for c in n.get('children', n.get('nodes', [])) if isinstance(c, dict)],
+        }
+        if any(k in n for k in ('x', 'y', 'width', 'height')):
+            node['bbox'] = {'x': n.get('x', 0), 'y': n.get('y', 0),
+                            'w': n.get('width', 0), 'h': n.get('height', 0)}
+        if 'props' in n or 'data' in n:
+            node['props'] = n.get('props') or n.get('data') or {}
+        return node
+
+    flows = raw.get('flows', [])
+    flow_children = []
+    for flow in flows:
+        flow_node = {
+            'tag': 'flow',
+            'id': flow.get('id'),
+            'classes': [],
+            'role': None,
+            'text': flow.get('name'),
+            'children': [],
+        }
+        for page in flow.get('pages', []):
+            page_node = {
+                'tag': 'page',
+                'id': page.get('id'),
+                'classes': [],
+                'role': None,
+                'text': page.get('name'),
+                'children': [convert_pb_node(n) for n in page.get('nodes', []) if isinstance(n, dict)],
+            }
+            flow_node['children'].append(page_node)
+        flow_children.append(flow_node)
+
+    return {
+        'format_version': '1.0',
+        'source_format': 'penboard-mcp',
+        'extracted_at': datetime.now(timezone.utc).isoformat(),
+        'source_path': str(source_path),
+        'root': {
+            'tag': 'workspace',
+            'id': raw.get('workspace_id'),
+            'classes': [],
+            'role': None,
+            'text': raw.get('workspace_name'),
+            'props': {
+                'entities_count': len(raw.get('entities', [])),
+                'connections_count': len(raw.get('connections', [])),
+            },
+            'children': flow_children,
+        },
+    }
+
+
 def handler_figma_fallback(input_path: Path, output_dir: Path, slug: str, **kwargs) -> dict:
     """Figma .fig → user must export manually (no MCP detection at this layer).
 
@@ -347,8 +717,10 @@ def handler_unknown(input_path: Path, output_dir: Path, slug: str, **kwargs) -> 
 HANDLER_MAP = {
     'passthrough': handler_passthrough,
     'playwright_render': handler_playwright_render,
-    'penboard_render': handler_penboard_render,
-    'pencil_xml': handler_pencil_xml,
+    'penboard_render': handler_penboard_render,    # legacy .pb file parser
+    'penboard_mcp': handler_penboard_mcp,          # Phase 15 D-01 — .penboard/.flow via mcp__penboard__*
+    'pencil_xml': handler_pencil_xml,              # legacy .xml parser
+    'pencil_mcp': handler_pencil_mcp,              # Phase 15 D-01 — .pen via mcp__pencil__*
     'figma_fallback': handler_figma_fallback,
     'unknown': handler_unknown,
 }
