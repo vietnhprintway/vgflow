@@ -2401,6 +2401,26 @@ For each view in view_assignments:
     IDX=$((IDX + 1))
     briefing_for_view "{view.url}" "{role}" "$IDX" "$TOTAL"
 
+    # ─── Phase 15 D-17 telemetry (BEFORE spawn, not after) ──────────────
+    # Emit `review.haiku_scanner_spawned` IMMEDIATELY before Agent() so the
+    # event survives Agent failure / run abort. Validator
+    # verify-haiku-spawn-fired.py (Phase 15 T3.11) reads this in events.db
+    # to confirm step 2b-2 actually fired for UI-profile phases. Without
+    # this, a non-deterministic spawn failure could leave the validator
+    # unable to distinguish "spawn never attempted" from "spawn attempted
+    # but Agent crashed". Order matters: emit BEFORE Agent call.
+    #
+    # Parallel mode: emit per-spawn in a serial bash loop, THEN batch all
+    # Agent() calls in one tool_use block. Sequential mode: emit
+    # immediately before each Agent() call individually.
+    Bash:
+      ${PYTHON_BIN} .claude/scripts/vg-orchestrator emit-event \
+        "review.haiku_scanner_spawned" \
+        --step "2b-2" --actor "orchestrator" --outcome "INFO" \
+        --payload "$(printf '{"view":"%s","role":"%s","idx":%d,"total":%d,"spawn_mode":"%s"}' \
+          "{view.url}" "{role}" "$IDX" "$TOTAL" "$SPAWN_MODE")" \
+        2>/dev/null || true
+
     Agent(
       model="haiku",
       description="[{IDX}/{TOTAL}] {ROLE}@{view.url} — verify {N} goals: {G-XX,G-YY,...}"
