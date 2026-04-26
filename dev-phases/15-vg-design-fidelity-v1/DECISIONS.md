@@ -7,14 +7,34 @@ Decisions extracted from `/vg:scope` draft chat session (2026-04-26 → 2026-04-
 ## D-01: Design source-of-truth extractor (4 format coverage)
 
 **Category:** technical / infra
-**Decision:** Extract HTML / PNG (Phase A) + Pencil/Penboard via PenBoard MCP (Phase B) → emit per slug:
-- `.planning/design-normalized/refs/{slug}.structural.json` — DOM-AST tree (HTML cheerio AST → tag/class/role/text/order); element box-list (x/y/w/h/style/text) cho Pencil/Penboard XML; OCR + region detection cho PNG-only (opencv-wasm + tesseract.js)
-- `.planning/design-normalized/screenshots/{slug}.{state}.png` — pin per state (default/hover/loading/error)
-- `.planning/design-normalized/refs/{slug}.interactions.md` — handler map click/hover/keyboard
+**Decision:** Extract 4 format → emit per slug:
+- `.planning/design-normalized/refs/{slug}.structural.json` — structured tree:
+  - **HTML** → cheerio AST (tag/class/role/text/order)
+  - **PNG** → OCR + region detection (opencv-wasm + tesseract.js)
+  - **Pencil (.pen)** → element box-list (x/y/w/h/style/text) qua **Pencil MCP** `mcp__pencil__batch_get` + `mcp__pencil__export_nodes` + `mcp__pencil__get_editor_state` (file `.pen` ENCRYPTED, **chỉ đọc qua MCP**, Read/Grep fail)
+  - **Penboard** → flow/page tree qua **Penboard MCP** `mcp__penboard__read_flow` + `mcp__penboard__read_doc` + `mcp__penboard__list_flows` + `mcp__penboard__get_project_context` + `mcp__penboard__manage_entities`
+- `.planning/design-normalized/screenshots/{slug}.{state}.png` — pin per state (default/hover/loading/error). Pencil dùng `mcp__pencil__get_screenshot`; Penboard dùng `mcp__penboard__generate_preview`.
+- `.planning/design-normalized/refs/{slug}.interactions.md` — handler map click/hover/keyboard. Penboard có `mcp__penboard__manage_connections` (data binding) — extractor đọc luôn.
 
 **Rationale:** Phase 7.14.3 dùng `Read first: campaigns.html` prose link → AI tự diễn giải, output drift nhiều. Reference structured (AST level) cho phép machine compare node-by-node.
 
-**Phase split:** Phase A ship HTML + PNG (cover 90% project). Phase B wire PenBoard MCP server (24 tools available tại `D:\Workspace\Messi\Code\PenBoard\dist\mcp-server.cjs`) — không tự viết Pencil parser.
+**Pencil vs Penboard — 2 MCP RIÊNG BIỆT (không gộp):**
+| Aspect | Pencil MCP (`mcp__pencil__*`) | Penboard MCP (`mcp__penboard__*`) |
+|---|---|---|
+| Tool count | 13 | ~43 |
+| File format | `.pen` (encrypted, MCP-only access) | `.penboard` / project workspace |
+| Domain | Static design mockup, web/mobile UI gen | Workflow/flow design, data binding, multi-page project |
+| Key tools | `get_editor_state`, `open_document`, `batch_get`, `batch_design`, `get_screenshot`, `export_nodes`, `get_guidelines`, `snapshot_layout` | `read_doc`/`write_doc`, `read_flow`/`write_flow`, `list_flows`, `manage_entities`, `manage_connections`, `manage_data_binding`, `design_skeleton`/`design_content`/`design_refine`, `generate_preview`, `import_svg`, `export_workflow`, `set_themes` |
+| Server location | (đã connect, command qua harness) | `D:\Workspace\Messi\Code\PenBoard\dist\mcp-server.cjs` |
+| Connect status | ✅ Confirmed connect được session này | ✅ Compiled, ready |
+
+Extractor router: detect file ext → route MCP tương ứng (`.pen` → Pencil; `.penboard`/`.flow` hoặc project có `penboard.config` → Penboard).
+
+**Phase split:**
+- Phase A ship HTML + PNG (cover 90% project)
+- Phase B wire **cả 2 MCP** (Pencil + Penboard) — không tự viết parser cho format nào, mọi extraction đều qua MCP. `vg.config.md` thêm 2 entry độc lập:
+  - `mcp.servers.pencil.command`
+  - `mcp.servers.penboard.command`
 
 ---
 
@@ -82,8 +102,11 @@ Decisions extracted from `/vg:scope` draft chat session (2026-04-26 → 2026-04-
 ## D-08: Design fidelity threshold per profile
 
 **Category:** config
-**Decision:** `design_fidelity.thresholds: { prototype: 0.7, production: 0.95, default: 0.9 }` trong `vg.config.md`. Phase scope khai báo profile (`design_fidelity.profile: prototype | production | default`). Validator đọc profile → apply threshold tương ứng.
-**Rationale:** Cứng 90% cho mọi case là sai — prototype phase chấp nhận lệch nhiều (UX iteration), production phase khoá chặt.
+**Decision:** `design_fidelity.thresholds: { prototype: 0.7, default: 0.85, production: 0.95 }` trong `vg.config.md`. Phase scope khai báo profile (`design_fidelity.profile: prototype | default | production`). Validator đọc profile → apply threshold tương ứng. Phase scope không khai báo profile → fallback `default` (0.85) + warning emit vào CONTEXT.md log (encourage explicit declaration nhưng không hard-block).
+
+**Updated 2026-04-27 (open Q resolved):** Default ban đầu draft 0.9 — đánh giá lại quá gần production (0.95, gap chỉ 5%), khiến 2 profile dày đặc không có "middle ground" thực. Hạ xuống **0.85** — equidistant giữa prototype (0.7) và production (0.95), 15% gap mỗi bên. Phase mid-prototype-mid-production (đa số case real-world) sẽ ít false-fail hơn mà vẫn đủ strict catch drift thật (texture/spacing/font lệch >15% là drift đáng quan tâm, không phải iteration noise).
+
+**Rationale:** Cứng 90% cho mọi case là sai — prototype phase chấp nhận lệch nhiều (UX iteration), production phase khoá chặt. 3 profile cover phổ rộng + override inline (`design_fidelity.threshold_override: 0.88`) cho edge case không match preset.
 
 ---
 
@@ -102,11 +125,35 @@ Decisions extracted from `/vg:scope` draft chat session (2026-04-26 → 2026-04-
 
 ---
 
-## D-11: 1 phase chung shape (split A/B)
+## D-11: 1 phase chung shape (Phase A FULL — không split B nữa)
 
 **Category:** scope
-**Decision:** Phase 15 (Phase A) ship HTML + PNG extractor + UAT narrative + filter rigor + review Haiku fix. Phase 16 (Phase B, future) ship Pencil/Penboard MCP integration + threshold tune. Shared infra: slug registry + 4-format extractor + design-ref enforcement.
-**Rationale:** Battle-test Phase A trên FE phase tiếp theo (vd 7.14.4 nếu user roadmap cho phép) → data drive Phase B threshold + format priority.
+**Decision:** Phase 15 (Phase A) ship **TẤT CẢ 4 format extractor** (HTML + PNG + Pencil MCP + Penboard MCP) + UAT narrative + filter rigor + review Haiku fix. **Không hidden behind feature flag** — wire mặc định, auto-route theo file ext. Phase 16 (Phase B, future) chỉ ship threshold tune từ battle-test data + edge case fix sau khi Phase A chạy production.
+
+**Updated 2026-04-27 (open Q resolved):** User chốt "có ship luôn trong A" — không chia nhỏ Pencil/Penboard sang Phase B. Lý do support quyết định:
+- Pencil MCP đã connect được trong vgflow-repo session (`/mcp` confirmed) → smoke-test ngay được, không phải chờ
+- Penboard MCP đã compile xong (`D:\Workspace\Messi\Code\PenBoard\dist\mcp-server.cjs`) → wire path rõ ràng
+- Tách 4 extractor router làm 2 phase tăng integration risk (Phase A test với 2 format → Phase B thêm 2 → router refactor lần 2)
+- Memory `feedback_ai_discipline_validator`: rule có thể auto-detect → hard-block, không warn-only. Hidden flag = warn-only path → vi phạm.
+
+**Phase A scope mới (FULL):**
+- HTML extractor (cheerio AST)
+- PNG extractor (OCR + region detection)
+- Pencil MCP extractor (`mcp__pencil__batch_get` + `export_nodes` + `get_screenshot` + `get_editor_state`)
+- Penboard MCP extractor (`mcp__penboard__read_flow` + `read_doc` + `list_flows` + `generate_preview` + `manage_connections`)
+- Extractor router (file ext detect → route MCP)
+- UAT narrative auto-fire (D-10) + strings policy (D-18)
+- Filter + Pagination Test Rigor Pack (D-16)
+- Review wide-see Haiku spawn fix (D-17)
+
+**ETA Phase A revision:** 7-8 ngày → **9-11 ngày** (thêm ~2-3 ngày cho 2 MCP wire + integration test).
+
+**Phase B scope (giảm scope, defer hơn):**
+- Threshold tune từ battle-test data (cần ≥2 phase chạy thật để có data)
+- Edge case fix MCP integration (deadlock, timeout, MCP server down handling)
+- Cross-format diff (vd phase có cả `.pen` và `.penboard` — merge tree thế nào)
+
+**Rationale:** Battle-test Phase A trên FE phase tiếp theo (vd 7.14.4 nếu user roadmap cho phép) → data drive Phase B threshold tune. Pencil và Penboard wire riêng vì 2 MCP server khác nhau (xem D-01 bảng so sánh) — config keys, validator, và extractor route đều phải tách.
 
 ---
 
@@ -202,20 +249,48 @@ Total runtime 53s — không thể tới 2b-2 (skill nói 30+ min). 0 spawn even
 
 ---
 
+## D-18: UAT narrative strings — strict reuse `narration-strings.yaml` (no template hardcode)
+
+**Category:** UAT i18n / discipline
+**Decision:** UAT narrative template (sinh bởi step `4b_build_uat_narrative` per D-10) **TUYỆT ĐỐI KHÔNG hardcode** strings (label, instruction, error message, prompt question) trực tiếp trong template body. Mọi string phải reference qua key vào `narration-strings.yaml` (đã có ở phase test infra). Validator `verify-uat-strings-no-hardcode.py` BLOCK nếu template chứa literal string ngoài interpolation `{{string_key}}`.
+
+**Locked 2026-04-27 (open Q resolved):** User chốt "nên UAT, cần chặt chẽ mà". UAT là gate quality cuối cùng trước accept — strings ở đây phải:
+1. **i18n-ready từ ngày 1** — không patch sau (`narration.locale: vi|en` đã chốt D-13 auto-wire)
+2. **Reuse và central** — string xuất hiện nhiều UAT prompt phải sửa 1 chỗ (yaml), không scatter qua template
+3. **Validator-friendly** — yaml schema lock cho phép validate completeness (mọi key reference được phải tồn tại trong yaml)
+
+**Implementation:**
+- Template UAT narrative dùng syntax `{{narration.uat.entry_prefix}}`, `{{narration.uat.navigation_label}}`, `{{narration.uat.precondition_label}}`, `{{narration.uat.expected_label}}`, `{{narration.uat.prompt_pfs}}` v.v.
+- `narration-strings.yaml` thêm namespace `uat:` chứa toàn bộ key UAT prompt cần.
+- Validator 2 chiều:
+  - **Forward:** mọi key referenced trong template phải tồn tại trong yaml (BLOCK nếu thiếu)
+  - **Backward:** mọi literal string không phải interpolation/markdown structure trong UAT template → BLOCK (regex catch ngôn ngữ tự nhiên Vietnamese/English ngoài `{{...}}`)
+- Lint chạy ở `/vg:accept` step `4b` trước khi emit `UAT-NARRATIVE.md`.
+
+**Edge case:**
+- Variable từ data source (URL, role, account, navigation path từ D-06 source) — interpolate qua `{{var.entry_url}}`, `{{var.role}}` v.v. Đây là DATA, không phải UI string → exempt khỏi yaml requirement.
+- Decision title (D-XX rationale) — extract từ CONTEXT.md trực tiếp, không hardcode trong template (đây cũng là DATA).
+
+**Rationale:** Memory `feedback_skill_command_language` + `feedback_ai_discipline_validator` — UAT là discipline gate cuối, không thể có lỏng lẻo. Hardcode string trong template = i18n broken + maintenance debt + drift giữa các UAT prompt cùng phase. Validator BLOCK = enforce ngay từ blueprint, không warn-only.
+
+---
+
 ## Cross-decision dependencies
 
 ```
-D-01 (extractor) ─┬─ D-02 (design-ref hard) ─── D-12a (executor inject)
-                 ├─ D-03 (per-wave drift) ─── D-12b
-                 └─ D-15 (schema lock) ─── D-12 (5-part)
-D-04/D-09 (i18n) ─── D-12e (holistic gate text-node diff)
-D-05/D-06/D-07 (UAT 4-field) ─── D-10 (auto-fire)
-D-08 (threshold per profile) ─── D-03/D-12e (used by both gates)
-D-11 (phase split) ─── boundary Phase A vs Phase B
-D-13 (auto-wire) ─── glue all gates into pipeline
-D-14 (Haiku subtree) ─── D-12a optimization
-D-16 (filter rigor) ─── independent, codegen extension
+D-01 (extractor 4 format)─┬─ D-02 (design-ref hard) ─── D-12a (executor inject)
+                          ├─ D-03 (per-wave drift) ─── D-12b
+                          └─ D-15 (schema lock) ─── D-12 (5-part)
+D-04/D-09 (i18n)          ─── D-12e (holistic gate text-node diff)
+D-05/D-06/D-07 (UAT 4-field) ─┬─ D-10 (auto-fire timing)
+                              └─ D-18 (strings policy via narration-strings.yaml)
+D-08 (threshold per profile, default 0.85) ─── D-03/D-12e (used by both gates)
+D-11 (Phase A FULL — Pencil+Penboard ship A) ─── boundary Phase A vs Phase B (B = threshold tune from data)
+D-13 (auto-wire pipeline) ─── glue all gates into pipeline
+D-14 (Haiku subtree)      ─── D-12a optimization
+D-16 (filter rigor)       ─── independent, codegen extension
 D-17 (Haiku spawn mandate) ─── independent, regression fix
+D-18 (UAT strings strict) ─── D-10 implementation discipline
 ```
 
 ---

@@ -6,9 +6,9 @@
 > - **RTB project** (`/d/Workspace/Messi/Code/RTB/`) — dogfood test, sync ngược về để verify gate behavior
 
 **Phase ID:** 15-vg-design-fidelity-v1
-**Status:** Phase added to RTB ROADMAP (commit `249c7dfe`), SPECS not yet written
-**Locked decisions:** 17 (D-01..D-17)
-**Estimated dev time:** 7-8 ngày (Phase A); Phase B 3-4 ngày (post-battle-test)
+**Status:** Phase scoped in vgflow-repo dev-phases only (RTB ROADMAP entry reverted in RTB commit `a6036f1f` — Phase 15 is VG workflow infra, not RTB product feature; tracked here exclusively for separation of concerns). SPECS not yet written. **3 open questions đã chốt 2026-04-27** (Pencil/Penboard ship Phase A FULL, threshold default = 0.85, UAT strings reuse `narration-strings.yaml` strict).
+**Locked decisions:** 18 (D-01..D-18)
+**Estimated dev time:** 9-11 ngày Phase A (revised từ 7-8 ngày — thêm wire 2 MCP); Phase B 2-3 ngày post-battle-test threshold tune
 
 ---
 
@@ -16,7 +16,7 @@
 
 Tighten 4 weak spots trong VG harness mà Phase 7.14.3 RTB phơi bày:
 
-1. **Visual fidelity gate** — khi project có HTML/PNG/Pencil/Penboard mẫu, AI build ra UI lệch nhiều (ảnh thật vs mẫu khác sidebar labels, topbar balance, table format, font, layout spacing, translation tự ý "Campaigns"→"Chiến dịch"). Root cause: reference dạng prose link "Read first: campaigns.html" cho AI tự diễn giải; UI-MAP.md được sinh nhưng không inject vào executor prompt; drift check chỉ chạy phase-end ≤2% pixel khi code đã commit. **Fix:** structural extractor (HTML cheerio + PNG OCR + Pencil/Penboard MCP) → `.planning/design-normalized/refs/{slug}.structural.json` + screenshots + interactions.md; design-ref hard-required (R4 MED → CRITICAL); per-wave structural diff scoped subtree (option C — chỉ check trong scope wave declare touch để tránh false alarm cross-subtree); holistic phase-end gate riêng để catch container drift; UI-MAP schema lock 5-field-per-node.
+1. **Visual fidelity gate** — khi project có HTML/PNG/Pencil/Penboard mẫu, AI build ra UI lệch nhiều (ảnh thật vs mẫu khác sidebar labels, topbar balance, table format, font, layout spacing, translation tự ý "Campaigns"→"Chiến dịch"). Root cause: reference dạng prose link "Read first: campaigns.html" cho AI tự diễn giải; UI-MAP.md được sinh nhưng không inject vào executor prompt; drift check chỉ chạy phase-end ≤2% pixel khi code đã commit. **Fix:** structural extractor (HTML cheerio + PNG OCR + Pencil MCP + Penboard MCP — **2 MCP riêng biệt, tool set khác nhau**) → `.planning/design-normalized/refs/{slug}.structural.json` + screenshots + interactions.md; design-ref hard-required (R4 MED → CRITICAL); per-wave structural diff scoped subtree (option C — chỉ check trong scope wave declare touch để tránh false alarm cross-subtree); holistic phase-end gate riêng để catch container drift; UI-MAP schema lock 5-field-per-node.
 
 2. **UAT narrative** — Step `5_interactive_uat` sinh prompt 1 dòng "Decision D-04: Inline editable inputs — Was this implemented? [p/f/s]" — không có URL, role, login account, navigation path, precondition data state, expected behavior. Dev/tester mất phương hướng phải hỏi lại. **Fix:** new step `4b_build_uat_narrative` auto-fire trong accept (no manual command), generate `UAT-NARRATIVE.md` map mỗi D-XX/G-XX/design-ref → 4 field (entry URL+role+account, navigation, precondition, expected). Source: port-role mapping từ config.environments.local + accounts.json seed + TEST-GOALS interactive_controls.entry_path. Ngôn ngữ theo `narration.locale` (vi/en).
 
@@ -29,7 +29,7 @@ Tighten 4 weak spots trong VG harness mà Phase 7.14.3 RTB phơi bày:
 ## How to start work in this session
 
 1. Read this HANDOFF.md (done).
-2. Read `DECISIONS.md` — full 17 decisions với rationale + acceptance criteria per decision.
+2. Read `DECISIONS.md` — full 18 decisions với rationale + acceptance criteria per decision.
 3. Read `CHAT-HISTORY-SUMMARY.md` — timeline of decisions với why-because reasoning.
 4. Read `ROADMAP-ENTRY.md` — block ROADMAP RTB cho phase này.
 5. Decide entry point:
@@ -80,17 +80,31 @@ Hoặc dry-run check delta: `./sync.sh --check`
 - Pronoun "tôi - bạn", không "em" tự xưng (memory rule `feedback_pronoun_toi_ban`).
 - Mọi rule có gate validator được — phải BLOCK, không warn-only (memory rule `feedback_ai_discipline_validator`).
 
-**Non-goals (Phase A — push to Phase B):**
-- Pencil/Penboard MCP integration: `D:\Workspace\Messi\Code\PenBoard` (dist/mcp-server.cjs compiled, 24 tools available). Phase B v2 sẽ wire `mcp.servers.penboard.command` vào vg.config.md.
-- Threshold tune from production data (Phase B sau khi có battle-test data từ Phase A).
+**Phase A scope (FULL — chốt 2026-04-27):**
+- HTML extractor (cheerio AST)
+- PNG extractor (OCR + region detection — opencv-wasm + tesseract.js)
+- **Pencil MCP extractor** (`mcp__pencil__*` — 13 tools: `get_editor_state`, `open_document`, `batch_get`, `batch_design`, `get_screenshot`, `export_nodes`, `get_guidelines`, `snapshot_layout` v.v.). File `.pen` ENCRYPTED — **bắt buộc qua MCP, Read/Grep fail**. Đã connect OK trong session này (`/mcp` confirmed).
+- **Penboard MCP extractor** (`mcp__penboard__*` — ~43 tools: `read_doc`/`write_doc`, `read_flow`/`write_flow`, `list_flows`, `manage_entities`, `manage_connections`, `manage_data_binding`, `design_skeleton`/`design_content`/`design_refine`, `generate_preview`, `import_svg`, `export_workflow`, `set_themes` v.v.). Source: `D:\Workspace\Messi\Code\PenBoard\dist\mcp-server.cjs`.
+- Extractor router: detect file ext → route MCP tương ứng (`.pen` → Pencil; `.penboard`/`.flow`/project có `penboard.config` → Penboard).
+- 2 MCP server **wire RIÊNG BIỆT** trong `vg.config.md`: `mcp.servers.pencil.*` + `mcp.servers.penboard.*`. Không gộp 1 entry.
+- Toàn bộ feature D-02..D-18 ship Phase A.
+
+**Non-goals (Phase B — defer mỏng):**
+- Threshold tune from production data (cần ≥2 phase battle-test data trước khi tune).
+- Edge case fix MCP integration (deadlock, timeout, MCP server down handling).
+- Cross-format diff (phase có cả `.pen` và `.penboard` — merge tree thế nào).
 
 ---
 
-## Open questions (chưa lock — surface trong /vg:scope round 1)
+## Open questions — RESOLVED 2026-04-27
 
-- Phase A có ship Pencil/Penboard support **hidden behind feature flag** ngay không, hay hoàn toàn defer Phase B? User đã nói "phải làm full" nhưng Phase B split độc lập sau.
-- Threshold default 0.9 có conservative quá cho prototype phase không? Có thể profile-aware default đã cover (prototype 0.7).
-- UAT narrative ngôn ngữ — đã chốt theo `narration.locale`, nhưng strings có hardcode trong template không? Phải reuse `narration-strings.yaml`.
+✅ **Q1 (Pencil/Penboard ship Phase A?)** → CÓ, ship FULL trong Phase A, không hidden flag, không defer. Lý do: Pencil MCP đã connect OK + Penboard MCP đã compile, tách 2 phase tăng integration risk + vi phạm rule "không warn-only" (D-11 updated).
+
+✅ **Q2 (Threshold default 0.9 quá conservative?)** → Hạ default xuống **0.85** (3 profile: prototype 0.7, default 0.85, production 0.95). Lý do: 0.9 quá gần production 0.95 (gap 5%, dày đặc). 0.85 equidistant từ prototype/production (15% gap mỗi bên), middle phase ít false-fail (D-08 updated).
+
+✅ **Q3 (UAT strings hardcode trong template?)** → KHÔNG hardcode, phải reuse `narration-strings.yaml` strict. Validator BLOCK literal string ngoài interpolation `{{key}}`. Lý do: UAT là gate quality cuối cùng, cần discipline cao nhất (D-18 mới, lock).
+
+**No open questions remaining cho Phase A scope.**
 
 ---
 
