@@ -22,7 +22,7 @@ Tighten 4 weak spots trong VG harness mà Phase 7.14.3 RTB phơi bày:
 
 3. **Filter + Pagination test rigor** — Phase 7.14.3 bug B5 (filter no-data) + B6 (pagination envelope drift `meta.total` undefined → totalPages=0). **Fix:** Filter Test Rigor Pack 4 layer × 18 case per filter type — coverage (cardinality enumeration + pairwise combinatorial + boundary + empty), stress (toggle storm + spam click debounce + in-flight cancellation), state integrity (filter+sort+pagination + URL sync + cross-route persistence), edge (XSS sanitize + empty result + 500 error). Pagination subgroup (vì pagination là filter có URL sync): navigation correctness + URL/state sync + envelope contract verify (fix B6) + display correctness + stress + edge. Validator `verify-filter-test-coverage.py` BLOCK nếu test count < ma trận expected. Codegen extension trong `vg-codegen-interactive` skill.
 
-4. **Review wide-see Haiku spawn regression** — Skill body line 2183 ghi rõ "**You MUST spawn Haiku agents in step 2b-2**" nhưng recent run /vg:review 7.14.3 abort sau 53 giây (skill ghi "30+ min" cho 5-20 scanner) — chưa tới step 2b-2. Effect: VIEW-MAP exhaustive không được tạo, bug ngoài goals scope không catch. **Fix:** validator `verify-haiku-spawn-fired.py` ở review run-complete BLOCK nếu phase UI profile + 0 spawn event. Telemetry `review.haiku_scanner_spawned` emit ngay trước Task tool call. Output `VIEW-MAP.md` exhaustive + `BUG-REPORT-OUTSIDE-GOALS.md`. Investigation: tại sao 7.14.3 review abort 53s — có thể contract gate fire quá sớm, hoặc phantom hook entry-pattern, hoặc profile detection sai.
+4. **Review wide-see Haiku spawn — phantom-run diagnosis (corrected 2026-04-27)** — Initial hypothesis (53s abort = scanner spawn failure) **was wrong**. `INVESTIGATION-D17.md` traces the abort to a *phantom run started by hook during /vg:learn invocation* — args:"" + 0 step.marked + manual abort within 60s. The v2.8.6 hotfix (commit `411a278`, 2026-04-26 22:22) landed 4 hours AFTER the phantom event and already addressed the entry-pattern hook bug; no scanner regression existed. **Real fix shipped:** (a) `verify-haiku-spawn-fired.py` validator (T3.11) is *phantom-aware* — ignores runs matching the D-17 signature so future hook noise can't false-positive the gate; (b) `review.haiku_scanner_spawned` telemetry emit moved to BEFORE the Agent() call (Wave 9 commit `4edbaa2`) so spawn audit survives even if the Agent crashes mid-spawn. No source-code regression to revert; what was missing was *evidence-of-firing*, which the new emit + validator pair now provide.
 
 ---
 
@@ -33,8 +33,8 @@ Tighten 4 weak spots trong VG harness mà Phase 7.14.3 RTB phơi bày:
 3. Read `CHAT-HISTORY-SUMMARY.md` — timeline of decisions với why-because reasoning.
 4. Read `ROADMAP-ENTRY.md` — block ROADMAP RTB cho phase này.
 5. Decide entry point:
-   - **Path A — write SPECS first** (recommended): từ DECISIONS.md tổng hợp SPECS.md draft → user review → emit `.vg/phases/15-vg-design-fidelity-v1/SPECS.md` ở RTB project (sync sang vgflow-repo qua sync.sh).
-   - **Path B — start blueprint draft**: nếu user pick build-first mode, generate task breakdown 17 decisions → 30-40 task batches.
+   - **Path A — write SPECS first** (recommended): từ DECISIONS.md tổng hợp `SPECS.md` draft trong cùng folder này (`dev-phases/15-vg-design-fidelity-v1/SPECS.md`) → user review → lock. **Implementation code** (skills, validators, scripts) edit ở RTB `.claude/...` per source-of-truth pattern → sync về vgflow-repo distribute mirror qua `./sync.sh`. SPECS planning doc KHÔNG sync (vgflow-repo dev-phases/ là meta workspace, không mirror).
+   - **Path B — start blueprint draft**: nếu user pick build-first mode, generate task breakdown 18 decisions → 30-40 task batches.
    - **Path C — investigate review regression first** (D-17 unblock): tại sao /vg:review abort 53s — có thể là blocker cho test infra, fix trước.
 
 ---
@@ -42,33 +42,41 @@ Tighten 4 weak spots trong VG harness mà Phase 7.14.3 RTB phơi bày:
 ## Files trong working folder này
 
 - `HANDOFF.md` — bạn đang đọc, overview
-- `DECISIONS.md` — full 17 decisions detail (D-01..D-17)
-- `ROADMAP-ENTRY.md` — block từ RTB `.vg/ROADMAP.md` line ~759-810
+- `DECISIONS.md` — full 18 decisions detail (D-01..D-18)
+- `ROADMAP-ENTRY.md` — **historical reference** (block draft cho RTB `.vg/ROADMAP.md`, đã revert ở RTB commit `a6036f1f` — Phase 15 tách khỏi RTB roadmap, giờ là vgflow-repo infra phase exclusively). Giữ file để trace decision lịch sử.
 - `CHAT-HISTORY-SUMMARY.md` — timeline + reasoning
 - `README.md` — dogfood pattern explained (vgflow-repo ↔ RTB)
+- `SPECS.md` — (sẽ tạo Path A) executable specification per-decision implementation contract
 
 ---
 
-## Workflow đồng bộ vgflow-repo ↔ RTB project
+## Workflow đồng bộ vgflow-repo (source) ↔ RTB project (test target)
 
-**Source of truth:**
-- `.claude/commands/vg/*.md` — skill bodies, edit ở RTB
-- `.claude/scripts/validators/*.py` — validators, edit ở RTB
-- `.claude/scripts/vg-orchestrator/` — orchestrator code, edit ở RTB
+**Corrected 2026-04-27:** Phase 15 = VG workflow infra → **edit ở vgflow-repo top-level**. RTB là project tham chiếu (dogfood test downstream consumer), không phải source. Sync.sh comment cũ "edit tại .claude/commands/vg/" đã misleading — vgflow-repo không có `.claude/` folder.
 
-**Mirror (read-only output):**
-- `vgflow-repo/commands/vg/*.md`, `skills/`, `scripts/` — bản distribute
+**Source of truth (edit ở đây):**
+- `vgflow-repo/commands/vg/*.md` — skill bodies
+- `vgflow-repo/scripts/*.py` `*.mjs` `*.js` — orchestrator + extractor + helper scripts
+- `vgflow-repo/scripts/validators/*.py` — validators
+- `vgflow-repo/schemas/*.json` — JSON Schema draft-07 contracts
+- `vgflow-repo/commands/vg/_shared/narration-strings.yaml` — i18n strings
+- `vgflow-repo/skills/` — skill bodies (dist tree)
+
+**Distribute targets (sync.sh writes):**
+- `RTB/.claude/commands/vg/`, `.claude/scripts/`, `.claude/schemas/` — installation copy
 - `~/.codex/skills/` — global Codex CLI deploy
 
 **Sync command** (run từ vgflow-repo dir):
 ```bash
-DEV_ROOT="/d/Workspace/Messi/Code/RTB" ./sync.sh
+DEV_ROOT="/d/Workspace/Messi/Code/RTB" ./sync.sh           # full sync source → mirror → installations
+./sync.sh --check                                           # dry-run delta
+./sync.sh --no-source                                       # skip source→mirror (rare; only if editing mirror directly)
+./sync.sh --no-global                                       # skip ~/.codex/ deploy
 ```
-Hoặc dry-run check delta: `./sync.sh --check`
 
-**Inverse direction (vgflow-repo → RTB):** chưa có script tự động. Để bring vgflow-repo changes về RTB, edit `.claude/commands/vg/<file>.md` trực tiếp (manual diff hoặc copy-paste).
-
-**Gotcha:** `.vg/phases/` chỉ tồn tại ở RTB (project state). vgflow-repo có `dev-phases/` riêng cho meta phase work — không sync giữa hai.
+**Gotcha:**
+- `.vg/phases/` chỉ tồn tại ở RTB (project state, ephemeral). vgflow-repo có `dev-phases/` riêng cho meta phase work — không sync giữa hai.
+- After Phase 15 wave commit ở vgflow-repo, run `./sync.sh` để dogfood test ở RTB.
 
 ---
 
