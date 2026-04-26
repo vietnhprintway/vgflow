@@ -407,15 +407,18 @@ design_assets:
     # - "D:/Workspace/Messi/Code/PenBoard/demo-app.pb"  # PenBoard cross-project ref
   # Per-format handler (auto-detected by extension, override here if needed)
   handlers:
-    html: playwright_render     # Playwright headless → PNG + cleaned HTML
+    html: playwright_render     # Playwright headless → PNG + cleaned HTML + cheerio AST (Phase 15 D-01)
     htm:  playwright_render
-    png:  passthrough           # direct copy
+    png:  passthrough           # default: copy (photo screenshots). For mockups, use *.structural.png to trigger OCR pipeline (Phase 15 D-01)
     jpg:  passthrough
     jpeg: passthrough
     webp: passthrough
     fig:  figma_fallback        # MCP if available, else user export manually
-    pb:   penboard_render       # PenBoard headless render via Electron/CanvasKit
-    xml:  pencil_xml            # Pencil CLI export (fallback skip)
+    pb:   penboard_render       # PenBoard JSON file legacy parser
+    penboard: penboard_mcp      # PenBoard live workspace via mcp__penboard__* (Phase 15 D-01)
+    flow: penboard_mcp          # PenBoard flow file via MCP
+    xml:  pencil_xml            # Pencil XML legacy parser
+    pen:  pencil_mcp            # Pencil .pen (encrypted) via mcp__pencil__* (Phase 15 D-01)
   # Capture interactive states (click triggers → modal/hover screenshots)
   render_states: true
   # Output directory (per-project)
@@ -423,6 +426,36 @@ design_assets:
   # Haiku scanner tuning (see /vg:design-extract)
   max_parallel_haiku: 5
   normalizer_timeout_sec: 60
+
+# === MCP Servers (Phase 15 D-01) ===
+# Pencil and Penboard are 2 separate MCP servers — wire each independently.
+# Pencil: 13 tools, .pen files (ENCRYPTED, MCP-only access).
+# Penboard: ~43 tools, workflow/flow/multi-page projects.
+mcp_servers:
+  pencil:
+    enabled: false                          # set true once project has .pen design sources
+    tools_namespace: "mcp__pencil__"        # all tools start with this prefix
+    timeout_sec: 30                         # per-tool timeout
+    # command: <harness-resolved>           # MCP command resolved by Claude Code harness
+  penboard:
+    enabled: false                          # set true once project has .penboard/.flow sources
+    command: "node D:/Workspace/Messi/Code/PenBoard/dist/mcp-server.cjs"
+    tools_namespace: "mcp__penboard__"
+    timeout_sec: 30
+
+# === Design Fidelity Profiles (Phase 15 D-08) ===
+# Profile-aware drift threshold. Used by verify-wave-drift.py (D-03/D-12b)
+# + verify-holistic-drift.py (D-12e). Phase scope declares profile in
+# CONTEXT.md frontmatter `design_fidelity.profile`. Missing → fallback `default`
+# with warning. Inline override allowed via `design_fidelity.threshold_override`.
+design_fidelity:
+  thresholds:
+    prototype: 0.70                         # UX iteration; tolerate large drift
+    default: 0.85                           # mid-prototype-mid-production (most cases)
+    production: 0.95                        # locked, strict
+  default_profile: "default"                # fallback if phase scope doesn't declare
+  threshold_override_allowed: true          # phase scope may set numeric override
+  emit_warning_on_default_fallback: true    # emit "scope.design_pipeline.profile_defaulted" event
 
 # === Test Strategy (v1.9.1 R1 — surface-driven test taxonomy) ===
 # Routes each TEST-GOALS goal to a runner based on `surface:`.
