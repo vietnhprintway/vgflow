@@ -1,5 +1,106 @@
 # Changelog
 
+## v2.9.0 (2026-04-27) — v2.7 Phase A/B/D/E ship + v2.8.6 hotfix bundle
+
+Minor release bundling 4 v2.7 hardening phases (runtime probe, codegen
+interactive_controls, orphan triage, artifact JSON schemas) plus the
+v2.8.6 hotfix triplet (entry-hook paste-back, argparse prefix-match,
+test pollution). Closes the v2.7 hardening epic. Also resolves the
+long-stale `VGFLOW-VERSION` file (last bumped at v2.5.2.10) — now
+synchronized with `VERSION` going forward.
+
+### v2.7 Phase A — Runtime probe URL state validator
+
+New validator `verify-url-state-runtime.py` reads `${PHASE_DIR}/url-runtime-probe.json`,
+validates declared `url_param` in `url_params_after`. WARN on coverage gap,
+BLOCK on declaration drift. Wired into `/vg:review` step `phase2_8_url_state_runtime`
+(profile-gated: `web-fullstack`, `web-frontend-only`).
+
+### v2.7 Phase B — Codegen interactive_controls skill + output validator
+
+New skill `vg-codegen-interactive` (model: sonnet, user-invocable: false)
+generates Playwright `.spec.ts` for `interactive_controls` goals with
+deterministic test count formula per filter/sort/pagination declaration.
+Reference template `interactive-helpers.template.ts` (~280 LOC) provides
+DSL evaluator (`expectAssertion` with 5 grammar forms: `===`, `includes`,
+`in`, `monotonic`, `length<=`).
+
+Validator `verify-codegen-output.py` runs 9 checks: AUTO-GENERATED header,
+helper imports, no raw `locator()`, deterministic count, no `networkidle`,
+no `page.evaluate()` (warn), ROUTE match, DSL grammar conformance, file
+naming. Wired into `/vg:test` step `5d_codegen` (BLOCK on violation).
+
+### v2.7 Phase D — Orphan validator triage orchestrator
+
+`_orphans.py` orchestrator with 3 subcommands (`orphans-list`, `orphans-collect`,
+`orphans-apply`) for 3-agent partition triage. Canonicalizes IDs across
+script-glob, registry, and dispatch sources via `_canonical_id()` (strips
+`verify-`/`validate-` prefix). `_resolve_script_path()` tolerates both
+naming conventions (`verify-foo.py` and `foo.py`).
+
+Pre-shipped fix: glob changed from `verify-*.py` to `*.py` with non-validator
+blocklist (`audit-rule-cards`, `edit-rule-cards`, etc.) — catches bare-stem
+files like `acceptance-reconciliation.py` that the old pattern missed.
+
+### v2.7 Phase E — Artifact JSON schemas + write-time validator
+
+7 schemas in `.claude/schemas/{specs,context,plan,test-goals,summary,uat,interactive-controls}.v1.json`
+(JSON Schema draft-07, `$id: https://vgflow.dev/schemas/{name}.v1.json`).
+Strict frontmatter, lenient body H2 regex.
+
+Single validator `verify-artifact-schema.py` (~340 LOC) handles 6 artifact
+types via hand-rolled minimal JSON Schema walker — no external schema lib.
+Supports `VG_SCHEMA_GRANDFATHER_BEFORE` env var for legacy phases below
+the cutoff. Dual-fire write+read invocation across 6 skill bodies
+(specs/scope/blueprint/build/accept).
+
+### v2.8.6 hotfix bundle
+
+Triplet of harness-discipline fixes:
+- **Entry-hook paste-back heuristic** — extended `/vg:` literal detection
+  to recognize SPEC document content + prose references (4 phantom
+  run-starts incidents during v2.7 ship session traced to this gap).
+- **argparse prefix-match bug** — `argparse` defaulted to
+  `allow_abbrev=True`; `--phase` was silently mapped to `--phase-dir`
+  in `verify-runtime-evidence.py`. All validators now use
+  `argparse.ArgumentParser(allow_abbrev=False)` defensively.
+- **Test pollution** — added `autouse` pytest fixture cleaning
+  `VG_REPO_ROOT` env var across tests; eliminates state leak between
+  test files that breaks CI ordering.
+
+### `VGFLOW-VERSION` synchronization
+
+The metadata file at `vgflow-repo/VGFLOW-VERSION` (and mirrored
+`.claude/VGFLOW-VERSION` in installer projects) was last bumped at
+`820b0cd release v2.5.2.10` and skipped in every release pipeline since
+v2.6.1 — a 4-tag drift. Reading current `cat .claude/VGFLOW-VERSION`
+gave `2.5.2.10` while `VERSION` reported `2.8.5`. Telemetry events
+in `install.sh` reported the wrong version.
+
+This release:
+- Syncs `VGFLOW-VERSION` ← `VERSION` ← `2.9.0`.
+- Going forward, `VGFLOW-VERSION` is bumped lockstep with `VERSION` in
+  each release (until/unless we deprecate one of the two files).
+
+### Migration notes
+
+No behavioral changes for existing consumers. Telemetry emitted by
+`install.sh` will now report version `2.9.0` instead of `2.5.2.10`
+(historical events keep their old version values; only new events affected).
+
+Projects pinning a specific VG version via `.claude/VGFLOW-VERSION` should
+update the file to `2.9.0` after pulling.
+
+### Decisions deferred to next release
+
+- v2.7 Phase C (skill invariants), Phase F (marker tracking) already shipped
+  pre-v2.9.0 (in v2.8.3 + v2.8.5 respectively); no Phase C/F work in this
+  release.
+- VGFLOW-VERSION deprecation discussion: tracked but not acted on. Both
+  files remain present and synchronized.
+
+---
+
 ## v2.8.5 (2026-04-26) — v2.7 Phase F: Marker tracking hooks layer 1+2
 
 Companion to v2.8.3 hybrid Stop-hook (reactive recovery). Layers 1+2
