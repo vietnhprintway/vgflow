@@ -2675,6 +2675,38 @@ Elements: {N} interactive ({visited}/{total} visited)
 ```
 
 **JSON is the source of truth.** Markdown is derived. Downstream steps (test, codegen) read JSON.
+
+**Phase 15 D-17 — phantom-aware Haiku spawn audit (NEW, 2026-04-27):**
+
+Confirm the `review.haiku_scanner_spawned` event emitted by step 2b-2 is
+actually present in events.db for every (view × role) we expected to scan.
+The validator (`verify-haiku-spawn-fired.py`) is phantom-aware: it ignores
+events from runs whose signature matches `args:""` + 0 step.marked + abort
+within 60s (the D-17 hook-triggered noise pattern), so manual `/vg:learn`
+invocations don't show up as false positives.
+
+```bash
+PHANTOM_VALIDATOR="${REPO_ROOT}/.claude/scripts/validators/verify-haiku-spawn-fired.py"
+if [ -x "$PHANTOM_VALIDATOR" ] && [ -f "${REPO_ROOT}/.claude/state/events.db" ]; then
+  ${PYTHON_BIN} "$PHANTOM_VALIDATOR" --phase "${PHASE_NUMBER}" \
+      > "${VG_TMP}/haiku-spawn-audit.json" 2>&1 || true
+  HSV=$(${PYTHON_BIN} -c "import json,sys; print(json.load(open('${VG_TMP}/haiku-spawn-audit.json')).get('verdict','SKIP'))" 2>/dev/null)
+  case "$HSV" in
+    PASS) echo "✓ D-17 Haiku-spawn audit: PASS — telemetry confirms scanner fired per view/role" ;;
+    WARN) echo "⚠ D-17 Haiku-spawn audit: WARN — see ${VG_TMP}/haiku-spawn-audit.json (informational only)" ;;
+    BLOCK)
+      echo "⛔ D-17 Haiku-spawn audit: BLOCK — expected scanner spawns missing from events.db." >&2
+      echo "   Inspect ${VG_TMP}/haiku-spawn-audit.json for the per-(view,role) breakdown." >&2
+      echo "   Common cause: orchestrator ran briefing_for_view but Agent() spawn was skipped." >&2
+      echo "   Override: --skip-haiku-audit (logs override-debt as kind=haiku-spawn-audit-skipped)." >&2
+      if [[ ! "$ARGUMENTS" =~ --skip-haiku-audit ]]; then
+        exit 1
+      fi
+      ;;
+    SKIP|*) echo "ℹ D-17 Haiku-spawn audit: ${HSV} — likely no UI-profile views in this phase" ;;
+  esac
+fi
+```
 </step>
 
 <step name="phase2_exploration_limits" profile="web-fullstack,web-frontend-only">
@@ -3042,6 +3074,100 @@ Phase 2.5 Visual Integrity:
   Responsive: {viewports} x {views} ({issues} issues)
   Z-index: {modals} modals ({issues} issues)
   MAJOR: {N} → Phase 3 fix loop | MINOR: {N} → logged
+```
+
+### 6. Phase 15 D-12 — Wave-scoped + Holistic Drift Gates (NEW, 2026-04-27)
+
+After the legacy visual checks (font/overflow/responsive/z-index), run the
+Phase 15 visual-fidelity gates. Threshold comes from `.fidelity-profile.lock`
+written by `/vg:blueprint` step 2_fidelity_profile_lock (D-08).
+
+**6a. D-12c — UI flag presence (cheap precondition, runs first):**
+
+```bash
+if [ -x "${REPO_ROOT}/.claude/scripts/validators/verify-phase-ui-flag.py" ]; then
+  ${PYTHON_BIN} "${REPO_ROOT}/.claude/scripts/validators/verify-phase-ui-flag.py" \
+      --phase "${PHASE_NUMBER}" > "${VG_TMP}/ui-flag.json" 2>&1
+  UIF=$(${PYTHON_BIN} -c "import json,sys; print(json.load(open('${VG_TMP}/ui-flag.json')).get('verdict','SKIP'))" 2>/dev/null)
+  case "$UIF" in
+    PASS|WARN) echo "✓ D-12c UI-flag check: $UIF" ;;
+    BLOCK) echo "⛔ D-12c UI-flag check: BLOCK — phase declared UI work but UI-MAP.md/design assets missing" >&2; exit 1 ;;
+    *) echo "ℹ D-12c UI-flag check: $UIF — phase has no UI declaration" ;;
+  esac
+fi
+```
+
+**6b. D-12b — Wave-scoped structural drift (per wave that has owned UI subtree):**
+
+```bash
+if [ -f "${PHASE_DIR}/UI-MAP.md" ] \
+   && [ -x "${REPO_ROOT}/.claude/scripts/verify-ui-structure.py" ]; then
+  THRESHOLD=$(${PYTHON_BIN} "${REPO_ROOT}/.claude/scripts/lib/threshold-resolver.py" \
+      --phase "${PHASE_NUMBER}" 2>/dev/null || echo "0.85")
+
+  # Discover waves with owned subtrees by inspecting planner UI-MAP for owner_wave_id values.
+  WAVES=$(${PYTHON_BIN} -c "
+import json, re
+text = open('${PHASE_DIR}/UI-MAP.md', encoding='utf-8').read()
+m = re.search(r'\`\`\`json\s*\n([\s\S]*?)\n\`\`\`', text)
+if not m:
+    raise SystemExit
+data = json.loads(m.group(1))
+seen = set()
+def walk(n):
+    if isinstance(n, dict):
+        if n.get('owner_wave_id'):
+            seen.add(n['owner_wave_id'])
+        for c in n.get('children', []) or []:
+            walk(c)
+walk(data.get('root', data))
+print(' '.join(sorted(seen)))
+" 2>/dev/null)
+
+  WAVE_BLOCK=0
+  for WAVE_ID in $WAVES; do
+    ${PYTHON_BIN} "${REPO_ROOT}/.claude/scripts/verify-ui-structure.py" \
+        --phase "${PHASE_NUMBER}" \
+        --scope "owner-wave-id=${WAVE_ID}" \
+        --threshold "${THRESHOLD}" \
+        > "${VG_TMP}/drift-${WAVE_ID}.json" 2>&1 || true
+    V=$(${PYTHON_BIN} -c "import json,sys; print(json.load(open('${VG_TMP}/drift-${WAVE_ID}.json')).get('verdict','SKIP'))" 2>/dev/null)
+    case "$V" in
+      PASS|WARN) echo "✓ D-12b drift ${WAVE_ID}: $V (threshold=${THRESHOLD})" ;;
+      BLOCK)
+        echo "⛔ D-12b drift ${WAVE_ID}: BLOCK — see ${VG_TMP}/drift-${WAVE_ID}.json" >&2
+        WAVE_BLOCK=1
+        ;;
+      *) echo "ℹ D-12b drift ${WAVE_ID}: $V" ;;
+    esac
+  done
+  if [ "$WAVE_BLOCK" = "1" ] && [[ ! "$ARGUMENTS" =~ --allow-wave-drift ]]; then
+    echo "  Override: --allow-wave-drift (logs override-debt as kind=wave-drift-relaxed)" >&2
+    exit 1
+  fi
+fi
+```
+
+**6c. D-12e — Holistic phase-wide drift (runs once at phase end):**
+
+```bash
+if [ -x "${REPO_ROOT}/.claude/scripts/verify-holistic-drift.py" ] \
+   && [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
+  ${PYTHON_BIN} "${REPO_ROOT}/.claude/scripts/verify-holistic-drift.py" \
+      --phase "${PHASE_NUMBER}" \
+      > "${VG_TMP}/holistic-drift.json" 2>&1 || true
+  HV=$(${PYTHON_BIN} -c "import json,sys; print(json.load(open('${VG_TMP}/holistic-drift.json')).get('verdict','SKIP'))" 2>/dev/null)
+  case "$HV" in
+    PASS|WARN) echo "✓ D-12e holistic drift: $HV" ;;
+    BLOCK)
+      echo "⛔ D-12e holistic drift: BLOCK — see ${VG_TMP}/holistic-drift.json" >&2
+      echo "  Wave gates passed but phase-wide composition drifted (e.g., layout fight between waves)." >&2
+      echo "  Override: --allow-holistic-drift" >&2
+      if [[ ! "$ARGUMENTS" =~ --allow-holistic-drift ]]; then exit 1; fi
+      ;;
+    *) echo "ℹ D-12e holistic drift: $HV" ;;
+  esac
+fi
 ```
 
 Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2_5_visual_checks" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2_5_visual_checks.done"`
