@@ -507,6 +507,78 @@ Result routing:
 - Feature profile + 0 decisions → HARD BLOCK
 - Feature profile + legacy format → WARN + log override-debt
 - Non-feature profile → skip check (CONTEXT.md not required)
+
+### 3c: Amendment freshness check (harness v2.7-fixup-C1)
+
+**Why:** `/vg:amend` writes `AMENDMENT-LOG.md` mid-phase. If user runs amend AFTER blueprint but BEFORE build, PLAN.md / API-CONTRACTS.md are stale relative to the amendment. Build would silently execute the pre-amendment plan. This gate detects mtime drift and blocks unless user explicitly overrides.
+
+```bash
+# C1 fix — Amendment freshness check
+# Detect /vg:amend ran between blueprint and build → BLOCK with re-blueprint guidance.
+AMENDMENT_FILE="${PHASE_DIR}/AMENDMENT-LOG.md"
+if [ -f "$AMENDMENT_FILE" ]; then
+  PLAN_FILE="${PHASE_DIR}/PLAN.md"
+  CONTRACTS_FILE="${PHASE_DIR}/API-CONTRACTS.md"
+  STALE=""
+  if [ -f "$PLAN_FILE" ] && [ "$AMENDMENT_FILE" -nt "$PLAN_FILE" ]; then
+    STALE="PLAN.md"
+  fi
+  if [ -f "$CONTRACTS_FILE" ] && [ "$AMENDMENT_FILE" -nt "$CONTRACTS_FILE" ]; then
+    STALE="${STALE:+$STALE+}API-CONTRACTS.md"
+  fi
+  if [ -n "$STALE" ]; then
+    echo "⛔ Amendment freshness BLOCK — AMENDMENT-LOG.md is newer than $STALE"
+    echo "   Mid-phase amendment landed after last blueprint pass."
+    echo "   Re-run: /vg:blueprint ${PHASE_NUMBER} --from=2a"
+    echo "   (or override via --override-reason if amendment is doc-only)"
+    if [[ ! "${ARGUMENTS}" =~ --override-reason ]]; then
+      exit 1
+    fi
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "amendment-stale-blueprint" "${PHASE_NUMBER}" \
+        "amendment newer than blueprint; user override" "$PHASE_DIR"
+    echo "⚠ --override-reason set — proceeding with stale plan, debt logged"
+  fi
+fi
+```
+
+Result routing:
+- AMENDMENT-LOG.md absent → skip (no mid-phase change)
+- AMENDMENT newer than PLAN/CONTRACTS + no --override-reason → HARD BLOCK
+- AMENDMENT newer + --override-reason set → WARN + log override-debt
+- AMENDMENT older than PLAN/CONTRACTS → PASS (blueprint already incorporated changes)
+
+### 3d: CONTEXT.md freshness vs PLAN.md (harness v2.7-fixup-M4)
+
+**Why:** Step 3b validates CONTEXT.md format + decision count, but does NOT detect when user manually edits CONTEXT.md after blueprint completed. Mid-phase decision tweak (e.g., adding D-15 directly to CONTEXT.md without /vg:amend) leaves PLAN.md stale referencing the pre-edit decision set. Build executes against an inconsistent decision graph. This gate compares mtimes and forces a re-blueprint or explicit override.
+
+```bash
+# M4 fix — CONTEXT.md mtime freshness check
+# Detects post-blueprint edits to CONTEXT.md → BLOCK with re-blueprint or /vg:amend guidance.
+if [ "$PHASE_PROFILE_FOR_CTX" = "feature" ] && [ -f "$CONTEXT_FILE" ]; then
+  PLAN_FILE="${PHASE_DIR}/PLAN.md"
+  if [ -f "$PLAN_FILE" ] && [ "$CONTEXT_FILE" -nt "$PLAN_FILE" ]; then
+    echo "⛔ CONTEXT.md modified after PLAN.md — re-blueprint or run /vg:amend"
+    echo "   PLAN.md is stale relative to current CONTEXT.md decisions."
+    echo "   Run: /vg:blueprint ${PHASE_NUMBER} --from=2a   (re-plan from current CONTEXT)"
+    echo "   OR:  /vg:amend ${PHASE_NUMBER}                  (capture change as amendment)"
+    echo "   Override (NOT RECOMMENDED): re-run with --override-reason=\"...\""
+    if [[ ! "${ARGUMENTS}" =~ --override-reason ]]; then
+      exit 1
+    fi
+    type -t log_override_debt >/dev/null 2>&1 && \
+      log_override_debt "context-stale-plan" "${PHASE_NUMBER}" \
+        "CONTEXT newer than PLAN; user override" "$PHASE_DIR"
+    echo "⚠ --override-reason set — proceeding with stale plan, debt logged"
+  fi
+fi
+```
+
+Result routing:
+- CONTEXT.md older than PLAN.md → PASS (blueprint incorporated current decisions)
+- CONTEXT.md newer + no --override-reason → HARD BLOCK
+- CONTEXT.md newer + --override-reason set → WARN + log override-debt
+- Non-feature profile → skip (CONTEXT.md not required)
 </step>
 
 <step name="4_load_contracts_and_context">
@@ -576,6 +648,42 @@ fi
 ```
 
 **Why always rebuild before build:** Graph is consumed by step 4c (siblings) and 4e (callers). Stale graph = wrong sibling suggestions = executor copies wrong patterns. Rebuild is fast (~10s for incremental) and runs once per build — cheap insurance vs debugging wrong sibling context.
+
+### 4_pre_b: Read pre-build CrossAI verdict (harness v2.7-fixup-M6)
+
+**Why:** Blueprint step 2d-6 emits `${PHASE_DIR}/crossai/result-blueprint-review*.xml`
+(MUST_WRITE per blueprint frontmatter). Build's own CrossAI loop (step 11) writes
+into a SEPARATE directory and has zero awareness of the pre-build verdict. If the
+blueprint pass flagged unresolved major/critical issues that minor auto-fix didn't
+land, the executor is unaware of them. Surface that verdict here so the operator
+sees continuity across blueprint→build, and downstream prompts can tag the warning.
+
+```bash
+# M6 fix — surface blueprint-review CrossAI verdict + unresolved flag count
+BLUEPRINT_CROSSAI_DIR="${PHASE_DIR}/crossai"
+if [ -d "$BLUEPRINT_CROSSAI_DIR" ]; then
+  # shellcheck disable=SC2086
+  RESULT_XMLS=$(ls "$BLUEPRINT_CROSSAI_DIR"/result-blueprint-review*.xml 2>/dev/null)
+  if [ -n "$RESULT_XMLS" ]; then
+    # shellcheck disable=SC2086
+    BLUEPRINT_VERDICT=$(grep -h -oP '<verdict>\K[^<]+' $RESULT_XMLS 2>/dev/null \
+      | sort -u | head -3 | tr '\n' ',' | sed 's/,$//')
+    # shellcheck disable=SC2086
+    BLUEPRINT_FLAGS=$(grep -ch 'severity="major"\|severity="critical"' $RESULT_XMLS 2>/dev/null \
+      | awk '{s+=$1} END{print s+0}')
+    echo "📋 Blueprint CrossAI verdict: ${BLUEPRINT_VERDICT:-none} (${BLUEPRINT_FLAGS} unresolved major/critical)"
+    # Surface to executor — appended to TASK_CONTEXT later if non-empty
+    export VG_BLUEPRINT_CROSSAI_SUMMARY="verdict=${BLUEPRINT_VERDICT:-none} unresolved=${BLUEPRINT_FLAGS}"
+  else
+    echo "📋 Blueprint CrossAI: no result-blueprint-review*.xml found (skip-crossai or pre-2d phase)"
+  fi
+fi
+```
+
+Result routing:
+- result-blueprint-review*.xml present → log verdict + unresolved count, export VG_BLUEPRINT_CROSSAI_SUMMARY
+- No XMLs (skip-crossai run, or older phases without blueprint CrossAI) → silent skip
+- Verdict==BLOCK with unresolved>0 → not auto-blocked here (build proceeds), but surfaced loudly so operator can abort
 
 ### 4a: Contract context
 
@@ -1367,8 +1475,11 @@ Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
     </task_context>
 
     <contract_context>
-    Relevant contract code blocks to COPY VERBATIM (not retype):
-    @${PHASE_DIR}/API-CONTRACTS.md (section for this task's endpoint(s), ~400 lines)
+    Relevant contract code blocks to COPY VERBATIM (not retype).
+    M3 fix (harness v2.7-fixup): DROPPED full-file @-include of API-CONTRACTS.md.
+    The block below is the SCOPED, per-endpoint slice resolved by
+    pre-executor-check.py — single source of truth, R4 budget stays accurate.
+    ${CONTRACT_CONTEXT}
     Import types from: ${config.contract_format.generated_types_path}
     </contract_context>
 
@@ -1901,6 +2012,15 @@ fi
 # Gate U: Utility duplication (wave-scope AST scan)
 # Post-wave check — did this wave introduce a helper that now has ≥3 copies repo-wide?
 # Root cause of tsc OOM + graphify noise (e.g., formatCurrency declared in 16 files).
+#
+# M7 — Note (harness v2.7-fixup): Blueprint runs verify-utility-reuse.py at
+# sub-step 2c1c (PLAN-static analysis of declarations). Gate U here runs
+# verify-utility-duplication.py (post-wave AST scan, threshold-block=3).
+# These have different scope intentionally — blueprint catches DECLARED helpers
+# in the plan, Gate U catches RUNTIME duplications introduced across waves.
+# Inconsistency is by design. If Gate U fails after blueprint passed, AST scan
+# caught a copy/paste blueprint missed (executor diverged from PLAN, or PLAN
+# didn't list the new helper). Threshold unification is deferred to v2.8.
 if [ -z "$FAILED_GATE" ] && [ -f ".claude/scripts/verify-utility-duplication.py" ]; then
   DUP_PROJECT_MD="${PLANNING_DIR}/PROJECT.md"
   if [ -f "$DUP_PROJECT_MD" ]; then

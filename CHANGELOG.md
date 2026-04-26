@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.8.1 (2026-04-26) — Hotfix
+
+Audit-driven fixups against `/vg:build` vs `/vg:blueprint` artifact flow.
+
+### Critical fixes
+- **C1** — `build.md` 3c_amendment_freshness sub-step: builder re-reads `AMENDMENT-LOG.md` mid-build and rebinds contract/goal/context-refs (prevents stale-state drift after `/vg:amend`).
+- **C2** — Pinned architectural invariant via smoke test `test_orchestrator_dispatches_blueprint_validators.py` — orchestrator dispatches blueprint validators by COMMAND key (not step), preventing future refactor regression.
+
+### Major fixes
+- **M3** — Contract dedup: build skips contract injection if symbol already exists in target schemas file (prevents duplicate identifier collisions).
+- **M4** — CONTEXT.md mtime gate: build aborts if CONTEXT.md modified after blueprint completion stamp (forces re-blueprint).
+- **M5** — Removed stale `RIPPLE-ANALYSIS.md` reference from `R5_FILES` list (artifact deprecated in v2.6).
+- **M6** — Build reads pre-build CrossAI verdict from `crossai/blueprint-review.xml` and surfaces BLOCK findings before wave dispatch.
+- **M7** — Documented blueprint vs Gate U utility check intent (clarifies overlap is intentional defense-in-depth, not redundancy).
+- **M8** — Removed dead `--skip-design-check` flag from blueprint command-line list (kept doc-comment refs at lines 67, 72).
+
+### Audit transparency
+This release includes the full audit cycle commits (revert + surgical re-do for M5+M8) so operators can trace the regression detection that prevented the original M5+M8 commit from over-deleting 79 lines including `Platform Essentials` and `Blueprint Completeness` UNQUARANTINABLE gate blocks.
+
+### Verification
+- 29/29 tests pass (`test_idempotency_coverage.py`, `test_no_no_verify.py`, `test_orchestrator_dispatches_blueprint_validators.py`)
+- Pre-commit RULES-CARDS drift gate enforced
+- `Platform Essentials` invariant grep = 3 hits intact in source `.codex/skills/vg-blueprint/RULES-CARDS.md`
+
 ## [2.8.0] - 2026-04-26
 
 VG workflow-hardening v2.7 plan — 8 phases shipped covering forward-gap closure from v2.7.0 ship + audit dim-3/4/6/7 HIGH+MEDIUM closure.

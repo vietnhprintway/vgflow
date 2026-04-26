@@ -689,7 +689,6 @@ R5_FILES=(
   "${PHASE_DIR}/.deploy-lessons-brief.md"
   "${PHASE_DIR}/SPECS.md"
   "${PHASE_DIR}/CONTEXT.md"
-  "${PHASE_DIR}/RIPPLE-ANALYSIS.md"
   ".claude/commands/vg/_shared/vg-planner-rules.md"
 )
 R5_TOTAL=0
