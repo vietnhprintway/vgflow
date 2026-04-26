@@ -43,7 +43,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import Evidence, Output, timer, emit_and_exit, find_phase_dir  # noqa: E402
 
-EXPECTED_FILTER_CASES = 14
+# Expected source-level test() blocks per control (D-16 lock):
+#   Filter: 13 explicit (cardinality_enum is loop-driven so 1 block × N values
+#           at runtime; pairwise + boundary + empty_state + 3 stress + 3
+#           state-integrity + 3 edge = 13). 14th slot is reserved for future
+#           additions and not enforced.
+#   Pagination: 18 mandatory (6 navigation + 2 url_sync + 4 envelope +
+#           3 display + 2 stress + 1 edge mandatory). The 2 optional edge
+#           sub-cases (negative + cursor) gate behind opts.includeOptional.
+EXPECTED_FILTER_CASES = 13
 EXPECTED_PAGINATION_CASES = 18
 
 # Default tests glob — projects override via --tests-glob or vg.config.md test_strategy
@@ -71,19 +79,43 @@ def _load_test_goals(phase_dir: Path) -> dict:
     return {}
 
 
-def _count_tests_for_control(repo_root: Path, control_name: str, glob_pattern: str) -> int:
-    """Count test files whose name contains control_name (filesystem-safe slug)."""
+def _count_tests_for_control(
+    repo_root: Path, control_name: str, glob_pattern: str, kind: str
+) -> int:
+    """Count `test(...)` blocks across all spec files whose names mention the
+    control slug AND the kind ("filter" / "pagination").
+
+    The Wave 6 codegen layout (vg-codegen-interactive T6.1) emits 4 filter
+    group files + 6 pagination group files per control, each containing N
+    `test(...)` blocks for its sub-cases. Total blocks per control = 14
+    filter + 18 pagination per the D-16 matrix lock.
+
+    Block detection regex matches both `test('...'` and `test("..."` plus
+    Playwright `test.skip / test.only` variants. The block name MUST
+    contain the kind keyword (`filter` or `pagination`) so cross-control
+    tests don't double-count.
+    """
     slug = re.sub(r"[^a-z0-9]+", "-", control_name.lower()).strip("-")
     if not slug:
         return 0
-    matches = 0
-    # glob may include {curly,braces} — Path.glob doesn't expand braces, expand manually
+    block_re = re.compile(
+        r"\btest(?:\.skip|\.only|\.fixme)?\s*\(\s*[`'\"]([^`'\"]+)[`'\"]"
+    )
+    blocks = 0
     expanded = _expand_braces(glob_pattern)
     for pattern in expanded:
         for p in repo_root.glob(pattern):
-            if p.is_file() and slug in p.name.lower():
-                matches += 1
-    return matches
+            if not p.is_file():
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for m in block_re.finditer(text):
+                name = m.group(1).lower()
+                if slug in name and kind in name:
+                    blocks += 1
+    return blocks
 
 
 def _expand_braces(pattern: str) -> list[str]:
@@ -132,11 +164,11 @@ def main() -> None:
             name = (f.get("name") or "").strip() if isinstance(f, dict) else str(f)
             if not name:
                 continue
-            count = _count_tests_for_control(repo_root, name, args.tests_glob)
+            count = _count_tests_for_control(repo_root, name, args.tests_glob, "filter")
             if count < EXPECTED_FILTER_CASES:
                 out.add(Evidence(
                     type="count_below_threshold",
-                    message=(f"Filter '{name}' has {count} test file(s); "
+                    message=(f"Filter '{name}' has {count} test() block(s); "
                              f"expected ≥ {EXPECTED_FILTER_CASES} per D-16 matrix"),
                     expected=EXPECTED_FILTER_CASES,
                     actual=count,
@@ -150,11 +182,11 @@ def main() -> None:
             # pagination block may name itself or use first filter as anchor
             name = pagination.get("name") if isinstance(pagination, dict) else "pagination"
             name = name or "pagination"
-            count = _count_tests_for_control(repo_root, name, args.tests_glob)
+            count = _count_tests_for_control(repo_root, name, args.tests_glob, "pagination")
             if count < EXPECTED_PAGINATION_CASES:
                 out.add(Evidence(
                     type="count_below_threshold",
-                    message=(f"Pagination '{name}' has {count} test file(s); "
+                    message=(f"Pagination '{name}' has {count} test() block(s); "
                              f"expected ≥ {EXPECTED_PAGINATION_CASES} per D-16 matrix"),
                     expected=EXPECTED_PAGINATION_CASES,
                     actual=count,

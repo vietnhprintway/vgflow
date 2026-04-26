@@ -227,3 +227,44 @@ outside this grammar, the author opts out per-control by setting
 The skill returns the .spec.ts content as a string. The orchestrator
 handles file write + validator invocation. No side effects from this
 skill itself — pure transform.
+
+## 11. Filter + Pagination Test Rigor Pack (Phase 15 D-16, T6.1)
+
+The interactive_controls path delegates `filters[*]` and `pagination` to
+a deterministic matrix renderer instead of free-form Sonnet output.
+
+**Matrix module:** `filter-test-matrix.mjs` (this skill dir)
+- `FILTER_GROUPS` — 4 groups × 13 sub-cases (coverage 4 + stress 3 +
+  state-integrity 3 + edge 3); 14th slot reserved for future additions.
+- `PAGINATION_GROUPS` — 6 groups × 18 mandatory sub-cases (+2 optional
+  edge: cursor / negative-page).
+- Helpers: `enumerateFilterFiles(goal, filter, opts)`,
+  `enumeratePaginationFiles(goal, pagination, opts)`,
+  `renderTemplate(path, vars)`.
+
+**Templates:** `commands/vg/_shared/templates/{filter|pagination}-<group>.test.tmpl`
+(10 files total — 4 filter + 6 pagination). Each template emits ONE
+spec file per (control × group) pair, containing N source-level
+`test(...)` blocks (one per sub-case). Mustache-lite placeholders:
+`{{var.X}}` and `{{#vars.flag}}…{{/vars.flag}}` sections.
+
+**Naming convention** (so validator regex can grep):
+- Filter test name: `` `filter <control_name> · <group> · <sub_case>` ``
+  (cardinality_enum is loop-driven — single source block × N runtime tests)
+- Pagination test name: `` `pagination <control_name> · <group> · <sub_case>` ``
+
+**Validator:** `scripts/validators/verify-filter-test-coverage.py` counts
+`test(...)` source blocks whose name contains the control slug AND the
+kind keyword (`filter`/`pagination`). Per-control thresholds:
+- `EXPECTED_FILTER_CASES = 13`
+- `EXPECTED_PAGINATION_CASES = 18`
+
+**Orchestrator flow** (test.md step 5d_codegen branch):
+1. For each TEST-GOALS goal with `interactive_controls.filters` or
+   `pagination`:
+2. Call `enumerateFilterFiles(goal, filter)` and/or
+   `enumeratePaginationFiles(goal, pagination)`.
+3. For each file descriptor returned, call `renderTemplate(template_path, vars)`.
+4. Write rendered string to `${output_dir}/${descriptor.slug}.spec.ts`.
+5. Pipe through `verify-filter-test-coverage.py --phase <id>` after all
+   files written; BLOCK on shortfall.
