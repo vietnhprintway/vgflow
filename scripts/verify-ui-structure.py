@@ -22,17 +22,39 @@ EXIT:
   2 — BLOCK (vượt ngưỡng MISSING/UNEXPECTED)
   1 — lỗi script (không đọc được file...)
 
+PHASE 15 EXTENSIONS (D-03 + D-12b wave-scoped, D-08 profile threshold):
+  --scope owner-wave-id=<id>   Filter expected tree to nodes whose
+                               `owner_wave_id` (or ancestor's) matches <id>.
+                               Use cho per-wave drift gate trong /vg:build
+                               post-wave-commit hook. Implements D-03/D-12b
+                               option C (scoped subtree) — only check what
+                               wave declared touch, không alarm phần khác.
+  --phase <id>                 Resolve drift thresholds via threshold-resolver
+                               (lib/threshold-resolver.py, D-08): override >
+                               profile (prototype 0.7 / default 0.85 /
+                               production 0.95) > hard fallback. Computed
+                               threshold maps to max-missing/max-unexpected.
+
 USAGE:
+  # Legacy single-shot
   python verify-ui-structure.py \
       --expected .vg/phases/11-settings/UI-MAP.md \
       --actual .vg/phases/11-settings/.ui-map-actual.json \
       --max-missing 0 --max-unexpected 3 --layout-advisory
+
+  # Phase 15 — wave-scoped drift, profile-aware threshold
+  python verify-ui-structure.py \
+      --expected .vg/phases/7.14.3/UI-MAP.md \
+      --actual .vg/phases/7.14.3/.wave-1-asbuilt.json \
+      --scope owner-wave-id=wave-1 \
+      --phase 7.14.3
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -81,6 +103,77 @@ def flatten(node: dict, parent: str = "(root)", out: list | None = None) -> list
     for c in children:
         flatten(c, node.get("name", "?"), out)
     return out
+
+
+# ─── Phase 15 D-03/D-12b — wave-scoped subtree filter ─────────────────────
+
+def filter_subtree_by_wave(node: dict, target_wave: str,
+                           ancestor_owns: bool = False) -> dict | None:
+    """Return a copy of `node` containing only nodes whose owner_wave_id (or
+    an ancestor's) equals `target_wave`. Returns None if neither node nor any
+    descendant belongs to the target wave.
+
+    Convention (per D-12a/b): planner tags nodes with `owner_wave_id` in
+    UI-MAP.md when the wave is responsible for building/touching them.
+    Children inherit ownership unless they override with their own
+    owner_wave_id.
+    """
+    node_owns = node.get("owner_wave_id") == target_wave
+    inherits = ancestor_owns and "owner_wave_id" not in node
+    in_scope = node_owns or inherits
+
+    children = node.get("children") or []
+    kept_children = []
+    for c in children:
+        # If this node is in scope, descendants inherit (unless overridden).
+        # If not, descendants check independently (handles sparse tagging).
+        kc = filter_subtree_by_wave(c, target_wave, ancestor_owns=in_scope)
+        if kc is not None:
+            kept_children.append(kc)
+
+    if not in_scope and not kept_children:
+        return None
+
+    out = {k: v for k, v in node.items() if k != "children"}
+    out["children"] = kept_children
+    return out
+
+
+def _parse_scope_arg(scope: str) -> tuple[str, str] | None:
+    """Parse `--scope owner-wave-id=<id>` → ('owner_wave_id', '<id>')."""
+    if not scope:
+        return None
+    if "=" not in scope:
+        return None
+    key_raw, value = scope.split("=", 1)
+    key = key_raw.strip().replace("-", "_")
+    return key, value.strip()
+
+
+def _resolve_threshold_for_phase(phase: str | None) -> float | None:
+    """Call threshold-resolver helper if --phase given. Returns float or None."""
+    if not phase:
+        return None
+    repo = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
+    candidates = [
+        Path(__file__).parent / "lib" / "threshold-resolver.py",
+        repo / "scripts" / "lib" / "threshold-resolver.py",
+        repo / ".claude" / "scripts" / "lib" / "threshold-resolver.py",
+    ]
+    helper = next((c for c in candidates if c.exists()), None)
+    if helper is None:
+        return None
+    try:
+        import subprocess
+        r = subprocess.run(
+            [sys.executable, str(helper), "--phase", phase],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return float(r.stdout.strip())
+    except (subprocess.TimeoutExpired, ValueError):
+        pass
+    return None
 
 
 def compare(expected: dict, actual: dict, layout_advisory: bool) -> dict:
@@ -169,6 +262,10 @@ def main() -> int:
     ap.add_argument("--max-unexpected", type=int, default=0, help="Số UNEXPECTED tối đa cho phép (default 0)")
     ap.add_argument("--layout-advisory", action="store_true", help="LAYOUT_SHIFT chỉ cảnh báo, không BLOCK")
     ap.add_argument("--json", action="store_true", help="In report dạng JSON")
+    # Phase 15 D-03/D-12b — wave-scoped subtree
+    ap.add_argument("--scope", help="Filter expected tree to subtree owned by wave (e.g. 'owner-wave-id=wave-1')")
+    # Phase 15 D-08 — profile-aware threshold
+    ap.add_argument("--phase", help="Resolve drift threshold via threshold-resolver (D-08 profile)")
     args = ap.parse_args()
 
     expected = load_tree(Path(args.expected))
@@ -182,6 +279,58 @@ def main() -> int:
         print(f"⛔ Không đọc được cây thực tế: {args.actual}", file=sys.stderr)
         print("   Sinh bằng: node .claude/scripts/generate-ui-map.mjs --format json --output <path>", file=sys.stderr)
         return 1
+
+    # Phase 15 D-03/D-12b — apply wave-scoped subtree filter to expected
+    if args.scope:
+        parsed = _parse_scope_arg(args.scope)
+        if parsed is None:
+            print(f"⛔ --scope arg malformed: {args.scope!r}. Expected: 'owner-wave-id=<id>'",
+                  file=sys.stderr)
+            return 1
+        key, value = parsed
+        if key != "owner_wave_id":
+            print(f"⛔ --scope key not supported: {key!r}. Phase 15 only supports owner-wave-id.",
+                  file=sys.stderr)
+            return 1
+        # Use the embedded JSON code block "root" if present (Phase 15 ui-map.v1.json)
+        # OR fall back to the whole tree (legacy nesting).
+        scope_root = expected.get("root", expected)
+        filtered = filter_subtree_by_wave(scope_root, value)
+        if filtered is None:
+            print(f"⚠ Wave-scoped filter: no nodes own owner_wave_id={value!r} in expected tree. "
+                  "Nothing to verify for this wave (PASS).", file=sys.stderr)
+            return 0
+        # Wrap back into expected shape (preserves any non-root metadata)
+        if "root" in expected:
+            expected = {**expected, "root": filtered}
+        else:
+            expected = filtered
+        print(f"ℹ Phase 15 wave-scope: filtered expected to subtree owner_wave_id={value!r}",
+              file=sys.stderr)
+
+    # Phase 15 D-08 — profile-aware threshold resolution
+    # Map fidelity threshold (0.0-1.0) → max-missing/max-unexpected counts.
+    # Strategy: shorter list → stricter ratio. We compute count from total
+    # expected components: max_drift = (1 - fidelity) * total. Split half each.
+    resolved = _resolve_threshold_for_phase(args.phase)
+    if resolved is not None:
+        # Compute how many components in scope
+        from copy import deepcopy
+        scope_root_for_count = expected.get("root", expected) if isinstance(expected, dict) else expected
+        flat = flatten(scope_root_for_count) if scope_root_for_count else []
+        total_components = max(1, sum(1 for f in flat if f.get("kind", "component") == "component"))
+        max_drift = int(round((1.0 - resolved) * total_components))
+        # Split equally; round up to ensure at least 1 each
+        per_bucket = max(1, max_drift // 2) if max_drift > 0 else 0
+        if max_drift > 0:
+            args.max_missing = per_bucket
+            args.max_unexpected = max_drift - per_bucket if max_drift > per_bucket else per_bucket
+        else:
+            args.max_missing = 0
+            args.max_unexpected = 0
+        print(f"ℹ Phase 15 D-08 threshold: phase={args.phase} fidelity={resolved} "
+              f"→ max_missing={args.max_missing} max_unexpected={args.max_unexpected} "
+              f"(of {total_components} components in scope)", file=sys.stderr)
 
     diff = compare(expected, actual, args.layout_advisory)
 
