@@ -52,12 +52,14 @@ jobs:
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
           TAR="vgflow-${TAG}.tar.gz"
-          # Build tarball in parent dir to avoid "file changed as we read it"
-          # caused by tar seeing its own output being written under '.'
+          # /vg:update expects release assets to extract into:
+          #   .vgflow-cache/<tag>/vgflow/
+          rm -rf .release
+          mkdir -p .release/vgflow
           tar --exclude='.github' --exclude='.git' --exclude='*.bak' \
-              --exclude="${TAR}" --exclude="${TAR}.sha256" \
-              -czf "../${TAR}" .
-          mv "../${TAR}" .
+              --exclude='.release' --exclude="${TAR}" --exclude="${TAR}.sha256" \
+              -cf - . | tar -xf - -C .release/vgflow
+          tar -czf "${TAR}" -C .release vgflow
           sha256sum "${TAR}" | awk '{print $1}' > "${TAR}.sha256"
           echo "TAR=${TAR}" >> "$GITHUB_ENV"
 
@@ -87,9 +89,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --notes "Automated release. See CHANGELOG for details. Gate-manifest published for /vg:update T8 integrity verification." \
-            "${TAR}" \
-            "${TAR}.sha256" \
-            gate-manifest.json
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" \
+              "${TAR}" \
+              "${TAR}.sha256" \
+              gate-manifest.json \
+              --clobber
+          else
+            gh release create "${TAG}" \
+              --title "${TAG}" \
+              --notes "Automated release. See CHANGELOG for details. Gate-manifest published for /vg:update T8 integrity verification." \
+              "${TAR}" \
+              "${TAR}.sha256" \
+              gate-manifest.json
+          fi
