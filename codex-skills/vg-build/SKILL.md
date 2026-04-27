@@ -3281,33 +3281,35 @@ ${PYTHON_BIN} -c "
 import json; from datetime import datetime; from pathlib import Path
 p = Path('${PIPELINE_STATE}')
 s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
-s['status'] = 'executed'; s['pipeline_step'] = 'build-complete'
+s['status'] = 'executing'; s['pipeline_step'] = 'build-crossai-pending'
 s['plans_completed'] = '${COMPLETED_COUNT}'; s['plans_total'] = '${PLAN_COUNT}'
 now = datetime.now().isoformat()
 s['updated_at'] = now
 s.setdefault('steps', {})['build'] = {
-    'status': 'done',
-    'finished_at': now,
+    'status': 'in_progress',
+    'updated_at': now,
     'plans_completed': '${COMPLETED_COUNT}',
     'plans_total': '${PLAN_COUNT}',
-    'summary': 'SUMMARY.md (atomic build artifact)',
+    'summary': 'SUMMARY.md written; CrossAI build verification pending',
+    'reason': 'code execution complete; build is not done until CrossAI loop and run-complete pass',
 }
 p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 
 # 3. Update ROADMAP.md — mark phase as "in progress" (not complete until accept)
 if [ -f "${PLANNING_DIR}/ROADMAP.md" ]; then
-  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* executed/" "${PLANNING_DIR}/ROADMAP.md" 2>/dev/null || true
+  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* build-crossai-pending/" "${PLANNING_DIR}/ROADMAP.md" 2>/dev/null || true
 fi
 ```
 
 Display:
 ```
-Build complete for Phase {N}.
+Code execution complete for Phase {N}; build is NOT complete yet.
   Plans executed: {completed}/{total}
   Contract compliance: executors had contract context
-  State: STATE.md + ROADMAP.md updated
-  Next: /vg:review {phase}
+  State: SUMMARY.md written; PIPELINE-STATE build=in_progress
+  Next: mandatory CrossAI build-verify -> run-complete -> /vg:review {phase}
+  Do not claim /vg:build PASS until step 12 run-complete succeeds.
 ```
 
 Commit summaries:
@@ -3411,12 +3413,6 @@ fi
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "10_postmortem_sanity" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/10_postmortem_sanity.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 10_postmortem_sanity 2>/dev/null || true
-```
-
-```bash
-# v2.2 — terminal emit
-SUMMARY_COUNT=$(ls "${PHASE_DIR}"/SUMMARY*.md 2>/dev/null | wc -l | tr -d " ")
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "build.completed" --payload "{\"phase\":\"${PHASE_NUMBER:-${PHASE_ARG}}\",\"summaries\":${SUMMARY_COUNT}}" >/dev/null
 ```
 </step>
 
@@ -3572,11 +3568,43 @@ No way to skip via "promise" — events.db evidence required (OHOK-7/8).
 ## Step 12: Run-complete (validators fire, BLOCK on violations)
 
 ```bash
+# Emit final completion telemetry only after the CrossAI loop has reached an
+# accepted terminal state. run-complete validates this event in the same call.
+SUMMARY_COUNT=$(ls "${PHASE_DIR}"/SUMMARY*.md 2>/dev/null | wc -l | tr -d " ")
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "build.completed" --payload "{\"phase\":\"${PHASE_NUMBER:-${PHASE_ARG}}\",\"summaries\":${SUMMARY_COUNT},\"after_crossai\":true}" >/dev/null
+
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "12_run_complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/12_run_complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 12_run_complete 2>/dev/null || true
+
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
 RUN_RC=$?
 if [ $RUN_RC -ne 0 ]; then
   echo "⛔ build run-complete BLOCK — review orchestrator output + fix before /vg:review" >&2
   exit $RUN_RC
+fi
+
+PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
+${PYTHON_BIN:-python3} -c "
+import json; from datetime import datetime; from pathlib import Path
+p = Path('${PIPELINE_STATE}')
+s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+now = datetime.now().isoformat()
+s['status'] = 'executed'
+s['pipeline_step'] = 'build-complete'
+s['updated_at'] = now
+prev = s.get('steps', {}).get('build', {})
+prev.update({
+    'status': 'done',
+    'finished_at': now,
+    'reason': 'CrossAI loop and run-complete passed',
+})
+s.setdefault('steps', {})['build'] = prev
+p.write_text(json.dumps(s, indent=2))
+" 2>/dev/null
+
+if [ -f "${PLANNING_DIR}/ROADMAP.md" ]; then
+  sed -i "s/\*\*Status:\*\* .*/\*\*Status:\*\* executed/" "${PLANNING_DIR}/ROADMAP.md" 2>/dev/null || true
 fi
 ```
 </step>

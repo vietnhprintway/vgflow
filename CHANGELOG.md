@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.12.1 (2026-04-27) — Build CrossAI completion semantics
+
+Patch release for a misleading `/vg:build` completion signal.
+
+- Changed `/vg:build` step 9 to report "code execution complete" instead of "build complete" before CrossAI runs.
+- Moved `build.completed` telemetry to step 12 after the CrossAI build verification loop reaches an accepted terminal state.
+- Kept `PIPELINE-STATE.steps.build` as `in_progress` while CrossAI/run-complete are pending, then marks it `done` only after run-complete passes.
+- Added regression tests to prevent future pre-CrossAI completion claims.
+
 ## v2.12.0 (2026-04-27) — Platform-aware CRUD Surface Contract
 
 Feature release for the "AI must not lazy-read blueprint" problem.

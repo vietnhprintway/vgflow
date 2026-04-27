@@ -208,3 +208,30 @@ def test_build_contract_summary_still_required(build_text):
     assert any("SUMMARY.md" in p for p in paths), (
         f"SUMMARY.md missing from must_write: {paths}"
     )
+
+
+def test_build_does_not_claim_complete_before_crossai(build_text):
+    """Step 9 must not tell users the build is complete before CrossAI runs."""
+    step9 = _extract_step(build_text, "9_post_execution")
+    assert "Code execution complete for Phase" in step9
+    assert "build is NOT complete yet" in step9
+    assert "Do not claim /vg:build PASS until step 12 run-complete succeeds" in step9
+    assert "Build complete for Phase" not in step9
+
+
+def test_build_completed_event_emitted_after_crossai_step(build_text):
+    """build.completed is the final build signal, not a pre-CrossAI signal."""
+    crossai_idx = build_text.index('<step name="11_crossai_build_verify_loop">')
+    completed_idx = build_text.index('emit-event "build.completed"')
+    assert completed_idx > crossai_idx
+    assert '\\"after_crossai\\":true' in build_text
+
+
+def test_build_pipeline_state_pending_until_run_complete(build_text):
+    """Progress must show build in-progress until run-complete passes."""
+    step9 = _extract_step(build_text, "9_post_execution")
+    step12 = _extract_step(build_text, "12_run_complete")
+    assert "build-crossai-pending" in step9
+    assert "'status': 'in_progress'" in step9
+    assert "build-complete" in step12
+    assert "'status': 'done'" in step12
