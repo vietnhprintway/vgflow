@@ -157,6 +157,76 @@ def check_c_specs_coverage(decisions, specs_items, threshold_pct=10.0):
 # ─────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────
+def _read_context_frontmatter_bool(ctx_text: str, key: str) -> bool:
+    """Phase 16 D-04 helper — read a boolean key from CONTEXT.md frontmatter.
+    Frontmatter is the leading `---\\n...\\n---\\n` block at top of file."""
+    fm = re.match(r"^---\s*\n(.*?)\n---\s*\n", ctx_text, re.DOTALL)
+    if not fm:
+        return False
+    m = re.search(rf"^\s*{re.escape(key)}\s*:\s*(true|false|True|False)\s*$",
+                  fm.group(1), re.MULTILINE)
+    return bool(m and m.group(1).lower() == "true")
+
+
+def check_e_task_body_length(plan_files, ctx_text, allow_long: bool = False):
+    """Phase 16 D-03 — task body line cap gate.
+
+    Cap rules:
+      - per-task `body_max_lines` frontmatter override → use that
+      - else CONTEXT cross_ai_enriched: true → 600
+      - else default 250
+
+    Returns list[dict] of violations.
+    """
+    enriched = _read_context_frontmatter_bool(ctx_text, "cross_ai_enriched")
+    default_cap = 600 if enriched else 250
+
+    # Lazy-load extract_all_tasks from pre-executor-check.py
+    import importlib.util
+    pec_path = Path(__file__).parent / "pre-executor-check.py"
+    if not pec_path.exists():
+        return []
+    spec = importlib.util.spec_from_file_location("pec_for_check_e", pec_path)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        return []
+    extract_all_tasks = getattr(mod, "extract_all_tasks", None)
+    if not extract_all_tasks:
+        return []
+
+    violations = []
+    for pf in plan_files:
+        for task in extract_all_tasks(pf):
+            fm = task.get("frontmatter") or {}
+            cap = fm.get("body_max_lines") or default_cap
+            try:
+                cap = int(cap)
+            except (TypeError, ValueError):
+                cap = default_cap
+            actual = task["body"].count("\n") + 1 if task["body"] else 0
+            if actual > cap:
+                violations.append({
+                    "task_id": task["id"],
+                    "file": str(pf.name),
+                    "format": task["format"],
+                    "actual_lines": actual,
+                    "cap": cap,
+                    "cap_source": (
+                        "body_max_lines" if "body_max_lines" in fm
+                        else ("enriched" if enriched else "default")
+                    ),
+                    "fix_hint": (
+                        "Split task into smaller subtasks OR move prose to "
+                        "<context-refs> in CONTEXT.md (P16 D-05) OR override "
+                        "via frontmatter `body_max_lines: <N>`."
+                    ),
+                })
+
+    return violations
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--phase-dir', required=True, type=Path)
@@ -164,6 +234,9 @@ def main():
     ap.add_argument('--allow-incomplete', action='store_true', help='Warn-only mode for A/C')
     ap.add_argument('--threshold-pct', type=float, default=10.0,
                     help='Check C threshold: fail if more than this pct of items unmatched')
+    ap.add_argument('--allow-long-task', action='store_true',
+                    help='Phase 16 D-03 escape hatch: downgrade Check E BLOCK to WARN '
+                         '(logs override-debt as kind=long-task)')
     args = ap.parse_args()
 
     ctx_path = args.phase_dir / 'CONTEXT.md'
@@ -188,6 +261,10 @@ def main():
     check_a_unref = check_a_endpoint_coverage(decisions, endpoints, ts_refs)
     check_c_unmatched, check_c_pct = check_c_specs_coverage(decisions, specs_items, args.threshold_pct)
 
+    # Phase 16 D-03 — Check E: per-task body line cap
+    plan_files = sorted(args.phase_dir.glob("PLAN*.md"))
+    check_e_violations = check_e_task_body_length(plan_files, ctx, args.allow_long_task)
+
     result = {
         'decisions': len(decisions),
         'endpoints': len(endpoints),
@@ -198,6 +275,19 @@ def main():
             'status': 'PASS' if not check_a_unref else 'BLOCK',
             'unreferenced_count': len(check_a_unref),
             'unreferenced': check_a_unref,
+        },
+        'check_e': {
+            'name': 'task_body_length_cap',
+            'status': (
+                'PASS' if not check_e_violations
+                else ('WARN' if args.allow_long_task else 'BLOCK')
+            ),
+            'violations_count': len(check_e_violations),
+            'violations': check_e_violations[:10],  # cap evidence
+            'note': (
+                'Phase 16 D-03 — body cap 250 default, 600 if cross_ai_enriched, '
+                'per-task body_max_lines override.'
+            ),
         },
         'check_c': {
             'name': 'specs_in_scope_coverage',
@@ -234,14 +324,15 @@ def main():
                     for u in c['unmatched'][:5]:
                         print(f"      - {u}")
 
-    # Exit code
-    blocks = sum(1 for c in (result['check_a'], result['check_c']) if c['status'] == 'BLOCK')
+    # Exit code (P16 D-03: include Check E in BLOCK + WARN aggregation)
+    all_checks = (result['check_a'], result['check_c'], result['check_e'])
+    blocks = sum(1 for c in all_checks if c['status'] == 'BLOCK')
     if blocks > 0:
         if args.allow_incomplete:
             print("\n⚠ --allow-incomplete: treating BLOCKs as warnings", file=sys.stderr)
             return 2
         return 1
-    if any(c['status'] == 'WARN' for c in (result['check_a'], result['check_c'])):
+    if any(c['status'] == 'WARN' for c in all_checks):
         return 2
     return 0
 
