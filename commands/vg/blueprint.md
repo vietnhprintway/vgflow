@@ -1879,11 +1879,12 @@ fi
 
 **Purpose:** Produce UI contract executor reads alongside API-CONTRACTS. Answers: layout, component set, spacing tokens, interaction states, responsive breakpoints.
 
-**Input (~600 lines agent context):**
+**Input (~750 lines agent context):**
 - CONTEXT.md (design decisions if any, ~100 lines)
 - Task file-paths of FE tasks + their `<design-ref>` attributes (~100 lines)
 - `${DESIGN_OUTPUT_DIR}/manifest.json` — list of available screenshots + structural refs (~50 lines)
 - Sample design refs (read 2-3 representative ones — `*.structural.html` + `*.interactions.md`) (~300 lines)
+- **`${DESIGN_OUTPUT_DIR}/scans/{slug}.scan.json`** — per-slug Haiku Layer 2 output (modals_discovered, forms_discovered, tabs_discovered, warnings) for EVERY slug referenced in PLAN. ~150 lines combined for typical phase. **P19 D-01:** these were already produced by `/vg:design-extract` Layer 2 but previously unused — consume them as authoritative.
 
 **Agent prompt:**
 ```
@@ -1895,6 +1896,12 @@ RULES:
 3. Spacing/color tokens only if consistent across refs. If refs conflict, flag for user.
 4. Per-page section: layout (grid/flex), slots (header/sidebar/main), interaction patterns.
 5. Reference screenshots by slug — executor opens them for pixel truth.
+6. **P19 D-01 — `scan.json` is authoritative for component inventory.** For every slug:
+   - Every entry in `scan.json.modals_discovered[]` MUST appear in UI-SPEC `## Modals` section.
+   - Every entry in `scan.json.forms_discovered[]` MUST appear in UI-SPEC `## Forms` section.
+   - Every entry in `scan.json.tabs_discovered[]` MUST be surfaced in the slug's `## Per-Page Layout` entry as a `Tabs:` line.
+   - `scan.json.warnings[]` MUST be quoted verbatim in UI-SPEC `## Conflicts / Ambiguities` section if non-empty.
+   Do NOT silently drop scan.json findings — that re-introduces the L-002 silent-skip class.
 
 Output format:
 
@@ -1928,11 +1935,25 @@ Derived: {YYYY-MM-DD}
 - States needed: empty | loading | populated | error
 - Interactions: row click → detail drawer; Add button → modal (component ref above)
 
+## Modals
+(P19 D-01: enumerate every modal from scan.json[].modals_discovered)
+### {modal-name} (from {slug})
+- Trigger: {selector or button label from interactions.md}
+- Fields: {list from scan.json}
+- States: open | closed | submitting | error
+
+## Forms
+(P19 D-01: enumerate every form from scan.json[].forms_discovered)
+### {form-name} (from {slug})
+- Submit endpoint: {API contract ref}
+- Fields: {list from scan.json with type}
+- Validation: {client-side rules}
+
 ## Responsive Breakpoints
 (only if design has multiple viewport screenshots)
 
 ## Conflicts / Ambiguities
-(flag anything where design refs disagree — user decides)
+(flag anything where design refs disagree — user decides; P19 D-01: also include scan.json[].warnings verbatim)
 ```
 
 Write `${PHASE_DIR}/UI-SPEC.md`. Build step 4/8c injects relevant section per FE task.
