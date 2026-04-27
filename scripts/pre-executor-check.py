@@ -179,11 +179,24 @@ def extract_contract_section(phase_dir: Path, task_text: str) -> str:
     text = contracts_file.read_text(encoding="utf-8")
     sections = []
     for method, path in endpoints:
-        # Match contract headers like "### 1.1 POST /api/v1/..." or "### POST /api/v1/..."
-        pattern = rf"###\s+(?:\d+\.\d+\s+)?{method}\s+\S*{re.escape(path.split('/')[-1])}"
-        match = re.search(pattern, text)
+        # P17 polish bug fix: prefer FULL-PATH match first to disambiguate
+        # /api/v1/sites vs /api/v2/sites (last-segment-only match would
+        # collide and pick the first one — wrong version contract for
+        # the executor). Fall back to last-segment match only when full
+        # path doesn't appear (legacy API-CONTRACTS files with shortened
+        # headers like "### POST /sites").
+        full_path_pattern = rf"###\s+(?:\d+\.\d+\s+)?{method}\s+{re.escape(path)}\b"
+        match = re.search(full_path_pattern, text)
         if not match:
-            # Try exact path match without numbering
+            # Fallback 1: last path segment + numbering tolerance
+            last_segment = path.rstrip("/").split("/")[-1]
+            if last_segment:
+                fallback_pattern = (
+                    rf"###\s+(?:\d+\.\d+\s+)?{method}\s+\S*{re.escape(last_segment)}\b"
+                )
+                match = re.search(fallback_pattern, text)
+        if not match:
+            # Fallback 2: relaxed METHOD + path anywhere on the heading line
             pattern2 = rf"###.*{method}\s+.*{re.escape(path)}"
             match = re.search(pattern2, text)
         if match:
@@ -192,7 +205,16 @@ def extract_contract_section(phase_dir: Path, task_text: str) -> str:
             if next_h3:
                 sections.append(rest[: next_h3.start() + 10])
             else:
-                sections.append(rest[:3000])
+                # P17 polish: surface long-tail contract via comment instead
+                # of silent 3000-char truncate. 3000 chars ≈ 60-100 lines —
+                # rare for one endpoint but documented when it happens.
+                if len(rest) > 3000:
+                    sections.append(
+                        rest[:3000]
+                        + f"\n\n<!-- vg/pre-executor-check: contract section truncated from {len(rest)} to 3000 chars; if executor needs more, split endpoint into smaller blocks. -->\n"
+                    )
+                else:
+                    sections.append(rest)
 
     return "\n\n".join(sections) if sections else f"No matching contract sections for {endpoints}"
 
@@ -226,7 +248,15 @@ def extract_goals_context(phase_dir: Path, task_text: str) -> str:
                 start = None
                 break
         if start is not None:
-            sections.append("\n".join(lines[start:start + 30]))
+            # P17 polish bug fix: previous code truncated to 30 lines when no
+            # next "## Goal G-XX" heading found (i.e., the LAST goal in
+            # TEST-GOALS.md). Phase 15 D-16 goals routinely declare
+            # interactive_controls + persistence check + multiple criteria,
+            # easily 50-100+ lines. Truncate caused executor to receive an
+            # incomplete goal context for any task touching the last goal.
+            # Now: take everything from start to EOF (file is already capped
+            # by R4 budget downstream; per-goal cap is not the right place).
+            sections.append("\n".join(lines[start:]))
 
     return "\n\n".join(sections) if sections else f"Goals {goal_ids} not found"
 
