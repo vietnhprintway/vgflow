@@ -1,5 +1,112 @@
 # Changelog
 
+## v2.11.1 (2026-04-27) — Phase 16 hot-fix (cross-AI consensus 6-BLOCKer rework)
+
+Hot-fix release. Phase 16 "Task Fidelity Lock" was shipped at HEAD between
+v2.11.0 and v2.12.0 cut, but a 3-way cross-AI review (Claude Opus 4.7
+internal + Codex GPT-5.5 peer) found 6 BLOCKers — including a CRITICAL
+foundational design flaw that defeated the entire phase goal. Hot-fixed
+in 9 atomic commits before any release tag bumped past v2.11.0.
+
+### Cross-AI consensus BLOCKers fixed
+
+**B1 (CRITICAL)** — `verify-task-fidelity.py` only compared LINE COUNTS,
+not content hashes. Codex verified: replacing every body line with
+"PARAPHRASED LINE N" at identical line count returned PASS. The exact
+failure mode Phase 16 was designed to block.
+
+**B2** — `build.md` step 8c persisted UI-MAP+DESIGN-REF wrapper to
+`${TASK_NUM}.md`, NOT the task body. Audit compared wrapper line count
+vs meta's body line count → false BLOCK on every UI task on first real
+`/vg:build`. Test fixture bypassed by writing body directly to disk.
+
+**B3** — Both meta + prompt persist were gated on UI conditional. Backend
+tasks (no UI subtree, no design context) got NO meta.json → audit silent
+PASS → orchestrator could paraphrase backend task bodies freely.
+
+**B4** — `pre-executor-check.py main()` used legacy v1 extract for
+`task_context` while v2 was called separately for meta. XML PLAN tasks
+returned `"Task N not found in PLAN files"` sentinel as task_context
+while meta reported `source_format=xml`. Two extraction sources → drift.
+
+**B5** — `verify-task-schema.py` + `verify-crossai-output.py` were
+registered in `registry.yaml` with `phases_active: [scope, blueprint]`
+but NEVER invoked from any skill body. Registry tagging is documentation,
+not orchestration. Tests passed because they called validators via
+subprocess directly, never via `/vg:blueprint` flow.
+
+**B6** — `verify-crossai-output.py` diff parser only matched XML
+`<task id="N">`. SPECS D-02 explicitly says current PLANs are in heading-
+format transition. Codex verified: 50-line prose addition to `## Task N:`
+heading PLAN without `<context-refs>` returned silent PASS.
+
+### Hot-fix commits (9 atomic, ordered)
+
+- C1 `b70e600` — `pre-executor-check.py main()`: switch to
+  `extract_task_section_v2()["body"]` as single source for task_context
+  and task_meta. v1 stays as legacy shim.
+- C2 `f88853a` — `verify-crossai-output.py`: `_classify_diff_lines_per_task`
+  also matches `## Task N:` headings; tracks scope from BOTH formats.
+- C3 `f071bd8` — `build.md` step 8c split persist: always write
+  `${TASK_NUM}.body.md` + `${TASK_NUM}.meta.json`; UI conditional now
+  writes `${TASK_NUM}.uimap.md` separately. `verify-uimap-injection.py`
+  glob updated; `verify-task-fidelity.py` reads `*.body.md` primary.
+- C4 `2d8d561` (CRITICAL) — `verify-task-fidelity.py` adds
+  `task_block_sha256(prompt_text)` compare. Hash mismatch ALWAYS BLOCKs;
+  shortfall_pct only classifies the kind (truncation vs paraphrase).
+- C5 `f495f0d` — `blueprint.md` sub-step 2d-3c added: invokes
+  `verify-task-schema.py` (always) + `verify-crossai-output.py` (gated
+  `--crossai`).
+- C6 `43149c7` — `scope.md` step 4: invokes `verify-crossai-output.py`
+  after CrossAI peer review (gated `--crossai`).
+- C7 `ea75c92` — `vg-orchestrator/__main__.py` `COMMAND_VALIDATORS`:
+  `vg:blueprint += [verify-task-schema, verify-crossai-output]`,
+  `vg:scope += [verify-crossai-output]`. Defense-in-depth alongside
+  skill body invocations.
+- C8 `d55d2af` — 11 production-path regression tests (5 new test
+  classes) covering each of the 6 BLOCKers. Codex's exact paraphrase
+  attack now BLOCKed by `test_same_line_paraphrase_blocks_as_content_paraphrase`.
+- C9 (this) — VERSION 2.11.0 → 2.11.1, CHANGELOG entry.
+
+### Test count delta
+
+- v2.11.0: 207 passed, 1 skipped (P15: 100, P16: 43, P17: 64)
+- v2.11.1: 218 passed, 1 skipped (P15: 100, P16: 54, P17: 64). +11 tests.
+
+### Test semantic update
+
+- `TestPhase16TaskFidelity::test_minor_truncation_passes` was renamed to
+  `test_minor_truncation_blocks_by_hash` and the assertion flipped from
+  PASS to BLOCK. The original test encoded the buggy line-count-only
+  behavior that allowed silent content drift up to 10%. After C4, ANY
+  content drift = hash mismatch = BLOCK as content_paraphrase.
+
+### Cross-AI review artifacts
+
+Full review reports kept for audit trail:
+- `dev-phases/16-task-fidelity-lock-v1/REVIEW-CROSSAI.md` (Claude Opus 4.7
+  internal review — found 3 BLOCKers + 6 WARNs; missed B1 and B6)
+- `dev-phases/16-task-fidelity-lock-v1/crossai/result-codex.md` (Codex
+  GPT-5.5 peer review — found 5 BLOCKers + 4 WARNs; verified B1 and B6
+  with negative tests)
+- `dev-phases/16-task-fidelity-lock-v1/crossai/prompt.md` (the prompt
+  both reviewers received — for reproducibility)
+
+Gemini 3.1 Pro Preview was attempted as a third reviewer but Cloud Code
+Assist OAuth quota retrieve fail (`PERMISSION_DENIED`) blocked invocation.
+Skipped without affecting consensus (Claude+Codex agreement was already
+HIGH confidence).
+
+### Key takeaway for future phases
+
+Acceptance tests must exercise the actual /vg pipeline path, not just
+helper functions in isolation. C8 `TestPhase16Hotfix*` classes are the
+new template: assert on production code paths (build.md text, skill
+body invocations, orchestrator dispatch dict), not just on validator
+behavior in subprocess isolation.
+
+---
+
 ## v2.11.0 (2026-04-27) — Phase 17 ship + extraction-quality polish + orphan validator wire
 
 Minor release combining 3 layers of work that surfaced from Phase 15
