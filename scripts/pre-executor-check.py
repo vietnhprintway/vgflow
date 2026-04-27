@@ -629,22 +629,25 @@ def main():
     config = parse_config(config_path)
     warnings = []
 
-    # Extract task section
-    task_context = extract_task_section(phase_dir, args.task_num, args.plan_file)
-    if "not found" in task_context.lower():
-        warnings.append(f"Task {args.task_num}: {task_context}")
+    # Phase 16 hot-fix (v2.11.1) — use extract_task_section_v2 as the SINGLE
+    # source for both task_context and task_meta. Cross-AI consensus BLOCKer 4
+    # (Codex GPT-5.5 verified): v1 only matches heading format, so XML PLAN
+    # tasks returned the "Task N not found in PLAN files" sentinel which then
+    # got passed to the executor verbatim. Meanwhile v2 was called separately
+    # just for the meta hash, so source_format reported "xml" while the actual
+    # executor input was the not-found string. Two sources of truth → drift.
+    v2_result = extract_task_section_v2(phase_dir, args.task_num, args.plan_file)
+    task_context = v2_result["body"]
+    if not task_context or "not found" in task_context.lower():
+        warnings.append(f"Task {args.task_num}: {task_context or 'extraction returned empty body'}")
 
-    # Phase 16 D-01 + D-02 — compute task body SHA256 + meta sidecar payload.
-    # Use extract_task_section_v2 to detect xml vs heading format and pass
-    # the body BEFORE wrapper/frontmatter to the hasher (so format swap
-    # doesn't change the hash for the same actual content).
+    # Phase 16 D-01 task_meta — reuse v2_result; no second extraction.
     # Best-effort: if scripts/lib/task_hasher.py is missing (older install),
     # skip silently rather than crash.
     task_meta = None
     try:
         sys.path.insert(0, str(Path(__file__).parent / "lib"))
         from task_hasher import stable_meta as _stable_meta  # noqa: E402
-        v2 = extract_task_section_v2(phase_dir, args.task_num, args.plan_file)
         plan_files = sorted(phase_dir.glob(args.plan_file or "*PLAN*.md"))
         source_path = plan_files[0].name if plan_files else "PLAN.md"
         task_meta = _stable_meta(
@@ -652,8 +655,8 @@ def main():
             phase=str(phase_dir.name).split("-")[0].lstrip("0") or phase_dir.name,
             wave="unknown",  # build.md step 8c overrides with actual wave-${N}
             source_path=source_path,
-            source_format=v2["format"],
-            body_text=v2["body"],
+            source_format=v2_result["format"],
+            body_text=v2_result["body"],
         )
     except Exception as e:
         warnings.append(f"P16 D-01 task_meta: {type(e).__name__}: {e}")
