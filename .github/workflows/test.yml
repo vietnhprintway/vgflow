@@ -51,7 +51,7 @@ jobs:
       - name: Validator smoke — each returns valid JSON
         run: |
           for v in scripts/validators/*.py; do
-            [ "$(basename $v)" = "_common.py" ] && continue
+            case "$(basename "$v")" in _*.py) continue ;; esac
             out=$(python "$v" --phase 99 2>&1 || true)
             echo "$out" | python -c "
           import json, sys
