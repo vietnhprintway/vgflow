@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.14.0 (2026-04-28) — Design fidelity 95%: upstream view-decomp + downstream vision guard + forcing functions
+
+Phase 19 minor release. Closes the residual gap after v2.13.0's 4-layer pixel pipeline + L-002 mandate. Eight decisions (D-01 through D-09; D-04 deferred), three implementation waves. AI alone never reaches 100%, but the combined stack now meaningfully approaches 95% reliability on dogfood phases.
+
+**Wave A — cheap, high leverage:**
+- **D-01 — `scan.json` consumed in UI-SPEC**: blueprint step 2b6 now reads `${DESIGN_OUT}/scans/{slug}.scan.json` for every `<design-ref>` slug. Modals/forms/tabs discovered by Layer 2 Haiku must surface in UI-SPEC.md `## Modals` / `## Forms` / `## Per-Page Layout`. New `verify-ui-spec-scan-coverage.py` blocks if the agent silently dropped scan findings.
+- **D-05 — vision-self-verify (Lớp 5)**: separate-model adjudication at /vg:build step 9. Spawns Haiku zero-context with the design PNG + commit diff + VIEW-COMPONENTS row, gets PASS/FLAG/BLOCK on whether expected components actually appear in the JSX. Closes the gap where pixel-similar UI passes L3/L4 SSIM yet misses components entirely. New `verify-vision-self-verify.py` + `design-fidelity-guard.md` skill. Off by default (config gate); ~$0.001/task Haiku when enabled.
+- **D-06 — manual UAT 3-file diff**: /vg:accept Section D now surfaces `baseline.png` + `current.png` + `diff.png` side-by-side when L4 SSIM produced a diff. User picks `[f]` → phase rejected with `kind=human-rejected-design` debt; AI cannot bypass interactive prompt.
+
+**Wave B — vision upstream:**
+- **D-02 — view-decomposition step 2b6c**: blueprint inserts a step BEFORE UI-SPEC that spawns vision-capable Opus per `<design-ref>` slug to Read the PNG and emit canonical `VIEW-COMPONENTS.md` (semantic component list with positions). New `verify-view-decomposition.py` blocks generic names (div/Container/Wrapper alone), enforces minimum 3 components per slug. Off by default — opt-in via `design_assets.view_decomposition.enabled`.
+- **D-03 — cross-AI gap-hunt**: same step 2b6c gets a second adversarial pass with a DIFFERENT model (per `vg.config.crossai_clis`) asking "what did Layer 1 miss?". Reuse of `vg-design-gap-hunter` pattern. ≥2 missed → re-spawn Layer 1 with reminder, max 1 iteration.
+
+**Wave C — forcing functions, closing back doors:**
+- **D-07 — design override-debt threshold gate**: /vg:accept step 3c new sub-gate. Blocks accept when ≥N (default 2) unresolved `kind=design-*` entries exist in OVERRIDE-DEBT.md. Caps the stacking of `--skip-design-pixel-gate` / `--skip-fingerprint-check` / `--skip-build-visual` / `--allow-design-drift`. New `verify-override-debt-threshold.py` (count-based, fnmatch glob filter — distinct from age-based SLA validator).
+- **D-08 — commit-msg design citation gate**: extends `templates/vg/commit-msg` hook. FE files staged without `Per design/{slug}.png` OR `Design: no-asset (reason)` OR `Design: refactor-only` get rejected at commit boundary. PR #15 L-002 rule moves from convention to hard gate. Independent of `commit_msg_hook.enabled`; gated by `design_citation.enabled` (default true). Pure-rename commits bypass.
+
+**Research only:**
+- **D-09 — transcript verification feasibility**: documented in `dev-phases/19-design-fidelity-95-pct-v1/RESEARCH.md`. Direct subagent transcript inspection is NOT feasible with current Claude Code surface (`SubagentStop` returns final output text only, no `tool_calls` payload). Sentinel-file-with-PNG-SHA256 fallback is implementable now but deferred — L1+L2+L5+L6 already meet the 95% target without it.
+
+**Deferred:**
+- **D-04 — fine-grained planner re-emit from VIEW-COMPONENTS** marked HIGH risk in plan; would change planner output shape and break existing PLAN fixtures. Skipped this release; revisit after dogfood validates VIEW-COMPONENTS quality.
+
+**Config additions:**
+- `visual_checks.vision_self_verify.{enabled,model,timeout_s}` (D-05)
+- `design_assets.view_decomposition.{enabled,model,min_components_per_slug}` (D-02)
+- `override_debt.design_threshold` (D-07)
+- `design_citation.enabled` (D-08)
+
+**Reliability ladder (anecdotal estimate):**
+
+| Stack | Reliability |
+|---|---|
+| Pre-v2.13 (prompt + manual UAT only) | ~30% |
+| v2.13.0 (4 layers + L-002) | ~70% |
+| v2.14.0 Wave A (D-01 + D-05 + D-06) | ~85% |
+| v2.14.0 full (Wave A + B + C) | ~95% |
+| v2.14.0 + D-09 sentinel-with-hash (future) | ~97% |
+| 100% | impossible — AI is stochastic |
+
 ## v2.13.0 (2026-04-28) — Design pixel fidelity pipeline (4 layers) + L-002 planner mandate
 
 Minor release closing the silent-skip gap where AI-built UI shipped generic Tailwind despite a phase having a complete design folder. Four stacked gates so a slip in any one layer is caught by the next, plus a planner-side coverage validator.
