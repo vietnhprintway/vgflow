@@ -214,6 +214,28 @@ def test_review_crossai_waivable_by_skip_flag(review_text):
     assert crossai["required_unless_flag"] == "--skip-crossai"
 
 
+def test_review_crossai_requires_artifact_and_telemetry(review_text):
+    """Review CrossAI needs hard evidence, not just a marker touch."""
+    assert '${PHASE_DIR}/crossai/review-check.xml' in review_text
+    artifact_idx = review_text.index('${PHASE_DIR}/crossai/review-check.xml')
+    artifact_block = review_text[artifact_idx:artifact_idx + 180]
+    assert 'required_unless_flag: "--skip-crossai"' in artifact_block
+
+    assert 'event_type: "crossai.verdict"' in review_text
+    event_idx = review_text.index('event_type: "crossai.verdict"')
+    event_block = review_text[event_idx:event_idx + 180]
+    assert 'required_unless_flag: "--skip-crossai"' in event_block
+
+
+def test_review_skip_crossai_requires_override(review_text):
+    """Skipping objective review must leave override debt."""
+    assert re.search(
+        r"forbidden_without_override:.*-\s+\"--skip-crossai\"",
+        review_text,
+        re.DOTALL,
+    )
+
+
 def test_review_profile_specific_phases_are_warn(review_text):
     """Optional / profile-exclusive phases must be severity=warn to avoid
     blocking when REVIEW_MODE routes around them."""

@@ -4593,12 +4593,18 @@ fi
 </step>
 
 <step name="crossai_review">
-## CrossAI Review (optional)
+## CrossAI Review (mandatory when CLIs are configured)
 
-**If config.crossai_clis is empty OR --skip-crossai, skip.**
+**If config.crossai_clis is empty, emit an explicit skip note and continue.**
+**If --skip-crossai is present, it must have override-debt evidence because
+objective review is otherwise a silent quality downgrade.**
 
 Prepare context with RUNTIME-MAP + GOAL-COVERAGE-MATRIX + TEST-GOALS.
 Set `$LABEL="review-check"`. Follow crossai-invoke.md.
+
+Required evidence when not skipped:
+- `${PHASE_DIR}/crossai/review-check.xml`
+- `crossai.verdict` telemetry event
 </step>
 
 <step name="write_artifacts">

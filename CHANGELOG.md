@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.12.2 (2026-04-27) — Review CrossAI evidence gate
+
+Patch release for objective review enforcement.
+
+- `/vg:review` now requires `${PHASE_DIR}/crossai/review-check.xml` when CrossAI is not explicitly skipped.
+- `/vg:review` now requires `crossai.verdict` telemetry when CrossAI is not explicitly skipped.
+- `--skip-crossai` in review now requires override-debt evidence, matching blueprint behavior.
+- Added regression tests so review CrossAI cannot regress to marker-only theatre.
+
 ## v2.12.1 (2026-04-27) — Build CrossAI completion semantics
 
 Patch release for a misleading `/vg:build` completion signal.

@@ -22,6 +22,13 @@ runtime_contract:
   must_write:
     - "${PHASE_DIR}/RUNTIME-MAP.json"
     - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
+    # CrossAI review evidence. Review sets LABEL="review-check" and the
+    # shared invoker writes `${OUTPUT_DIR}/${LABEL}.xml`. This must be
+    # specific to review-check so stale blueprint result-*.xml files cannot
+    # satisfy the review gate.
+    - path: "${PHASE_DIR}/crossai/review-check.xml"
+      content_min_bytes: 80
+      required_unless_flag: "--skip-crossai"
     # v2.5.1 anti-forge: Haiku scan JSON files prove step 2b-2 actually
     # spawned scanners instead of just touching marker. Waived for
     # non-web profiles (no browser discovery needed).
@@ -99,6 +106,9 @@ runtime_contract:
       phase: "${PHASE_NUMBER}"
     - event_type: "review.completed"
       phase: "${PHASE_NUMBER}"
+    - event_type: "crossai.verdict"
+      phase: "${PHASE_NUMBER}"
+      required_unless_flag: "--skip-crossai"
   forbidden_without_override:
     - "--override-reason"
     - "--skip-scan"
@@ -108,6 +118,7 @@ runtime_contract:
     - "--allow-orthogonal-hotfix"
     - "--allow-no-bugref"
     - "--allow-empty-bugfix"
+    - "--skip-crossai"
 ---
 
 <NARRATION_POLICY>
@@ -4566,12 +4577,18 @@ fi
 </step>
 
 <step name="crossai_review">
-## CrossAI Review (optional)
+## CrossAI Review (mandatory when CLIs are configured)
 
-**If config.crossai_clis is empty OR --skip-crossai, skip.**
+**If config.crossai_clis is empty, emit an explicit skip note and continue.**
+**If --skip-crossai is present, it must have override-debt evidence because
+objective review is otherwise a silent quality downgrade.**
 
 Prepare context with RUNTIME-MAP + GOAL-COVERAGE-MATRIX + TEST-GOALS.
 Set `$LABEL="review-check"`. Follow crossai-invoke.md.
+
+Required evidence when not skipped:
+- `${PHASE_DIR}/crossai/review-check.xml`
+- `crossai.verdict` telemetry event
 </step>
 
 <step name="write_artifacts">
