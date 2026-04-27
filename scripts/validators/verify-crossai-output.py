@@ -61,8 +61,14 @@ def _classify_diff_lines_per_task(plan_diff: str) -> dict[str, dict]:
     and count prose-growth + context-refs additions.
 
     Returns dict: { task_id: {prose_added, context_refs_added, in_frontmatter} }
-    Heuristic: track current task by matching `<task id="N">` headers in
-    the diff (works for added or context lines)."""
+
+    Tracks task scope from BOTH formats (Phase 16 hot-fix v2.11.1, BLOCKer 6
+    cross-AI consensus — Codex GPT-5.5 verified that 50-line prose addition
+    to a heading-format PLAN returned silent PASS):
+      - XML: `<task id="N">` opens, `</task>` closes
+      - Heading: `## Task N:` (or `### Task N:`) opens; next `## Task M:` /
+        `## Wave M:` / non-task H2 closes implicitly
+    """
     state: dict[str, dict] = {}
     current_task: str | None = None
     in_frontmatter = False
@@ -71,6 +77,14 @@ def _classify_diff_lines_per_task(plan_diff: str) -> dict[str, dict]:
     task_close_re = re.compile(r'</task>')
     fm_re = re.compile(r'^---\s*$')
     ctx_ref_re = re.compile(r'<context-refs>')
+    # Heading-format task opener — mirrors extract_all_tasks() in
+    # pre-executor-check.py so the diff parser and the canonical extractor
+    # agree on what a "task" is.
+    heading_task_re = re.compile(r'^#{2,3}\s+Task\s+(0?\d+)\b', re.IGNORECASE)
+    # Implicit close: next "## Task N:" or "## Wave N:" heading. Matched
+    # alongside heading_task_re so we can switch from one heading task to the
+    # next without leaving counts dangling.
+    heading_close_re = re.compile(r'^#{2,3}\s+(?:Wave\s+\d+)\b', re.IGNORECASE)
 
     for raw in plan_diff.splitlines():
         if raw.startswith("@@"):
@@ -80,9 +94,11 @@ def _classify_diff_lines_per_task(plan_diff: str) -> dict[str, dict]:
         if not raw or raw[0] not in ("+", "-", " "):
             continue
         line = raw[1:]  # drop diff marker
+        stripped = line.strip()
 
-        # Track task block scope (any context line)
+        # Track task block scope (any context line — added/removed/unchanged)
         m = task_open_re.search(line)
+        hm = heading_task_re.match(stripped)
         if m:
             current_task = m.group(1)
             state.setdefault(current_task, {
@@ -91,10 +107,18 @@ def _classify_diff_lines_per_task(plan_diff: str) -> dict[str, dict]:
                 "in_frontmatter": False,
             })
             in_frontmatter = False
-        elif task_close_re.search(line):
+        elif hm:
+            current_task = hm.group(1).lstrip("0") or "0"
+            state.setdefault(current_task, {
+                "prose_added": 0,
+                "context_refs_added": 0,
+                "in_frontmatter": False,
+            })
+            in_frontmatter = False
+        elif task_close_re.search(line) or heading_close_re.match(stripped):
             current_task = None
             in_frontmatter = False
-        elif fm_re.match(line.strip()) and current_task:
+        elif fm_re.match(stripped) and current_task:
             in_frontmatter = not in_frontmatter
 
         # Only count ADDED lines inside a task block
