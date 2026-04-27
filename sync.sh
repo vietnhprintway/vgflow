@@ -60,6 +60,7 @@ fi
 SUMMARY=()
 CHANGED=0
 MISSING=0
+MCP_FAILED=false
 
 note() {
   SUMMARY+=("$1")
@@ -245,6 +246,34 @@ if [ "$MODE_CHECK" = "false" ]; then
 fi
 echo ""
 
+echo "2c. Ensure Playwright MCP workers"
+MCP_VALIDATOR="$SCRIPT_DIR/scripts/validators/verify-playwright-mcp-config.py"
+if [ -z "$PYTHON_BIN" ]; then
+  note "MISSING python: cannot verify Playwright MCP config"
+  MISSING=$((MISSING + 1))
+elif [ -f "$MCP_VALIDATOR" ]; then
+  if [ "$MODE_CHECK" = "true" ]; then
+    if ! "$PYTHON_BIN" "$MCP_VALIDATOR" --quiet >/dev/null 2>&1; then
+      note "UPDATED: playwright-mcp-config:~/.claude + ~/.codex"
+      CHANGED=$((CHANGED + 1))
+    fi
+  else
+    if "$PYTHON_BIN" "$MCP_VALIDATOR" --repair --quiet \
+        --lock-source "$SCRIPT_DIR/playwright-locks/playwright-lock.sh"; then
+      echo "  OK: playwright1-5 configured for Claude/Codex"
+    else
+      note "FAILED: Playwright MCP config; run $PYTHON_BIN $MCP_VALIDATOR --repair"
+      MISSING=$((MISSING + 1))
+      MCP_FAILED=true
+    fi
+  fi
+else
+  note "MISSING source validator: scripts/validators/verify-playwright-mcp-config.py"
+  MISSING=$((MISSING + 1))
+  MCP_FAILED=true
+fi
+echo ""
+
 echo "3. Deploy Codex workflow to target project"
 sync_codex_skills_exact "$TARGET_ROOT/.codex" "codex-skill"
 sync_codex_agents "$TARGET_ROOT/.codex"
@@ -301,4 +330,8 @@ if [ "$MODE_CHECK" = "true" ]; then
   echo ""
   echo "Dry run only. Re-run without --check to apply."
   [ "$CHANGED" -gt 0 ] && exit 1 || exit 0
+fi
+
+if [ "$MCP_FAILED" = "true" ]; then
+  exit 1
 fi

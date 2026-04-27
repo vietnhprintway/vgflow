@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.12.3 (2026-04-27) — Playwright MCP install/update verification
+
+Patch release for environment bootstrap reliability.
+
+- Added `verify-playwright-mcp-config.py` to check and repair Claude + Codex Playwright MCP workers (`playwright1`..`playwright5`).
+- `install.sh`, `sync.sh`, and `/vg:update` now verify/repair Playwright MCP config instead of assuming user settings are already correct.
+- Replaced stale hardcoded Playwright lock-manager paths with runtime `${HOME}` / `VG_PLAYWRIGHT_LOCK_DIR` resolution.
+- Added regression tests for stale copied settings, fake-HOME install/sync, and `/vg:update` MCP repair wiring.
+
 ## v2.12.2 (2026-04-27) — Review CrossAI evidence gate
 
 Patch release for objective review enforcement.

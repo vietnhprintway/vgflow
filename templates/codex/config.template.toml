@@ -32,10 +32,11 @@ config_file = ".codex/agents/vgflow-executor.toml"
 description = "VGFlow cheap classifier/scanner for read-only summaries and triage."
 config_file = ".codex/agents/vgflow-classifier.toml"
 
-# Optional Playwright MCP example. Installer/sync does not rewrite user paths.
-# Add concrete absolute profile directories in ~/.codex/config.toml when needed.
+# Optional Playwright MCP shape. install/sync/update generate concrete profile
+# directories in the current user's ~/.codex/config.toml; do not copy paths
+# from another machine.
 #
 # [mcp_servers.playwright1]
 # command = "npx"
-# args = ["@playwright/mcp@latest", "--user-data-dir", "/tmp/playwright-mcp-codex-1"]
+# args = ["@playwright/mcp@latest", "--user-data-dir", "<current-user-home>/.codex/playwright-profile-1"]
 # type = "stdio"

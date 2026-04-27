@@ -161,7 +161,8 @@ High-level flow:
 9. Clean merges → apply; conflicts → `.claude/vgflow-patches/{rel}.conflict` + manifest entry.
 10. Rotate ancestor dir + bump `.claude/VGFLOW-VERSION`.
 11. Sync Codex mirrors directly from the updated release assets.
-12. Report counts + restart reminder.
+12. Verify/repair Claude + Codex Playwright MCP workers (`playwright1`..`playwright5`).
+13. Report counts + restart reminder.
 </objective>
 
 <process>
@@ -620,6 +621,28 @@ fi
 ```
 </step>
 
+<step name="8b_repair_playwright_mcp">
+```bash
+echo ""
+echo "Verifying Playwright MCP workers..."
+MCP_VALIDATOR="${REPO_ROOT}/.claude/scripts/validators/verify-playwright-mcp-config.py"
+LOCK_SOURCE="${NEW_ANCESTOR}/playwright-locks/playwright-lock.sh"
+if [ -f "$MCP_VALIDATOR" ]; then
+  if python3 "$MCP_VALIDATOR" --repair --lock-source "$LOCK_SOURCE"; then
+    echo "Playwright MCP verify: PASS (Claude + Codex playwright1-5)"
+  else
+    echo "⛔ Playwright MCP verify failed."
+    echo "   Fix settings, then run:"
+    echo "   python3 \"$MCP_VALIDATOR\" --repair --lock-source \"$LOCK_SOURCE\""
+    exit 1
+  fi
+else
+  echo "⛔ Playwright MCP validator missing after update: $MCP_VALIDATOR"
+  exit 1
+fi
+```
+</step>
+
 <step name="9_report">
 ```bash
 echo ""
@@ -655,6 +678,7 @@ echo "NOTE: Restart Claude Code session to load updated commands/skills."
 - Claude Code hooks are installed/repaired after update (`UserPromptSubmit`, `Stop`, `PostToolUse` edit warning, `PostToolUse` Bash step tracker).
 - Codex mirrors in `.codex/skills`, `.codex/agents`, and global `~/.codex` are refreshed directly from the updated release assets.
 - Functional Codex mirror equivalence is verified after update; drift without merge conflicts fails the update.
+- Playwright MCP workers are verified/repaired after update for both Claude and Codex (`playwright1`..`playwright5`) and stale hardcoded lock scripts are replaced.
 - Final report lists updated / new / conflict counts and suggests `/vg:reapply-patches` when relevant.
 - Meta files (VERSION, CHANGELOG.md, README.md, LICENSE, install.sh, sync.sh, vg.config.template.md) never written to `.claude/`.
 </success_criteria>

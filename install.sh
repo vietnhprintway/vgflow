@@ -348,6 +348,18 @@ fi
 
 fi  # end python check
 
+MCP_VALIDATOR="$SCRIPT_DIR/scripts/validators/verify-playwright-mcp-config.py"
+if [ -n "${PYTHON_BIN:-}" ] && [ -f "$MCP_VALIDATOR" ]; then
+  if "$PYTHON_BIN" "$MCP_VALIDATOR" --repair --quiet \
+      --lock-source "$SCRIPT_DIR/playwright-locks/playwright-lock.sh"; then
+    echo "  ✓ Playwright MCP verified: Claude + Codex playwright1-5"
+  else
+    echo "  ⚠ Playwright MCP verification failed. Run:"
+    echo "    $PYTHON_BIN $MCP_VALIDATOR --repair --lock-source \"$SCRIPT_DIR/playwright-locks/playwright-lock.sh\""
+    exit 1
+  fi
+fi
+
 echo "  Note: restart each CLI after install to load the new MCP servers."
 
 # ============================================================

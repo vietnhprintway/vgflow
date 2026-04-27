@@ -55,6 +55,16 @@ def test_update_command_repairs_enforcement_hooks():
     assert ".vg/events.db" in text
 
 
+def test_update_command_repairs_playwright_mcp_workers():
+    text = UPDATE_MD.read_text(encoding="utf-8")
+    assert '<step name="8b_repair_playwright_mcp">' in text
+    assert "verify-playwright-mcp-config.py" in text
+    assert "--repair --lock-source" in text
+    assert "playwright1" in text
+    assert "playwright5" in text
+    assert "Claude + Codex" in text
+
+
 # ---- Task C1: compare_versions -----------------------------------------------
 
 def test_compare_equal():

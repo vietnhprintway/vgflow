@@ -30,7 +30,6 @@ MIRROR_SYNC = (
 RUNTIME_ADAPTER = (
     REPO_ROOT / "scripts" / "validators" / "verify-codex-runtime-adapter.py"
 )
-
 EXPECTED_SKILLS = {
     "api-contract",
     "flow-runner",
@@ -187,6 +186,30 @@ def _assert_no_python_cache_synced(root: Path) -> None:
     assert not list(scripts.rglob("*.pyc"))
 
 
+def _assert_playwright_mcp_configured(home: Path) -> None:
+    settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    for i in range(1, 6):
+        entry = settings["mcpServers"][f"playwright{i}"]
+        assert entry["command"] == "npx"
+        args = entry["args"]
+        assert "@playwright/mcp@latest" in args
+        assert "--user-data-dir" in args
+        assert args[args.index("--user-data-dir") + 1].replace("\\", "/").endswith(
+            f"/.claude/playwright-profile-{i}"
+        )
+
+    config = (home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    for i in range(1, 6):
+        assert f"[mcp_servers.playwright{i}]" in config
+        assert "@playwright/mcp@latest" in config
+        assert f"/.codex/playwright-profile-{i}" in config.replace("\\", "/")
+
+    lock = home / ".claude" / "playwright-locks" / "playwright-lock.sh"
+    lock_text = lock.read_text(encoding="utf-8")
+    assert "VG_PLAYWRIGHT_LOCK_DIR" in lock_text
+    assert "C:/Users/Lionel Messi" not in lock_text
+
+
 def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
     bash = _working_bash()
     if bash is None:
@@ -285,6 +308,7 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
     _assert_no_python_cache_synced(target)
 
     config_text = (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    _assert_playwright_mcp_configured(fake_home)
     _assert_toml_smoke(fake_home / ".codex" / "config.toml")
     _assert_toml_smoke(target / ".codex" / "config.template.toml")
     for agent_file in EXPECTED_AGENTS:
@@ -449,6 +473,7 @@ def test_install_deploys_full_claude_and_codex_surfaces(tmp_path):
     ).read_text(encoding="utf-8")
     assert "VG_CODEX_MODEL_EXECUTOR" in config_template
     assert "VG_CODEX_MODEL_SCANNER" in config_template
+    _assert_playwright_mcp_configured(fake_home)
 
     validator_env = os.environ.copy()
     validator_env.update(

@@ -12,7 +12,18 @@
 #   "codex"            → codex-pw-1.lock .. codex-pw-5.lock         (Codex sessions)
 #   "gemini"           → gemini-pw-1.lock .. gemini-pw-5.lock       (Gemini sessions)
 
-LOCK_DIR="C:/Users/Lionel Messi/.claude/playwright-locks"
+_vg_home() {
+  if [ -n "${HOME:-}" ]; then
+    printf '%s\n' "$HOME"
+  elif [ -n "${USERPROFILE:-}" ]; then
+    printf '%s\n' "$USERPROFILE"
+  else
+    printf '.\n'
+  fi
+}
+
+LOCK_DIR="${VG_PLAYWRIGHT_LOCK_DIR:-$(_vg_home)/.claude/playwright-locks}"
+mkdir -p "$LOCK_DIR"
 
 # Auto-TTL: claim step auto-sweeps locks older than this (seconds).
 # Haiku scan budget = 10 min max; buffer 20 min = 1800s.
