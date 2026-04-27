@@ -677,6 +677,39 @@ PY
     echo "   These need manual triage. Recommended: re-run the original gate OR mark --wont-fix."
   fi
 fi
+
+# ─── P19 D-07 — design override-debt threshold gate ────────────────────────
+# The 4-layer pixel pipeline has 4 override flags
+# (--skip-design-pixel-gate / --skip-fingerprint-check / --skip-build-visual /
+# --allow-design-drift). Each logs override-debt with kind=design-*. Without
+# a count threshold, an executor can stack all 4 overrides per phase and ship
+# silently. This gate caps that: ≥2 unresolved kind=design-* → BLOCK accept.
+DESIGN_DEBT_THRESHOLD="$(vg_config_get override_debt.design_threshold 2 2>/dev/null || echo 2)"
+DESIGN_DEBT_REPORT="${VG_TMP}/design-debt-threshold.json"
+"${PYTHON_BIN:-python3}" .claude/scripts/validators/verify-override-debt-threshold.py \
+  --debt-file "${PLANNING_DIR}/OVERRIDE-DEBT.md" \
+  --kind 'design-*' \
+  --threshold "${DESIGN_DEBT_THRESHOLD}" \
+  --status unresolved \
+  --output "${DESIGN_DEBT_REPORT}" >/dev/null 2>&1
+DESIGN_DEBT_RC=$?
+if [ "$DESIGN_DEBT_RC" != "0" ] && [[ ! "$ARGUMENTS" =~ --allow-design-debt-threshold ]]; then
+  DESIGN_DEBT_COUNT=$("${PYTHON_BIN:-python3}" -c "import json; print(json.load(open('${DESIGN_DEBT_REPORT}')).get('count',0))" 2>/dev/null || echo 0)
+  echo ""
+  echo "⛔ P19 D-07 design-debt threshold gate BLOCKED — ${DESIGN_DEBT_COUNT} unresolved kind=design-* entries (threshold: ${DESIGN_DEBT_THRESHOLD})"
+  echo ""
+  echo "Resolution paths:"
+  echo "  1. /vg:override-resolve <ID> per entry — re-run gate cleanly OR mark WONT_FIX with rationalization-guard"
+  echo "  2. /vg:build ${PHASE_NUMBER} --gaps-only — re-trigger affected gates so they auto-resolve"
+  echo "  3. /vg:accept ${PHASE_NUMBER} --allow-design-debt-threshold --reason='<why shipping with stacked design overrides>'"
+  echo ""
+  echo "  Detail: ${DESIGN_DEBT_REPORT}"
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "accept_design_debt_threshold" "${PHASE_NUMBER}" "accept.3c" \
+      "design_debt_threshold" "BLOCK" "{\"count\":${DESIGN_DEBT_COUNT},\"threshold\":${DESIGN_DEBT_THRESHOLD}}"
+  fi
+  exit 1
+fi
 ```
 
 **NEW command placeholder:** `/vg:override-resolve {gate_id} --wont-fix --reason='...'` — explicit decline path for overrides that will never be clean-resolved. Ships in v1.9+. Until then, use `--allow-unresolved-overrides` inline path (logs new debt entry, still blocks next accept — forces eventual confrontation).
