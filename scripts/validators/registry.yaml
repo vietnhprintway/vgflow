@@ -676,3 +676,13 @@ validators:
     runtime_target_ms: 3000
     added_in: extended-v2.9.0-phase-15
     description: D-03/D-12b — wave-scoped (--scope owner-wave-id=<id>) + holistic AST drift; D-08 profile threshold via --phase
+
+  # ──── Phase 17 — Test Session Reuse (D-06) ────
+  - id: test-session-reuse
+    path: .claude/scripts/validators/verify-test-session-reuse.py
+    severity: warn
+    phases_active: [test]
+    domain: test
+    runtime_target_ms: 1000
+    added_in: v2.11.0-phase-17
+    description: P17 D-06 — detect generated specs still using legacy beforeEach(loginAs) instead of test.use(useAuth) per Phase 17 storage-state pattern. WARN now; escalate to BLOCK after 2 release cycles.
