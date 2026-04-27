@@ -1100,17 +1100,50 @@ AskUserQuestion:
 If `n` → abort UAT, write UAT.md status = `DEFERRED_PENDING_RIPPLE_REVIEW`.
 
 ### D. Design fidelity (if design refs exist)
+
+**P19 D-06 — strict 3-file inspection when L4 produced diffs.** If
+`${PHASE_DIR}/visual-fidelity/{ref}.diff.png` exists (the L4 review SSIM
+gate produced a baseline-vs-current diff), surface ALL THREE files in the
+prompt so the user can open them side-by-side. Reject = phase not
+acceptable (returns to /vg:build with override-debt logged).
+
 For each unique design-ref in `${VG_TMP}/uat-designs.txt`:
+
+```bash
+DESIGN_DIR_REL_UAT="$(vg_config_get design_assets.output_dir .vg/design-normalized 2>/dev/null || echo .vg/design-normalized)"
+DIFF_PNG="${PHASE_DIR}/visual-fidelity/{ref}.diff.png"
+CURRENT_PNG="${PHASE_DIR}/visual-fidelity/{ref}.current.png"
+BASELINE_PNG="${REPO_ROOT}/${DESIGN_DIR_REL_UAT}/screenshots/{ref}.default.png"
+
+if [ -f "$DIFF_PNG" ]; then
+  PROMPT_BODY="Design ref: {ref}
+   THREE files to open side-by-side (P19 D-06):
+     baseline:  ${BASELINE_PNG}
+     current:   ${CURRENT_PNG}
+     diff:      ${DIFF_PNG}
+   The diff PNG highlights pixel mismatches in red.
+   Built output matches design (layout, spacing, components, copy)?"
+else
+  PROMPT_BODY="Design ref: {ref}
+   Screenshot: ${REPO_ROOT}/${DESIGN_DIR_REL_UAT}/screenshots/{ref}.default.png
+   (No L4 diff PNG produced — review browser may not have captured this view.)
+   Built output matches screenshot (layout, spacing, components)?"
+fi
+```
+
 ```
 AskUserQuestion:
-  "Design ref: {ref}
-   Screenshot: ${PLANNING_DIR}/design-normalized/screenshots/{ref}.png (or similar)
-   Built output matches screenshot (layout, spacing, components)?
+  "${PROMPT_BODY}
 
    [p] Pass — visual match
-   [f] Fail — significant drift (describe)
+   [f] Fail — significant drift (describe; logs override-debt kind=human-rejected-design)
    [s] Skip — no design ref available / cannot verify"
 ```
+
+**Fail handling (P19 D-06):** if user picks `f` for any ref, write to
+override-debt register (`kind=human-rejected-design`, severity=critical)
+and abort UAT with status `REJECTED_DESIGN_DRIFT`. User must `/vg:build`
+again to fix; debt entry resolved when rerun yields PASS.
 
 **Mobile extension** (runs ONLY when `$PROFILE` matches `mobile-*`):
 For each simulator/emulator screenshot in `${VG_TMP}/uat-mobile-screenshots.txt`:
