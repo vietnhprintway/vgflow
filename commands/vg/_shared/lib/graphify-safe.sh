@@ -29,6 +29,32 @@ _vg_graphify_attempt_rebuild() {
   return $?
 }
 
+_vg_graphify_emit() {
+  local event_type="$1"
+  local outcome="${2:-INFO}"
+  local payload="${3:-}"
+  local step="${4:-build.graphify}"
+  local phase="${PHASE_NUMBER:-${VG_CURRENT_PHASE:-}}"
+
+  if [ -z "$payload" ]; then
+    payload="{}"
+  fi
+
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "$event_type" "$phase" "$step" "graphify" "$outcome" "$payload" >/dev/null 2>&1 || true
+  elif type -t telemetry_emit >/dev/null 2>&1; then
+    telemetry_emit "$event_type" "$phase" "$step" "$payload" >/dev/null 2>&1 || true
+  fi
+
+  if [ -e "${REPO_ROOT:-.}/.claude/scripts/vg-orchestrator" ]; then
+    (
+      cd "${REPO_ROOT:-.}" && \
+      ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event "$event_type" \
+        --step "$step" --outcome "$outcome" --payload "$payload" >/dev/null 2>&1
+    ) || true
+  fi
+}
+
 # Main: rebuild + verify + retry-once-on-no-progress.
 # Loud warnings on silent failure (previously this failed silently).
 vg_graphify_rebuild_safe() {
@@ -41,16 +67,12 @@ vg_graphify_rebuild_safe() {
     _vg_graphify_attempt_rebuild "$graph_path" "$trigger-cold"
     if [ ! -f "$graph_path" ]; then
       echo "⛔ Graph still missing after rebuild — build failed silently"
-      if type -t telemetry_emit >/dev/null 2>&1; then
-        telemetry_emit "graphify_rebuild_failed" \
-          "{\"trigger\":\"${trigger}\",\"reason\":\"graph_not_created\"}"
-      fi
+      _vg_graphify_emit "graphify_rebuild_failed" "BLOCK" \
+        "{\"trigger\":\"${trigger}\",\"reason\":\"graph_not_created\"}"
       return 1
     fi
-    if type -t telemetry_emit >/dev/null 2>&1; then
-      telemetry_emit "graphify_auto_rebuild" \
-        "{\"trigger\":\"${trigger}\",\"mode\":\"cold_bootstrap\",\"success\":true}"
-    fi
+    _vg_graphify_emit "graphify_auto_rebuild" "PASS" \
+      "{\"trigger\":\"${trigger}\",\"mode\":\"cold_bootstrap\",\"success\":true}"
     return 0
   fi
 
@@ -76,10 +98,8 @@ vg_graphify_rebuild_safe() {
       echo "⛔ Graphify rebuild FAILED after retry. Graph remains stale."
       echo "   Downstream steps using stale graph will produce misleading context."
       echo "   Manual: ${PYTHON_BIN:-python3} -m graphify update ."
-      if type -t telemetry_emit >/dev/null 2>&1; then
-        telemetry_emit "graphify_rebuild_failed" \
-          "{\"trigger\":\"${trigger}\",\"reason\":\"mtime_stuck\",\"mtime\":${mtime_before}}"
-      fi
+      _vg_graphify_emit "graphify_rebuild_failed" "BLOCK" \
+        "{\"trigger\":\"${trigger}\",\"reason\":\"mtime_stuck\",\"mtime\":${mtime_before}}"
       return 1
     fi
   fi
@@ -87,10 +107,8 @@ vg_graphify_rebuild_safe() {
   # Success path
   local delta=$((mtime_after - mtime_before))
   echo "✓ Graphify rebuilt (mtime +${delta}s, trigger=${trigger})"
-  if type -t telemetry_emit >/dev/null 2>&1; then
-    telemetry_emit "graphify_auto_rebuild" \
-      "{\"trigger\":\"${trigger}\",\"mtime_delta_sec\":${delta},\"success\":true}"
-  fi
+  _vg_graphify_emit "graphify_auto_rebuild" "PASS" \
+    "{\"trigger\":\"${trigger}\",\"mtime_delta_sec\":${delta},\"success\":true}"
   return 0
 }
 
@@ -108,10 +126,8 @@ vg_graphify_assert_rebuilt_since() {
   if [ "$mtime_now" -le "$mtime_baseline" ] 2>/dev/null; then
     echo "⚠ vg_graphify_assert_rebuilt_since: graph NOT rebuilt during ${context}"
     echo "   baseline=${mtime_baseline} now=${mtime_now}"
-    if type -t telemetry_emit >/dev/null 2>&1; then
-      telemetry_emit "graphify_rebuild_skipped" \
-        "{\"context\":\"${context}\",\"baseline\":${mtime_baseline}}"
-    fi
+    _vg_graphify_emit "graphify_rebuild_skipped" "WARN" \
+      "{\"context\":\"${context}\",\"baseline\":${mtime_baseline}}"
     return 1
   fi
   return 0

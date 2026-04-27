@@ -535,7 +535,7 @@ graphify:
   graph_path: "graphify-out/graph.json"        # snapshot location relative to repo root
   mcp_server: "graphify"                       # MCP server name (matches .mcp.json registration)
   fallback_to_grep: true                       # if graph missing/stale, fallback grep instead of BLOCK
-  rebuild_on_phase_start: false                # auto-rebuild graph at /vg:build start (token cost — manual recommended)
+  rebuild_on_phase_start: true                 # v2.12.4: /vg:build cold/stale-rebuilds when enabled
   staleness_warn_commits: 50                   # warn if N commits since last build (suggest manual rebuild)
   block_on_stale: false                        # v1.12.5: when true, config-loader exits 1 if stale (fail-closed). Default false = warn-only (backward compat).
   ignore_patterns:                             # written to .graphifyignore

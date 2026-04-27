@@ -76,7 +76,7 @@ If import fails:
 ```
 Graphify is not installed. Install it:
 
-  ${PYTHON_BIN} -m pip install graphify-md
+  ${PYTHON_BIN} -m pip install 'graphifyy[mcp]'
 
 Then enable in .claude/vg.config.md:
   graphify:

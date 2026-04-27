@@ -282,6 +282,15 @@ validators:
     added_in: pre-v2.5.2
     description: 'Validator: build-crossai-required.py — OHOK-7 MANDATORY enforcement.'
 
+  - id: build-graphify-required
+    path: .claude/scripts/validators/build-graphify-required.py
+    severity: block
+    phases_active: [build]
+    domain: build
+    runtime_target_ms: 1000
+    added_in: v2.12.4
+    description: /vg:build must refresh graphify when graphify.enabled=true and graphify is installed
+
   - id: build-telemetry-surface
     path: .claude/scripts/validators/build-telemetry-surface.py
     severity: warn

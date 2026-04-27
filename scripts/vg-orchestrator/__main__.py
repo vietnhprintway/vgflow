@@ -2464,6 +2464,10 @@ COMMAND_VALIDATORS = {
                  # loop_user_override). No way to pass this gate without
                  # actually running .claude/scripts/vg-build-crossai-loop.py.
                  "build-crossai-required",
+                 # Graphify is build context infrastructure, not a README
+                 # promise. If enabled + installed, /vg:build must cold-build
+                 # or refresh graphify and emit events.db evidence before PASS.
+                 "build-graphify-required",
                  # v2.5 Phase A (2026-04-23): post-wave independent verify.
                  # Per-wave subprocess re-run of typecheck/tests/contract
                  # catches "executor claimed PASS but actually failed"
@@ -2806,6 +2810,7 @@ UNQUARANTINABLE = {
     "commit-attribution",         # commit discipline — core contract
     "runtime-evidence",           # actual test pass verification
     "build-crossai-required",     # OHOK-7 MANDATORY loop enforcement
+    "build-graphify-required",    # graphify enabled => post-build refresh evidence
     "context-structure",          # scope contract integrity
     # v2.5 Phase A (2026-04-23): post-wave subprocess divergence check.
     # AI cannot skip this — would defeat entire purpose of independent verify.

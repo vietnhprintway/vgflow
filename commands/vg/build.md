@@ -624,20 +624,38 @@ Steps 4c, 4e, 8c read these vars. No duplicate parsing here.
 **Graphify auto-rebuild (stale check):**
 
 ```bash
-if [ "$GRAPHIFY_ACTIVE" = "true" ]; then
+if [ "${GRAPHIFY_ENABLED:-false}" = "true" ]; then
   # Source graphify-safe helper (verifies mtime advances post-rebuild, retries once on stuck)
   source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
 
-  GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
-  COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+  if [ ! -f "$GRAPHIFY_GRAPH_PATH" ]; then
+    echo "Graphify: enabled but graph missing — cold-building before executor context"
+    if vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-step4-cold"; then
+      GRAPHIFY_ACTIVE="true"
+    elif [ "${GRAPHIFY_FALLBACK:-true}" = "false" ]; then
+      echo "⛔ Graphify cold build failed and fallback_to_grep=false"
+      exit 1
+    else
+      echo "⚠ Graphify cold build failed; step 4 will use grep fallback"
+    fi
+  fi
 
-  if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
-    echo "Graphify: ${COMMITS_SINCE} commits since last build — rebuilding for fresh context"
-    vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-step4" || {
-      echo "⚠ Graphify rebuild did not complete successfully; downstream sibling/caller context may be stale"
-    }
-  else
-    echo "Graphify: up to date (0 commits since last build)"
+  if [ "$GRAPHIFY_ACTIVE" = "true" ]; then
+    GRAPH_BUILD_EPOCH=$(stat -c %Y "$GRAPHIFY_GRAPH_PATH" 2>/dev/null || stat -f %m "$GRAPHIFY_GRAPH_PATH" 2>/dev/null)
+    COMMITS_SINCE=$(git log --since="@${GRAPH_BUILD_EPOCH}" --oneline 2>/dev/null | wc -l | tr -d ' ')
+
+    if [ "${COMMITS_SINCE:-0}" -gt 0 ]; then
+      echo "Graphify: ${COMMITS_SINCE} commits since last build — rebuilding for fresh context"
+      vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-step4" || {
+        if [ "${GRAPHIFY_FALLBACK:-true}" = "false" ]; then
+          echo "⛔ Graphify rebuild failed and fallback_to_grep=false"
+          exit 1
+        fi
+        echo "⚠ Graphify rebuild did not complete successfully; downstream sibling/caller context may be stale"
+      }
+    else
+      echo "Graphify: up to date (0 commits since last build)"
+    fi
   fi
 fi
 ```
@@ -2680,6 +2698,25 @@ except Exception:
 fi
 ```
 
+**Step 4c — Post-wave graphify refresh (MANDATORY when graphify.enabled=true):**
+
+```bash
+# Refresh graphify after each successful wave so the next wave sees the code
+# that just landed. Without this, wave N+1 can read stale sibling/caller
+# context and copy wrong patterns from pre-build code.
+if [ -z "$FAILED_GATE" ] && [ "${GRAPHIFY_ENABLED:-false}" = "true" ]; then
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+  if vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-wave-${N}-complete"; then
+    GRAPHIFY_ACTIVE="true"
+  elif [ "${GRAPHIFY_FALLBACK:-true}" = "false" ]; then
+    echo "⛔ Graphify post-wave rebuild failed and fallback_to_grep=false"
+    exit 1
+  else
+    echo "⚠ Graphify post-wave rebuild failed; continuing with grep fallback visibility"
+  fi
+fi
+```
+
 Only proceed to next wave if `$FAILED_GATE` empty.
 
 ```bash
@@ -3347,6 +3384,21 @@ if [ -f "${PHASE_DIR}/UI-MAP.md" ]; then
     fi
   else
     echo "⚠ ui_map.src/entry chưa cấu hình — bỏ qua UI drift check"
+  fi
+fi
+
+# Final graphify refresh after all build mutations and post-execution gates.
+# This closes the "first build has no graph / build ended with stale graph"
+# gap: run-complete validator checks the graphify_auto_rebuild event emitted here.
+if [ "${GRAPHIFY_ENABLED:-false}" = "true" ]; then
+  source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/graphify-safe.sh"
+  if vg_graphify_rebuild_safe "$GRAPHIFY_GRAPH_PATH" "build-final"; then
+    GRAPHIFY_ACTIVE="true"
+  elif [ "${GRAPHIFY_FALLBACK:-true}" = "false" ]; then
+    echo "⛔ Graphify final rebuild failed and fallback_to_grep=false"
+    exit 1
+  else
+    echo "⚠ Graphify final rebuild failed; run-complete will surface evidence"
   fi
 fi
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.12.4 (2026-04-28) — Build Graphify refresh enforcement
+
+Patch release for stale/missing Graphify build context.
+
+- `/vg:build` now cold-builds Graphify when `graphify.enabled=true` but `graphify-out/graph.json` does not exist yet.
+- `/vg:build` refreshes Graphify after each successful build wave and once more before final run-complete.
+- Graphify rebuilds now emit `graphify_auto_rebuild` into `.vg/events.db`, not only best-effort telemetry.
+- Added `build-graphify-required` as an unquarantinable build validator so enabled + installed Graphify cannot pass without current-run rebuild evidence.
+
 ## v2.12.3 (2026-04-27) — Playwright MCP install/update verification
 
 Patch release for environment bootstrap reliability.
