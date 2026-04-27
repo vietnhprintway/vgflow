@@ -4,9 +4,8 @@
 // Group: pagination navigation (next, prev, first, last, jump_to_page, page_size_dropdown)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
 import {
-  applyPagination, readUrlParams, readVisibleRows, expectAssertion,
+  applyPagination, readUrlParams, readVisibleRows, expectAssertion, useAuth,
 } from '../helpers/interactive';
 
 const ROUTE     = '{{var.route}}';
@@ -15,8 +14,9 @@ const PAGINATION = '{{var.pagination_name}}';
 const PAGE_SIZE = {{var.page_size}};
 
 test.describe('{{var.goal_id}} · pagination ' + PAGINATION + ' · navigation', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 

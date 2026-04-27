@@ -4,10 +4,9 @@
 // Group: pagination url-sync (paste_query_reload, filter_change_resets_page)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
 import {
   applyPagination, applyFilter,
-  readUrlParams, readVisibleRows, expectAssertion,
+  readUrlParams, readVisibleRows, expectAssertion, useAuth,
 } from '../helpers/interactive';
 
 const ROUTE     = '{{var.route}}';
@@ -16,8 +15,9 @@ const PAGINATION = '{{var.pagination_name}}';
 const PAGE_SIZE = {{var.page_size}};
 
 test.describe('{{var.goal_id}} · pagination ' + PAGINATION + ' · url-sync', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 

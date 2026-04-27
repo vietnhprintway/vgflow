@@ -4,8 +4,7 @@
 // Group: pagination envelope (meta_total, meta_page, meta_limit, meta_has_next)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
-import { applyPagination } from '../helpers/interactive';
+import { applyPagination, useAuth } from '../helpers/interactive';
 
 const ROUTE     = '{{var.route}}';
 const ROLE      = '{{var.role}}';
@@ -35,8 +34,9 @@ async function captureMeta(page: import('@playwright/test').Page, action: () => 
 }
 
 test.describe('{{var.goal_id}} · pagination ' + PAGINATION + ' · envelope', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 

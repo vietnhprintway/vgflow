@@ -4,9 +4,8 @@
 // Group: filter edge (xss_sanitize, empty_result, error_500_handling)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
 import {
-  applyFilter, readUrlParams, readVisibleRows, expectAssertion,
+  applyFilter, readUrlParams, readVisibleRows, expectAssertion, useAuth,
 } from '../helpers/interactive';
 
 const ROUTE  = '{{var.route}}';
@@ -14,8 +13,9 @@ const ROLE   = '{{var.role}}';
 const FILTER = '{{var.filter_name}}';
 
 test.describe('{{var.goal_id}} · filter ' + FILTER + ' · edge', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 

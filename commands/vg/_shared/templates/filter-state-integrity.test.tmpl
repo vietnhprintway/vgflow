@@ -4,10 +4,9 @@
 // Group: filter state-integrity (filter_sort_pagination, url_sync, cross_route_persistence)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
 import {
   applyFilter, applySort, applyPagination,
-  readUrlParams, readVisibleRows, expectAssertion,
+  readUrlParams, readVisibleRows, expectAssertion, useAuth,
 } from '../helpers/interactive';
 
 const ROUTE  = '{{var.route}}';
@@ -16,8 +15,9 @@ const FILTER = '{{var.filter_name}}';
 const VALUES: string[] = {{var.filter_values_json}};
 
 test.describe('{{var.goal_id}} · filter ' + FILTER + ' · state-integrity', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 

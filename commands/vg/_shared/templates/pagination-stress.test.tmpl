@@ -4,8 +4,7 @@
 // Group: pagination stress (spam_next, in_flight_cancel)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
-import { applyPagination, readUrlParams, readVisibleRows, expectAssertion } from '../helpers/interactive';
+import { applyPagination, readUrlParams, readVisibleRows, expectAssertion, useAuth } from '../helpers/interactive';
 
 const ROUTE     = '{{var.route}}';
 const ROLE      = '{{var.role}}';
@@ -13,8 +12,9 @@ const PAGINATION = '{{var.pagination_name}}';
 const PAGE_SIZE = {{var.page_size}};
 
 test.describe('{{var.goal_id}} · pagination ' + PAGINATION + ' · stress', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 

@@ -4,9 +4,8 @@
 // Group: filter coverage (cardinality_enum, pairwise_combinatorial, boundary_values, empty_state)
 
 import { test, expect } from '@playwright/test';
-import { loginAs } from '../helpers';
 import {
-  applyFilter, readUrlParams, readVisibleRows, expectAssertion,
+  applyFilter, readUrlParams, readVisibleRows, expectAssertion, useAuth,
 } from '../helpers/interactive';
 
 const ROUTE  = '{{var.route}}';
@@ -15,8 +14,9 @@ const FILTER = '{{var.filter_name}}';
 const VALUES: string[] = {{var.filter_values_json}};
 
 test.describe('{{var.goal_id}} · filter ' + FILTER + ' · coverage', () => {
+  test.use(useAuth(ROLE));
+
   test.beforeEach(async ({ page }) => {
-    await loginAs(page, ROLE);
     await page.goto(ROUTE);
   });
 
