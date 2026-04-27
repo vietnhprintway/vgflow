@@ -241,3 +241,53 @@ rm -f "$CONTEXT_FILE"
 ```
 
 Keep CLI result files in `$OUTPUT_DIR/` for audit trail.
+  
+
+---
+
+## Output contract for PLAN/CONTEXT enrichment (Phase 16 D-05)
+
+When cross-AI peer (Codex / Gemini) enriches `PLAN.md` or `CONTEXT.md`,
+output MUST follow these rules so the enrichment value SURVIVES the
+pipeline through R4 budget caps without silent truncation, AND so the
+`verify-crossai-output.py` validator (P16 D-06) passes.
+
+### Rules
+
+1. **DO NOT inline prose blocks > 30 lines into a `<task>` body.**
+   Long prose grows R4 budget pressure and gets truncated at the
+   executor stage (Phase 15 W3 deferred + Phase 17 polish surfaced this).
+   Instead:
+   a. Append a new decision block to `CONTEXT.md` (e.g.,
+      `### P{phase}.D-99: <title>`).
+   b. Reference it from the task via
+      `<context-refs>P{phase}.D-99</context-refs>`.
+
+2. **Edge cases → frontmatter `edge_cases:` array**, not body bullets:
+   ```yaml
+   edge_cases:
+     - "New edge case discovered by cross-AI"
+   ```
+
+3. **Decision rationale → CONTEXT.md decision body**, not task body
+   comment.
+
+4. **Format flag**: cross-AI invoker MUST set `cross_ai_enriched: true`
+   in CONTEXT.md frontmatter when enrichment changes any task body.
+   Triggers Phase 16 D-04 R4 conditional caps (cap bumps) so enriched
+   content isn't silently truncated downstream.
+
+### Validator
+
+`scripts/validators/verify-crossai-output.py` runs AFTER `/vg:scope
+--crossai` or `/vg:blueprint --crossai` apply changes:
+
+- `git diff <base> -- PLAN.md CONTEXT.md` → captures enrichment delta.
+- Per task: count added body lines (`+` lines inside `<task>` body,
+  excluding frontmatter changes).
+- BLOCK if any task body grew > 30 prose lines AND no corresponding
+  `<context-refs>` ID added.
+- WARN if `cross_ai_enriched: true` flag missing from CONTEXT.md
+  frontmatter when any change made.
+- Override flag: `--skip-crossai-output` (logs override-debt as
+  `kind=crossai-output-relaxed`).
