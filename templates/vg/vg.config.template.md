@@ -234,6 +234,12 @@ visual_checks:
   z_index_check: true
   sidebar_width: 256
   header_height: 64
+  # L4 (4-layer pixel pipeline) — design-fidelity SSIM gate at /vg:review.
+  # Compares live UI screenshots against design-extract baseline PNGs per
+  # view in RUNTIME-MAP. Drift % > threshold = BLOCK (override --allow-design-drift).
+  # Lower number = stricter. Tune by project: marketing pages 2.0, dense
+  # internal tools 5.0–8.0 to absorb dynamic data without false positives.
+  design_fidelity_threshold_pct: 5.0
 
 # === Performance Budgets ===
 # Generic defaults — adjust per project SLA.
@@ -408,6 +414,11 @@ build_gates:
   typecheck_cmd: "{{build_gates.typecheck_cmd}}"
   build_cmd: "{{build_gates.build_cmd}}"
   test_unit_cmd: "{{build_gates.test_unit_cmd}}"      # can be empty "" if test_unit_required=false
+  # L3 build-time visual gate — leave default unless your dev server runs
+  # on a non-standard host/port. The gate auto-SKIPs if server is down,
+  # Playwright/Node missing, or pixelmatch+PIL not installed.
+  dev_server_url: "http://localhost:{{frontend.port}}"
+  visual_threshold_pct: 5.0          # max pixel diff % vs design baseline before BLOCK
   test_unit_required: true                    # if true AND cmd empty + src/ changed → BLOCK with guidance
   contract_verify_grep: true                  # reuse existing contract_verify_grep from env-commands.md
   # Gate 5 — goal-test binding. Every task with <goals-covered>G-XX</goals-covered>

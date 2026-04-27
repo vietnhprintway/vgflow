@@ -870,17 +870,105 @@ def main():
     # Ensure callers (builds if missing)
     downstream_callers = ensure_callers(phase_dir, args.task_num, config, repo_root)
 
-    # Design context
-    design_ref = re.search(r"<design-ref>([^<]+)</design-ref>", task_context)
+    # ─── L1 Design context (design pixel injection v1) ────────────────────
+    # Resolve every <design-ref> in the task body, classify SLUG vs DESCRIPTIVE
+    # (same heuristic as build.md step 4b), and emit absolute PNG paths so the
+    # executor's Read tool can load the image visually. Hard-gate at build.md
+    # checks design_image_required + verifies each path exists on disk.
     design_context = ""
-    if design_ref:
-        design_dir = config.get("design_assets.output_dir", ".vg/design-normalized")
-        slug = design_ref.group(1).strip()
-        design_context = (
-            f"Visual reference: {design_dir}/screenshots/{slug}.default.png\n"
-            f"Structural DOM: {design_dir}/refs/{slug}.structural.html\n"
-            f"Interactions: {design_dir}/refs/{slug}.interactions.md"
-        )
+    design_image_paths: list[str] = []
+    design_image_required = False
+    design_ref_entries: list[dict] = []
+    design_refs_raw = re.findall(r"<design-ref>([^<]+)</design-ref>", task_context)
+    if design_refs_raw:
+        design_dir_rel = config.get("design_assets.output_dir", ".vg/design-normalized")
+        design_dir_abs = (repo_root / design_dir_rel).resolve()
+        screenshots_dir = design_dir_abs / "screenshots"
+        refs_dir = design_dir_abs / "refs"
+
+        slug_re = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
+        slug_entries: list[dict] = []
+        descriptive_entries: list[str] = []
+        for raw in design_refs_raw:
+            for token in re.split(r"[,\s]+", raw.strip()):
+                token = token.strip()
+                if not token:
+                    continue
+                if slug_re.match(token):
+                    entry: dict = {"slug": token, "screenshots": [], "structural": None, "interactions": None}
+                    default_png = screenshots_dir / f"{token}.default.png"
+                    if default_png.exists():
+                        entry["screenshots"].append(str(default_png))
+                    elif (legacy_png := screenshots_dir / f"{token}.png").exists():
+                        entry["screenshots"].append(str(legacy_png))
+                    if screenshots_dir.exists():
+                        for variant in sorted(screenshots_dir.glob(f"{token}.*.png")):
+                            sp = str(variant)
+                            if sp not in entry["screenshots"]:
+                                entry["screenshots"].append(sp)
+                    for ext in ("structural.html", "structural.json", "structural.xml"):
+                        cand = refs_dir / f"{token}.{ext}"
+                        if cand.exists():
+                            entry["structural"] = str(cand)
+                            break
+                    inter = refs_dir / f"{token}.interactions.md"
+                    if inter.exists():
+                        entry["interactions"] = str(inter)
+                    if not entry["screenshots"]:
+                        entry["screenshot_missing"] = str(default_png)
+                    slug_entries.append(entry)
+                    design_image_required = True
+                    design_image_paths.extend(entry["screenshots"])
+                else:
+                    descriptive_entries.append(token)
+
+        design_ref_entries = slug_entries + [
+            {"descriptive": d} for d in descriptive_entries
+        ]
+
+        lines: list[str] = []
+        lines.append("# Design ground truth — MANDATORY (L1)")
+        lines.append("")
+        if slug_entries:
+            lines.append("## PNG screenshots — READ EACH PATH WITH THE Read TOOL BEFORE WRITING CODE")
+            lines.append("")
+            lines.append("Read tool returns image content visually. Slug name is NOT the design;")
+            lines.append("the PNG IS the design. Layout/spacing/components in your code MUST match")
+            lines.append("what these PNGs show. The post-build visual gate (L3) will reject drift.")
+            lines.append("")
+            for entry in slug_entries:
+                lines.append(f"### {entry['slug']}")
+                if entry["screenshots"]:
+                    for sp in entry["screenshots"]:
+                        lines.append(f"  Read: {sp}")
+                else:
+                    lines.append(f"  ⚠ MISSING ON DISK: {entry.get('screenshot_missing','?')}")
+                if entry.get("structural"):
+                    lines.append(f"  Structural ref: {entry['structural']}")
+                if entry.get("interactions"):
+                    lines.append(f"  Interactions: {entry['interactions']}")
+                lines.append("")
+            lines.append("## L2 forcing function — WRITE LAYOUT-FINGERPRINT.md before any UI code")
+            lines.append("")
+            lines.append(
+                f"Path: .fingerprints/task-{args.task_num}.fingerprint.md"
+            )
+            lines.append("Required H2 sections (each ≥ 1 paragraph from what you SEE in the PNG):")
+            lines.append("  ## Grid       — column count, container width, gutter sizes")
+            lines.append("  ## Spacing    — vertical rhythm, padding, gap between sections")
+            lines.append("  ## Hierarchy  — heading levels, primary/secondary CTAs, focal point")
+            lines.append("  ## Breakpoints — what changes at mobile/tablet (or 'single viewport' if N/A)")
+            lines.append(
+                "Validator verify-layout-fingerprint.py runs at phase end; thin or "
+                "missing sections BLOCK."
+            )
+            lines.append("")
+        if descriptive_entries:
+            lines.append("## Code-pattern hints (descriptive, not a PNG read target)")
+            for d in descriptive_entries:
+                lines.append(f"  - {d}")
+            lines.append("")
+        design_context = "\n".join(lines).rstrip()
 
     # Build config (flat, no dotted paths)
     build_config = {
@@ -978,6 +1066,12 @@ def main():
         "sibling_context": sibling_context,
         "downstream_callers": downstream_callers,
         "design_context": design_context,
+        # L1 design pixel injection — build.md step 8c uses these for hard-gate
+        # + executor prompt asks Read tool on each absolute path so the model
+        # actually SEES the PNG instead of just reading a filename.
+        "design_image_paths": design_image_paths,
+        "design_image_required": design_image_required,
+        "design_ref_entries": design_ref_entries,
         "build_config": build_config,
         "task_context_capsule": task_context_capsule,
         "warnings": warnings,

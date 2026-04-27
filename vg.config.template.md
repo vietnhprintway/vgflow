@@ -325,6 +325,10 @@ visual_checks:
   z_index_check: true
   sidebar_width: 256
   header_height: 64
+  # L4 (4-layer pixel pipeline) — design-fidelity SSIM gate at /vg:review.
+  # Compares live UI screenshots against design-extract baseline PNGs per
+  # view in RUNTIME-MAP. Drift % > threshold = BLOCK (override --allow-design-drift).
+  design_fidelity_threshold_pct: 5.0
 
 # === Performance Budgets (RTB-specific) ===
 perf_budgets:
@@ -525,6 +529,9 @@ build_gates:
   typecheck_cmd: "pnpm turbo typecheck"
   build_cmd: "pnpm turbo build"
   test_unit_cmd: "pnpm turbo test:unit"      # can be empty "" if test_unit_required=false
+  # L3 build-time visual gate — SKIP nếu dev server down / Playwright chưa cài.
+  dev_server_url: "http://localhost:3000"
+  visual_threshold_pct: 5.0
   test_unit_required: true                    # if true AND cmd empty + src/ changed → BLOCK with guidance
   contract_verify_grep: true                  # reuse existing contract_verify_grep from env-commands.md
   # Gate 5 — goal-test binding. Every task with <goals-covered>G-XX</goals-covered>

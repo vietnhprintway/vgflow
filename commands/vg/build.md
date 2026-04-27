@@ -1314,7 +1314,45 @@ TASK_CONTEXT_CAPSULE=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json;
 TASK_SIBLINGS=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['sibling_context'])")
 TASK_CALLERS=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['downstream_callers'])")
 DESIGN_CONTEXT=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['design_context'])")
+# L1 design pixel gate inputs
+DESIGN_IMAGE_PATHS=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print('\n'.join(json.load(sys.stdin).get('design_image_paths', []) or []))")
+DESIGN_IMAGE_REQUIRED=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print('1' if json.load(sys.stdin).get('design_image_required') else '0')")
 BUILD_CONFIG=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.dumps(json.load(sys.stdin)['build_config']))")
+
+# ─── L1 hard-gate: PNG must exist on disk before spawning executor ────────
+# Without this, executor receives a path that resolves to nothing — the Read
+# tool would fail, the model would silently fall back to fabricating layout.
+# This gate runs deterministically before every executor spawn for any task
+# whose body declares a SLUG-form <design-ref>.
+if [ "$DESIGN_IMAGE_REQUIRED" = "1" ]; then
+  if [ -z "$DESIGN_IMAGE_PATHS" ]; then
+    echo "⛔ L1 design-pixel gate: task ${TASK_NUM} declares <design-ref> but no PNG resolved." >&2
+    echo "   Likely cause: slug missing from manifest. Run: /vg:design-extract --refresh" >&2
+    if [[ ! "$ARGUMENTS" =~ --skip-design-pixel-gate ]]; then exit 1; fi
+    echo "⚠ --skip-design-pixel-gate set — executor will be blind to layout." >&2
+  else
+    L1_MISSING=""
+    while IFS= read -r p; do
+      [ -z "$p" ] && continue
+      if [ ! -f "$p" ]; then
+        L1_MISSING="${L1_MISSING}\n  - ${p}"
+      fi
+    done <<< "$DESIGN_IMAGE_PATHS"
+    if [ -n "$L1_MISSING" ]; then
+      echo -e "⛔ L1 design-pixel gate: required PNG(s) missing on disk:${L1_MISSING}" >&2
+      echo "   Run: /vg:design-extract --refresh   (regenerates manifest + screenshots)" >&2
+      if [[ ! "$ARGUMENTS" =~ --skip-design-pixel-gate ]]; then exit 1; fi
+      echo "⚠ --skip-design-pixel-gate set — proceeding without ground-truth pixels." >&2
+    else
+      L1_COUNT=$(printf '%s\n' "$DESIGN_IMAGE_PATHS" | grep -c .)
+      echo "✓ L1 design-pixel gate: ${L1_COUNT} PNG(s) verified on disk for task ${TASK_NUM}"
+      if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+        emit_telemetry_v2 "build_l1_design_pixel" "${PHASE_NUMBER}" "build.8c" \
+          "design_pixel_verified" "PASS" "{\"task\":${TASK_NUM},\"png_count\":${L1_COUNT}}"
+      fi
+    fi
+  fi
+fi
 
 if [ ! -s "$TASK_CAPSULE_PATH" ]; then
   echo "⛔ Task context capsule missing for task ${TASK_NUM}: $TASK_CAPSULE_PATH" >&2
@@ -3331,6 +3369,154 @@ if [ "${SCHEMA_RC}" != "0" ]; then
   echo "⛔ SUMMARY.md schema violation — see ${PHASE_DIR}/.tmp/artifact-schema-summary.json"
   cat "${PHASE_DIR}/.tmp/artifact-schema-summary.json"
   exit 2
+fi
+
+# ─── L2 forcing-function gate: LAYOUT-FINGERPRINT.md per design-ref task ──
+# For every task body that declared a SLUG-form <design-ref>, the executor
+# is required (per vg-executor-rules.md "Design fidelity") to write a
+# fingerprint to .fingerprints/task-${N}.fingerprint.md before any UI code.
+# Validator below confirms each section is present + non-thin. Missing or
+# thin = BLOCK build phase (override: --skip-fingerprint-check).
+if [[ ! "$ARGUMENTS" =~ --skip-fingerprint-check ]]; then
+  FP_BLOCKED=""
+  FP_TASKS_CHECKED=0
+  for plan in "${PHASE_DIR}"/PLAN*.md; do
+    [ -f "$plan" ] || continue
+    "${PYTHON_BIN:-python3}" - "$plan" "${PHASE_DIR}" <<'PY' >> "${PHASE_DIR}/.tmp/fp-tasks.tsv" 2>/dev/null
+import re, sys
+plan_path, phase_dir = sys.argv[1], sys.argv[2]
+text = open(plan_path, encoding="utf-8", errors="ignore").read()
+slug_re = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
+# XML-format tasks
+for m in re.finditer(r'<task\s+id\s*=\s*["\']?(\d+)["\']?\s*>(.*?)</task>', text, re.DOTALL | re.IGNORECASE):
+    tid, body = m.group(1), m.group(2)
+    has_slug_ref = any(
+        slug_re.match(r.strip())
+        for raw in re.findall(r"<design-ref>([^<]+)</design-ref>", body)
+        for r in re.split(r"[,\s]+", raw.strip())
+    )
+    if has_slug_ref:
+        print(f"{tid}\t{plan_path}")
+# Heading-format tasks
+heading_re = re.compile(r'^#{2,3}\s+Task\s+(0?\d+)\b', re.IGNORECASE | re.MULTILINE)
+lines = text.splitlines()
+heads = [(i, m.group(1).lstrip("0") or "0") for i, line in enumerate(lines) for m in [heading_re.match(line)] if m]
+for idx, (line_no, tid) in enumerate(heads):
+    end = heads[idx+1][0] if idx+1 < len(heads) else len(lines)
+    body = "\n".join(lines[line_no:end])
+    has_slug_ref = any(
+        slug_re.match(r.strip())
+        for raw in re.findall(r"<design-ref>([^<]+)</design-ref>", body)
+        for r in re.split(r"[,\s]+", raw.strip())
+    )
+    if has_slug_ref:
+        print(f"{tid}\t{plan_path}")
+PY
+  done
+  if [ -s "${PHASE_DIR}/.tmp/fp-tasks.tsv" ]; then
+    while IFS=$'\t' read -r task_num plan_file; do
+      [ -z "$task_num" ] && continue
+      FP_REPORT="${PHASE_DIR}/.tmp/fp-task-${task_num}.json"
+      if ! "${PYTHON_BIN:-python3}" .claude/scripts/validators/verify-layout-fingerprint.py \
+            --phase-dir "${PHASE_DIR}" --task-num "${task_num}" \
+            --output "$FP_REPORT" >/dev/null 2>&1; then
+        FP_BLOCKED="${FP_BLOCKED} task-${task_num}"
+      fi
+      FP_TASKS_CHECKED=$((FP_TASKS_CHECKED + 1))
+    done < "${PHASE_DIR}/.tmp/fp-tasks.tsv"
+    rm -f "${PHASE_DIR}/.tmp/fp-tasks.tsv"
+  fi
+  if [ -n "$FP_BLOCKED" ]; then
+    echo "⛔ L2 fingerprint gate: missing or thin LAYOUT-FINGERPRINT.md for:${FP_BLOCKED}"
+    echo "   See per-task report: ${PHASE_DIR}/.tmp/fp-task-*.json"
+    echo "   Executor was supposed to write .fingerprints/task-N.fingerprint.md before UI code."
+    echo "   Override (NOT RECOMMENDED — re-spawn executor with reminder is preferred): --skip-fingerprint-check"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "build_l2_fingerprint" "${PHASE_NUMBER}" "build.9" \
+        "fingerprint_gate" "BLOCK" "{\"blocked_tasks\":\"${FP_BLOCKED}\"}"
+    fi
+    exit 1
+  elif [ "${FP_TASKS_CHECKED:-0}" -gt 0 ]; then
+    echo "✓ L2 fingerprint gate: ${FP_TASKS_CHECKED} design-ref task(s) wrote a non-thin fingerprint"
+  fi
+fi
+
+# ─── L3 build-time visual gate: render UI vs design baseline (per task) ──
+# Only fires when:
+#   - phase has tasks with SLUG-form <design-ref>
+#   - dev server reachable at build_gates.dev_server_url
+#   - Node + Playwright + pixelmatch+PIL available
+# Otherwise: SKIP (logged) — deliberate. We do NOT block builds when the
+# visual harness isn't installed; that's the user's setup choice. Real
+# pixel drift past threshold = BLOCK; override --skip-build-visual.
+if [[ ! "$ARGUMENTS" =~ --skip-build-visual ]]; then
+  L3_BLOCKED=""
+  L3_CHECKS=0
+  L3_DEV_URL="${VG_DEV_SERVER_URL:-$(vg_config_get build_gates.dev_server_url http://localhost:3000)}"
+  L3_THRESHOLD="$(vg_config_get build_gates.visual_threshold_pct 5.0)"
+  DESIGN_DIR_REL="$(vg_config_get design_assets.output_dir .vg/design-normalized)"
+  for plan in "${PHASE_DIR}"/PLAN*.md; do
+    [ -f "$plan" ] || continue
+    "${PYTHON_BIN:-python3}" - "$plan" <<'PY' >> "${PHASE_DIR}/.tmp/l3-tasks.tsv" 2>/dev/null
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
+slug_re = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
+
+def emit_for(tid, body):
+    refs = []
+    for raw in re.findall(r"<design-ref>([^<]+)</design-ref>", body):
+        for r in re.split(r"[,\s]+", raw.strip()):
+            r = r.strip()
+            if r and slug_re.match(r):
+                refs.append(r)
+    if not refs:
+        return
+    route_m = re.search(r"<route>([^<]+)</route>", body)
+    route = route_m.group(1).strip() if route_m else ""
+    for slug in refs:
+        print(f"{tid}\t{slug}\t{route}")
+
+for m in re.finditer(r'<task\s+id\s*=\s*["\']?(\d+)["\']?\s*>(.*?)</task>', text, re.DOTALL | re.IGNORECASE):
+    emit_for(m.group(1), m.group(2))
+heading_re = re.compile(r'^#{2,3}\s+Task\s+(0?\d+)\b', re.IGNORECASE | re.MULTILINE)
+lines = text.splitlines()
+heads = [(i, m.group(1).lstrip("0") or "0") for i, line in enumerate(lines) for m in [heading_re.match(line)] if m]
+for idx, (line_no, tid) in enumerate(heads):
+    end = heads[idx+1][0] if idx+1 < len(heads) else len(lines)
+    emit_for(tid, "\n".join(lines[line_no:end]))
+PY
+  done
+  if [ -s "${PHASE_DIR}/.tmp/l3-tasks.tsv" ]; then
+    while IFS=$'\t' read -r task_num slug route; do
+      [ -z "$task_num" ] && continue
+      [ -z "$route" ] && route="/"
+      L3_REPORT="${PHASE_DIR}/.tmp/l3-task-${task_num}-${slug}.json"
+      MSYS_NO_PATHCONV=1 "${PYTHON_BIN:-python3}" .claude/scripts/verify-build-visual.py \
+        --phase-dir "${PHASE_DIR}" --task-num "${task_num}" --slug "${slug}" \
+        --route "${route}" --design-dir "${DESIGN_DIR_REL}" \
+        --server-url "${L3_DEV_URL}" --threshold-pct "${L3_THRESHOLD}" \
+        --output "${L3_REPORT}" >/dev/null 2>&1
+      RC=$?
+      L3_CHECKS=$((L3_CHECKS + 1))
+      if [ "$RC" != "0" ]; then
+        L3_BLOCKED="${L3_BLOCKED} task-${task_num}/${slug}"
+      fi
+    done < "${PHASE_DIR}/.tmp/l3-tasks.tsv"
+    rm -f "${PHASE_DIR}/.tmp/l3-tasks.tsv"
+  fi
+  if [ -n "$L3_BLOCKED" ]; then
+    echo "⛔ L3 build visual gate: drift exceeds threshold for:${L3_BLOCKED}"
+    echo "   See per-task report: ${PHASE_DIR}/.tmp/l3-task-*.json"
+    echo "   Diff PNGs: ${PHASE_DIR}/build-visual/task-*/*.diff.png"
+    echo "   Override: --skip-build-visual (logs override-debt)"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "build_l3_visual" "${PHASE_NUMBER}" "build.9" \
+        "build_visual_gate" "BLOCK" "{\"blocked\":\"${L3_BLOCKED}\"}"
+    fi
+    exit 1
+  elif [ "${L3_CHECKS:-0}" -gt 0 ]; then
+    echo "✓ L3 build visual gate: ${L3_CHECKS} check(s) ran (PASS or SKIP if dev server / Playwright unavailable)"
+  fi
 fi
 
 # v2.2 — step marker for runtime contract

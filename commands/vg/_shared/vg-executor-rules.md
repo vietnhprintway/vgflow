@@ -327,50 +327,93 @@ const handleSubmit = async () => {
 };
 ```
 
-## Design fidelity (L-002 lesson reinforcement)
+## Design fidelity (L1 + L2 + L-002 lesson — MANDATORY for any `<design-ref>` slug)
 
-When the task has `<design-ref>` pointing to a real slug (NOT
-`no-asset:...`), `<design_context>` will be injected listing one or more
-PNG paths under `${PLANNING_DIR}/phases/{phase}/design/screenshots/`.
+When the task has `<design-ref>` pointing to a real slug (Form A — NOT
+`no-asset:...`), `<design_context>` will be injected listing absolute PNG
+paths under the resolved `design_assets.output_dir`. The slug name is NOT
+the design — the PNG IS. Code that does not match what the PNG shows
+will be rejected by the L3 build-time visual gate or the L4 review
+phase 2.5 design-fidelity check, and the task will be reopened.
 
-**MANDATORY workflow before writing any FE code:**
+### L1 — Read the pixels FIRST (no exceptions)
 
-1. **READ each PNG via the Read tool** — vision-capable models (Claude
-   Sonnet/Opus, GPT-4V) see the image directly and extract the structural
-   spec (layout grid, component types, spacing rhythm, copy strings,
-   active states). This step is NOT optional. If you skip it, your output
-   will look generic — `flex items-center justify-center` text-centered
-   stubs instead of the design's AppShell + Sidebar + TopBar + content.
-2. **READ UI-SPEC.md + UI-MAP.md sections** that cover this page (if they
-   exist in the phase dir) — these are the structured token + component
-   tree summaries derived from DESIGN.md.
-3. **READ design/refs/DESIGN.md** for tokens (colors, typography,
-   spacing, shadows) when in doubt — never invent values.
+Before writing any UI code:
 
-**Output rules:**
+1. **READ each `Read:` line / PNG path in `<design_context>` via the
+   Read tool.** Vision-capable models (Claude Sonnet/Opus, GPT-4V) see
+   the image directly and extract the structural spec (layout grid,
+   component types, spacing rhythm, copy strings, active states).
+   Skipping this step ships `flex items-center justify-center` text-
+   centered stubs instead of the design's AppShell + Sidebar + TopBar +
+   content. **NOT optional.**
+2. **READ UI-SPEC.md + UI-MAP.md sections** that cover this page (if
+   they exist in the phase dir) — structured token + component tree
+   summaries derived from DESIGN.md.
+3. **READ `design/refs/{slug}.interactions.md`** for handler map and
+   `design/refs/DESIGN.md` for tokens (colors, typography, spacing,
+   shadows) — never invent values.
+4. NEVER infer from the slug. NEVER assume "I know what a campaigns
+   list looks like." Read the PNG.
+
+If you write JSX/HTML before reading every listed PNG, your output is
+unverified. The L3 gate compares your rendered UI against these PNGs;
+drift past threshold = BLOCK.
+
+### L2 — Write LAYOUT-FINGERPRINT.md as your forcing function
+
+After reading the PNGs, BEFORE writing UI code, create:
+
+  `<phase-dir>/.fingerprints/task-${TASK_NUM}.fingerprint.md`
+
+Required H2 sections (each ≥ 1 paragraph describing what the PNG shows):
+
+| Section | What to describe |
+|---------|------------------|
+| `## Grid` | column count, container max-width, gutter sizes — concrete numbers, not "responsive" |
+| `## Spacing` | vertical rhythm, padding inside cards/forms, gap between sections — describe rhythm |
+| `## Hierarchy` | heading levels visible, primary vs secondary CTA, where the eye lands first |
+| `## Breakpoints` | what changes at mobile/tablet (or write "single-viewport mockup" if no responsive screenshots) |
+
+Use the Write tool. Path is mandatory. Validator
+`verify-layout-fingerprint.py` runs at phase end; missing file, missing
+section, or section body < 60 chars = BLOCK.
+
+This step exists because writing the fingerprint forces you to LOOK at
+the PNG instead of skim it. If you cannot articulate the grid in one
+paragraph, you have not seen the design well enough to code it.
+
+### Output rules
+
 - Layout + component composition + spacing MUST match the screenshot
-  pixel-for-pixel within the per-phase fidelity profile threshold (default
-  SSIM ≥ 0.85 per the design fidelity profile system).
+  pixel-for-pixel within the per-phase fidelity profile threshold
+  (default SSIM ≥ 0.85; the L4 SSIM gate enforces at /vg:review phase
+  2.5).
 - Active states, hover states, badge text, copy strings MUST be lifted
   verbatim from the screenshot when visible.
-- DO NOT invent generic Tailwind utility chains (`flex min-h-screen
+- DO NOT invent generic Tailwind utility chains. `flex min-h-screen
   items-center justify-center` for an authenticated landing page is the
-  L-002 anti-pattern that triggered this rule).
-- Interactive behaviors MUST follow interactions.md / UI-SPEC interactions
-  section.
+  **L-002 anti-pattern** that triggered this rule.
+- Interactive behaviors MUST follow `interactions.md` / UI-SPEC
+  interactions section.
 - Do NOT "improve" or reinvent the design — match it exactly. If the
-  design says full Sidebar + TopBar + content, you ship Sidebar + TopBar
-  + content even if a simpler "centered card" feels easier.
+  design says full Sidebar + TopBar + content, ship that even when a
+  "centered card" feels easier. Bring deviations to the user via Rule 4
+  (Architectural); do not silently rework the design.
 
-**Commit citation requirement when `<design-ref>` is set:** include
-`Per design/{slug}.png` in the commit body. The commit-msg hook does not
-yet enforce this (follow-up work), but reviewers grep for it.
+### Commit citation (mandatory when `<design-ref>` is set)
 
-**Form B (`<design-ref>no-asset:{reason}>`):** if the task explicitly
-declares no design asset is available, you may proceed without PNG read,
-but you MUST still consult DESIGN.md tokens + UI-SPEC component spec.
-The commit body MUST include `Design: no-asset ({reason})` so the gap is
-visible in review.
+Include `Per design/{slug}.png` in the commit body. The commit-msg hook
+does not yet enforce this (follow-up work), but reviewers grep for it
+and the L4 review log surfaces missing citations.
+
+### Form B (`<design-ref>no-asset:{reason}</design-ref>`)
+
+If the task explicitly declares no design asset is available, you may
+proceed without PNG read AND without LAYOUT-FINGERPRINT.md (the L2
+validator skips Form B tasks), but you MUST still consult DESIGN.md
+tokens + UI-SPEC component spec. The commit body MUST include
+`Design: no-asset ({reason})` so the gap is visible in review.
 
 ## URL state for list views (R7 — v2.8.4 Phase J — MANDATORY)
 
