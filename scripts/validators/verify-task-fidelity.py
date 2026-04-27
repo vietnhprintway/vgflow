@@ -88,6 +88,17 @@ def _audit_pair(meta_path: Path, prompt_path: Path, phase_dir: Path,
     expected_sha = meta.get("source_block_sha256", "")
     expected_lines = int(meta.get("source_block_line_count", 0))
 
+    # Phase 16 hot-fix C4 (v2.11.1) — hash the prompt body itself.
+    # Cross-AI consensus CRITICAL BLOCKer 1 (Codex GPT-5.5 verified by
+    # negative test): pre-hotfix audit only compared LINE COUNTS, so a
+    # same-line-count paraphrase (e.g., "PARAPHRASED LINE 1\nPARAPHRASED
+    # LINE 2\n...") returned PASS — defeating the entire phase goal.
+    # Hash compare is the foundational fidelity check; shortfall_pct is
+    # kept as a secondary signal to differentiate truncation vs paraphrase
+    # in the evidence message.
+    prompt_sha, _prompt_canonical_lines, _ = hasher.task_block_sha256(prompt_text)
+    content_drift = bool(expected_sha) and prompt_sha != expected_sha
+
     # Body line count from persisted prompt (raw, no normalize — caller wants
     # to see what executor SAW, not what was canonical)
     prompt_lines = prompt_text.count("\n") + (1 if prompt_text and not prompt_text.endswith("\n") else 0)
@@ -95,7 +106,8 @@ def _audit_pair(meta_path: Path, prompt_path: Path, phase_dir: Path,
     # Drift: PLAN now differs from what was hashed at spawn
     plan_drift = bool(expected_sha) and bool(plan_sha) and plan_sha != expected_sha
 
-    # Shortfall: prompt body shorter than expected (paraphrase or truncate)
+    # Shortfall: prompt body shorter than expected — secondary signal used
+    # only to classify the BLOCK kind (truncation vs paraphrase)
     shortfall_pct = 0.0
     if expected_lines > 0:
         shortfall = max(0, expected_lines - prompt_lines)
@@ -109,7 +121,9 @@ def _audit_pair(meta_path: Path, prompt_path: Path, phase_dir: Path,
         "expected_lines": expected_lines,
         "plan_now_sha": plan_sha,
         "plan_now_lines": plan_lines,
+        "prompt_sha": prompt_sha,
         "prompt_lines": prompt_lines,
+        "content_drift": content_drift,
         "shortfall_pct": shortfall_pct,
         "plan_drift": plan_drift,
         "plan_extract_error": plan_extract_error,
@@ -212,36 +226,65 @@ def main() -> None:
                     ),
                 ))
 
-            # Shortfall classification
-            sp = audit["shortfall_pct"]
-            if sp > SHORTFALL_BLOCK_THRESHOLD:
-                out.add(Evidence(
-                    type="content_shortfall",
-                    message=(
-                        f"Task {tid} ({wave}): prompt body {audit['prompt_lines']} "
-                        f"lines vs expected {audit['expected_lines']} "
-                        f"({sp:.0%} shortfall > {SHORTFALL_BLOCK_THRESHOLD:.0%} "
-                        f"threshold). Orchestrator likely paraphrased / truncated."
-                    ),
-                    file=audit["prompt_path"],
-                    expected=audit["expected_lines"],
-                    actual=audit["prompt_lines"],
-                    fix_hint=(
-                        "Inspect prompt body vs PLAN task block. If paraphrase: "
-                        "fix prompt template to pass body verbatim. Override: "
-                        "--skip-task-fidelity-audit (logs override-debt)."
-                    ),
-                ))
-            elif sp > SHORTFALL_WARN_THRESHOLD:
-                out.warn(Evidence(
-                    type="content_shortfall",
-                    message=(
-                        f"Task {tid} ({wave}): prompt body {audit['prompt_lines']} "
-                        f"lines vs expected {audit['expected_lines']} "
-                        f"({sp:.0%} shortfall, between WARN/BLOCK threshold)."
-                    ),
-                    file=audit["prompt_path"],
-                ))
+            # Phase 16 hot-fix C4 — hash compare is the primary fidelity gate.
+            # Hash mismatch ALWAYS = BLOCK (any content drift defeats the
+            # PARAPHRASE-leg closure goal). Shortfall_pct only classifies
+            # the kind of drift in the evidence message:
+            #   - large shortfall (>30%) → content_shortfall (truncation)
+            #   - small shortfall (≤30%) → content_paraphrase (rewrite)
+            if audit["content_drift"]:
+                sp = audit["shortfall_pct"]
+                if sp > SHORTFALL_BLOCK_THRESHOLD:
+                    out.add(Evidence(
+                        type="content_shortfall",
+                        message=(
+                            f"Task {tid} ({wave}): prompt body hash mismatch "
+                            f"AND {sp:.0%} line shortfall (>{SHORTFALL_BLOCK_THRESHOLD:.0%} "
+                            f"threshold). Orchestrator truncated task body — "
+                            f"executor received fewer lines than PLAN snapshot."
+                        ),
+                        file=audit["prompt_path"],
+                        expected={
+                            "sha256": audit["expected_sha"],
+                            "lines": audit["expected_lines"],
+                        },
+                        actual={
+                            "sha256": audit["prompt_sha"],
+                            "lines": audit["prompt_lines"],
+                        },
+                        fix_hint=(
+                            "Restore the truncated content. If PLAN itself was "
+                            "edited intentionally, re-run /vg:build to re-snapshot. "
+                            "Override: --skip-task-fidelity-audit (logs override-debt)."
+                        ),
+                    ))
+                else:
+                    out.add(Evidence(
+                        type="content_paraphrase",
+                        message=(
+                            f"Task {tid} ({wave}): prompt body hash differs "
+                            f"from PLAN snapshot (expected {audit['expected_sha'][:16]}…, "
+                            f"actual {audit['prompt_sha'][:16]}…) but line count "
+                            f"close ({audit['prompt_lines']} vs {audit['expected_lines']}). "
+                            f"Same-size REWRITE detected — orchestrator paraphrased "
+                            f"task body. THIS IS THE FAILURE MODE PHASE 16 EXISTS "
+                            f"TO BLOCK."
+                        ),
+                        file=audit["prompt_path"],
+                        expected={
+                            "sha256": audit["expected_sha"],
+                            "lines": audit["expected_lines"],
+                        },
+                        actual={
+                            "sha256": audit["prompt_sha"],
+                            "lines": audit["prompt_lines"],
+                        },
+                        fix_hint=(
+                            "Fix the prompt template / orchestration code to pass "
+                            "the task body VERBATIM (no re-summarize, no rewrite). "
+                            "Override: --skip-task-fidelity-audit (logs override-debt)."
+                        ),
+                    ))
 
         if not out.evidence:
             out.evidence.append(Evidence(

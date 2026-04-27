@@ -296,9 +296,15 @@ class TestPhase16TaskFidelity:
         assert r.returncode == 1
         assert _verdict(r.stdout) == "BLOCK"
 
-    def test_minor_truncation_passes(self, tmp_path):
+    def test_minor_truncation_blocks_by_hash(self, tmp_path):
+        # Phase 16 hot-fix C4 (v2.11.1): hash compare is strict — ANY content
+        # drift (including 5% loss) BLOCKs. Pre-hotfix the audit only checked
+        # line-count shortfall, so 5% loss returned PASS (was below 10% WARN
+        # threshold). Cross-AI BLOCKer 1: that line-count-only check let
+        # same-line paraphrase slip through. Now small loss = hash mismatch
+        # = BLOCK as content_paraphrase (since shortfall_pct < 30% threshold).
         _, pd = self._seed_pair(tmp_path, body_truncate_pct=0.05)  # 5% loss
         r = _run_validator(VALIDATORS / "verify-task-fidelity.py",
                            ["--phase", "16", "--prompts-dir", str(pd)], tmp_path)
-        assert r.returncode == 0
-        assert _verdict(r.stdout) == "PASS"
+        assert r.returncode == 1
+        assert _verdict(r.stdout) == "BLOCK"
