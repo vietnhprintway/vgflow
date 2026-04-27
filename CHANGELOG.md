@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.13.0 (2026-04-28) — Design pixel fidelity pipeline (4 layers) + L-002 planner mandate
+
+Minor release closing the silent-skip gap where AI-built UI shipped generic Tailwind despite a phase having a complete design folder. Four stacked gates so a slip in any one layer is caught by the next, plus a planner-side coverage validator.
+
+- **L-002 lesson — `<design-ref>` mandate (PR #15):** `vg-planner-rules.md` Rule 8 makes `<design-ref>` MANDATORY for FE tasks (file-path matches `apps/{admin,merchant,vendor,web}/**`, `packages/ui/src/{components,theme}/**`, or extension `.tsx/.jsx/.vue/.svelte`). Two emit forms — Form A (slug from `manifest.json`), Form B (`no-asset:{reason}` for explicit gaps, never silent). `vg-executor-rules.md` "Design fidelity" rewritten: Read each PNG via Read tool, cite `Per design/{slug}.png` in commit body, anti-pattern `flex items-center justify-center` for authenticated pages explicitly named.
+- **L1 — design-pixel hard-gate at executor spawn:** `pre-executor-check.py` now emits absolute `design_image_paths` + `design_image_required`; `/vg:build` step 8c verifies every required PNG exists on disk before spawning the executor. Override `--skip-design-pixel-gate` (logged to override-debt). Architect L2 prompt template gets the same vision injection rule.
+- **L2 — LAYOUT-FINGERPRINT forcing function:** new `verify-layout-fingerprint.py` validator at `/vg:build` step 9 requires `.fingerprints/task-N.fingerprint.md` with H2 sections Grid/Spacing/Hierarchy/Breakpoints (>=60 chars each) before code commits for any `<design-ref>` slug task. Override `--skip-fingerprint-check`.
+- **L3 — build-time visual gate:** new `verify-build-visual.py` renders each `<design-ref>` task via headless Playwright + pixelmatches against the design baseline at `/vg:build` step 9. Auto-SKIPs cleanly when dev server / Node / pixelmatch is missing - projects without the harness are not blocked. Override `--skip-build-visual` for real diffs.
+- **L4 — design-fidelity SSIM at review:** `/vg:review` phase 2.5 sub-step 6e SSIM-checks every `RUNTIME-MAP` view with a `design_ref` slug, BLOCK on threshold breach. Override `--allow-design-drift` consumes a rationalization-guard slot.
+- **PR #15 follow-up — coverage validator:** new `verify-design-ref-coverage.py` walks every PLAN.md task; classifies FE vs non-FE; BLOCKs on missing `<design-ref>`, slug not in manifest, or Form B without reason. WARNs (skips slug validation) when manifest absent; `--strict` promotes WARN to BLOCK for CI.
+- **Config:** `design_fidelity_threshold_pct` added to `visual_checks`; `dev_server_url` + `visual_threshold_pct` added to `build_gates`. Both `vg.config.template.md` (top-level) and `templates/vg/vg.config.template.md` (token version) updated.
+
 ## v2.12.7 (2026-04-28) — Runtime CSS asset verification
 
 Patch release for a real UI failure class: built pages linking CSS URLs that return source code, HTML, or the wrong MIME type.
