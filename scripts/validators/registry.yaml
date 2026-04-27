@@ -709,3 +709,33 @@ validators:
     runtime_target_ms: 2000
     added_in: pre-existed; wired-in v2.11.0-phase-17-polish
     description: Platform-aware coverage gate — list/table/grid views must declare interactive_controls (filter row + pagination + column visibility); mutation goals must declare 4-layer persistence check (toast + API + reload + re-read + diff); state-machine guards must be tested. Phase 7.14.3 retrospective: each gap surfaced as phantom bug at runtime.
+
+  # ──── Phase 16 — Task Fidelity Lock (D-02 + D-05 + D-06) ────
+  # Closes the PARAPHRASE leg of the "AI lazy-read" failure mode (Q1
+  # follow-up). Phase 15 W9 + P17 polish closed the SPAWN AUDIT and
+  # MISSING/TRUNCATION legs; these 3 close the third leg by checking
+  # task body fidelity from PLAN → executor prompt.
+  - id: task-schema
+    path: .claude/scripts/validators/verify-task-schema.py
+    severity: warn
+    phases_active: [blueprint]
+    domain: artifact
+    runtime_target_ms: 1500
+    added_in: v2.12.0-phase-16
+    description: P16 D-02 — classify PLAN tasks as xml/heading/mixed format. mode=legacy (default) PASS heading; mode=structured BLOCK heading; mode=both WARN heading. XML tasks require frontmatter `acceptance:` ≥1 entry. Migration enforcement.
+  - id: crossai-output
+    path: .claude/scripts/validators/verify-crossai-output.py
+    severity: block
+    phases_active: [scope, blueprint]
+    domain: crossai
+    runtime_target_ms: 2000
+    added_in: v2.12.0-phase-16
+    description: P16 D-05 — runs after `/vg:scope --crossai` or `/vg:blueprint --crossai`. Diffs PLAN.md/CONTEXT.md against base; BLOCK if any task body grew > 30 prose lines without corresponding `<context-refs>` IDs added (preserves cross-AI value via structured edits, not inline prose blob).
+  - id: task-fidelity
+    path: .claude/scripts/validators/verify-task-fidelity.py
+    severity: block
+    phases_active: [build]
+    domain: artifact
+    runtime_target_ms: 2000
+    added_in: v2.12.0-phase-16
+    description: P16 D-06 — post-spawn 3-way hash audit. Compares PLAN.md task block ↔ .meta.json sidecar (D-01) ↔ persisted prompt body (P15 T11.2). >30% body shortfall = BLOCK; 10-30% = WARN; PLAN drift since spawn = WARN. Catches orchestrator paraphrase before next wave spawns.
