@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.12.6 (2026-04-28) — Context capsules + Codex test-goal lane
+
+Feature release for reducing AI lazy-read/context miss risk before build.
+
+- `/vg:build` now writes a deterministic per-task context capsule from `pre-executor-check.py` and injects it into each executor prompt before the long context blocks.
+- Added `verify-task-context-capsule.py` as an unquarantinable build validator so a resolved task/API/goals/CRUD/security context cannot pass unless the executor prompt actually received the capsule.
+- `/vg:blueprint` now adds step `2b5a_codex_test_goal_lane`: Codex produces `TEST-GOALS.codex-proposal.md`, then `test-goal-delta.py` compares it against final `TEST-GOALS.md`.
+- Added `verify-codex-test-goal-lane.py` so unresolved proposal deltas block blueprint handoff unless explicitly skipped with override debt.
+- Regenerated Codex skill mirrors and added regression tests for capsule generation, prompt injection, Codex goal deltas, and workflow wiring.
+
 ## v2.12.5 (2026-04-28) — Graphify install/update verification
 
 Patch release for Graphify environment bootstrap.

@@ -513,6 +513,135 @@ def extract_crud_surface_context(
     return json.dumps(compact, indent=2, ensure_ascii=False)
 
 
+def _extract_tag_values(text: str, tag: str) -> list[str]:
+    return [
+        item.strip()
+        for item in re.findall(rf"<{re.escape(tag)}>\s*([^<]+?)\s*</{re.escape(tag)}>", text)
+        if item.strip()
+    ]
+
+
+def _extract_context_refs(task_text: str) -> list[str]:
+    refs: list[str] = []
+    for raw in _extract_tag_values(task_text, "context-refs"):
+        refs.extend(r.strip() for r in re.split(r"[,\s]+", raw) if r.strip())
+    return sorted(set(refs))
+
+
+def _extract_goal_ids(task_text: str, goals_context: str) -> list[str]:
+    raw = "\n".join(_extract_tag_values(task_text, "goals-covered"))
+    if not raw:
+        raw = goals_context
+    return sorted(set(re.findall(r"\bG-\d+\b", raw)))
+
+
+def _extract_endpoints(*texts: str) -> list[str]:
+    endpoints: list[str] = []
+    for text in texts:
+        for method, path in re.findall(r"\b(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./:{}?=&%-]+)", text):
+            endpoints.append(f"{method} {path.rstrip('.,;')}")
+    return sorted(set(endpoints))
+
+
+def _extract_file_paths(task_text: str) -> list[str]:
+    paths = _extract_tag_values(task_text, "file-path")
+    paths.extend(
+        re.findall(
+            r"\b(?:apps|packages|src|lib|server|client)/[A-Za-z0-9_./@{}-]+\.(?:ts|tsx|js|jsx|py|go|rs|vue|svelte)",
+            task_text,
+        )
+    )
+    return sorted(set(p.strip() for p in paths if p.strip()))
+
+
+def _context_status(value: str, missing_markers: tuple[str, ...] = ("not found",)) -> str:
+    lowered = (value or "").lower()
+    if not value.strip():
+        return "empty"
+    if any(marker in lowered for marker in missing_markers):
+        return "missing"
+    if lowered.startswith("none"):
+        return "none"
+    return "present"
+
+
+def build_task_context_capsule(
+    phase_dir: Path,
+    task_num: int,
+    task_context: str,
+    contract_context: str,
+    goals_context: str,
+    crud_surface_context: str,
+    sibling_context: str,
+    downstream_callers: str,
+    design_context: str,
+    build_config: dict,
+) -> dict:
+    """Build the compact, fail-closed context contract for one executor task."""
+    source_artifacts = {
+        "plan": any(phase_dir.glob("*PLAN*.md")),
+        "context": (phase_dir / "CONTEXT.md").exists(),
+        "api_contracts": (phase_dir / "API-CONTRACTS.md").exists(),
+        "test_goals": (phase_dir / "TEST-GOALS.md").exists(),
+        "crud_surfaces": (phase_dir / "CRUD-SURFACES.md").exists(),
+        "ui_spec": (phase_dir / "UI-SPEC.md").exists(),
+        "callers": (phase_dir / ".callers.json").exists(),
+        "wave_context_dir": (phase_dir / ".wave-context").exists(),
+    }
+
+    endpoints = _extract_endpoints(task_context, contract_context)
+    mutation_methods = {"POST", "PUT", "PATCH", "DELETE"}
+    mutates_data = any(ep.split(" ", 1)[0] in mutation_methods for ep in endpoints)
+    has_ui_signal = bool(
+        re.search(r"\.(tsx|jsx|vue|svelte)\b|<design-ref>|list|table|form|modal", task_context, re.I)
+    )
+
+    capsule = {
+        "capsule_version": "1",
+        "phase": build_config.get("phase"),
+        "task_num": task_num,
+        "task_title": next((line.strip("# ").strip() for line in task_context.splitlines() if line.strip()), ""),
+        "source_artifacts": source_artifacts,
+        "context_refs": _extract_context_refs(task_context),
+        "goals": _extract_goal_ids(task_context, goals_context),
+        "endpoints": endpoints,
+        "file_paths": _extract_file_paths(task_context),
+        "required_context": {
+            "task_context": _context_status(task_context),
+            "contract_context": _context_status(
+                contract_context,
+                missing_markers=("api-contracts.md not found", "no matching contract sections"),
+            ),
+            "goals_context": _context_status(
+                goals_context,
+                missing_markers=("test-goals.md not found", "goals ", "not found"),
+            ),
+            "crud_surface_context": _context_status(
+                crud_surface_context,
+                missing_markers=("crud-surfaces.md not found", "invalid json", "no resources[]"),
+            ),
+            "sibling_context": _context_status(sibling_context),
+            "downstream_callers": _context_status(downstream_callers),
+            "design_context": _context_status(design_context),
+        },
+        "execution_contract": {
+            "mutates_data": mutates_data,
+            "requires_persistence_check": mutates_data and bool(_extract_goal_ids(task_context, goals_context)),
+            "has_ui_surface": has_ui_signal,
+            "must_follow_crud_surface": source_artifacts["crud_surfaces"] and crud_surface_context.strip().lower() != "none",
+            "must_follow_api_contract": bool(endpoints),
+            "must_preserve_context_refs": bool(_extract_context_refs(task_context)),
+        },
+        "anti_lazy_read_rules": [
+            "Read this capsule first; it is the minimum task contract.",
+            "Do not implement outside file_paths unless the task body explicitly requires it.",
+            "Do not ignore goals/endpoints/crud_surface_context when present.",
+            "If a required_context value is missing, stop and report the missing artifact instead of guessing.",
+        ],
+    }
+    return capsule
+
+
 def ensure_siblings(phase_dir: Path, task_num: int, config: dict, repo_root: Path) -> str:
     """Ensure sibling context exists, build if missing."""
     wave_ctx = phase_dir / ".wave-context"
@@ -669,6 +798,11 @@ def main():
     parser.add_argument("--config", default=".claude/vg.config.md")
     parser.add_argument("--plan-file", default=None, help="Specific plan file name")
     parser.add_argument("--repo-root", default=None)
+    parser.add_argument(
+        "--capsule-out",
+        default=None,
+        help="Write the per-task context capsule JSON to this path",
+    )
     args = parser.parse_args()
 
     phase_dir = Path(args.phase_dir)
@@ -760,6 +894,29 @@ def main():
         "task_num": args.task_num,
     }
 
+    task_context_capsule = build_task_context_capsule(
+        phase_dir=phase_dir,
+        task_num=args.task_num,
+        task_context=task_context,
+        contract_context=contract_context,
+        goals_context=goals_context,
+        crud_surface_context=crud_surface_context,
+        sibling_context=sibling_context,
+        downstream_callers=downstream_callers,
+        design_context=design_context,
+        build_config=build_config,
+    )
+
+    if args.capsule_out:
+        capsule_path = Path(args.capsule_out)
+        if not capsule_path.is_absolute():
+            capsule_path = repo_root / capsule_path
+        capsule_path.parent.mkdir(parents=True, exist_ok=True)
+        capsule_path.write_text(
+            json.dumps(task_context_capsule, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
     # Determine status
     status = "ready"
     if "not found" in task_context.lower():
@@ -822,6 +979,7 @@ def main():
         "downstream_callers": downstream_callers,
         "design_context": design_context,
         "build_config": build_config,
+        "task_context_capsule": task_context_capsule,
         "warnings": warnings,
         "graphify_used": config.get("graphify.enabled", "false") == "true",
         # Phase 16 D-01: caller writes <task>.meta.json sidecar from this

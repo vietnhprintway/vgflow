@@ -2411,6 +2411,9 @@ COMMAND_VALIDATORS = {
                      # platform-mandatory categories (table+filter+paging on
                      # web; list_screen+touch_target on mobile; ...).
                      "verify-test-goals-platform-essentials",
+                     # Codex co-author lane catches missing TEST-GOALS coverage
+                     # before CrossAI reviews the already-final artifact.
+                     "verify-codex-test-goal-lane",
                      "verify-crud-surface-contract",
                      # Harness v2.6 (2026-04-25): blueprint META-gate at 2c.
                      # Goal-plan coverage, endpoint-goal coverage, surface
@@ -2468,6 +2471,10 @@ COMMAND_VALIDATORS = {
                  # promise. If enabled + installed, /vg:build must cold-build
                  # or refresh graphify and emit events.db evidence before PASS.
                  "build-graphify-required",
+                 # Capsule is the anti lazy-read contract. pre-executor-check.py
+                 # may resolve perfect task/API/goals/CRUD context, but build is
+                 # invalid unless the executor prompt literally receives it.
+                 "verify-task-context-capsule",
                  # v2.5 Phase A (2026-04-23): post-wave independent verify.
                  # Per-wave subprocess re-run of typecheck/tests/contract
                  # catches "executor claimed PASS but actually failed"
@@ -2811,6 +2818,8 @@ UNQUARANTINABLE = {
     "runtime-evidence",           # actual test pass verification
     "build-crossai-required",     # OHOK-7 MANDATORY loop enforcement
     "build-graphify-required",    # graphify enabled => post-build refresh evidence
+    "verify-task-context-capsule", # executor prompt must receive compact task context
+    "verify-codex-test-goal-lane", # blueprint must reconcile Codex goal proposal
     "context-structure",          # scope contract integrity
     # v2.5 Phase A (2026-04-23): post-wave subprocess divergence check.
     # AI cannot skip this — would defeat entire purpose of independent verify.

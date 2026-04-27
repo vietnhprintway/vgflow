@@ -7,3 +7,5 @@ __pycache__/
 .idea/
 *.swp
 *.bak
+# Graphify knowledge graph (regenerable)
+graphify-out/

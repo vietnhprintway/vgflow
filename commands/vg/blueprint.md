@@ -1,7 +1,7 @@
 ---
 name: vg:blueprint
 description: Plan + API contracts + verify + CrossAI review — 4 sub-steps before build
-argument-hint: "<phase> [--skip-research] [--gaps] [--reviews] [--text] [--crossai-only] [--skip-crossai] [--from=<substep>] [--override-reason=<text>] [--allow-missing-persistence] [--allow-missing-org] [--allow-crossai-inconclusive] [--skip-crud-surface-contract] [--apply-amendments] [--skip-amendment-check]"
+argument-hint: "<phase> [--skip-research] [--gaps] [--reviews] [--text] [--crossai-only] [--skip-crossai] [--from=<substep>] [--override-reason=<text>] [--allow-missing-persistence] [--allow-missing-org] [--allow-crossai-inconclusive] [--skip-crud-surface-contract] [--skip-codex-test-goal-lane] [--apply-amendments] [--skip-amendment-check]"
 allowed-tools:
   - Read
   - Write
@@ -22,6 +22,12 @@ runtime_contract:
     - "${PHASE_DIR}/PLAN.md"
     - "${PHASE_DIR}/API-CONTRACTS.md"
     - "${PHASE_DIR}/TEST-GOALS.md"
+    - path: "${PHASE_DIR}/TEST-GOALS.codex-proposal.md"
+      content_min_bytes: 40
+      required_unless_flag: "--skip-codex-test-goal-lane"
+    - path: "${PHASE_DIR}/TEST-GOALS.codex-delta.md"
+      content_min_bytes: 80
+      required_unless_flag: "--skip-codex-test-goal-lane"
     - path: "${PHASE_DIR}/CRUD-SURFACES.md"
       content_min_bytes: 120
       required_unless_flag: "--crossai-only"
@@ -39,6 +45,8 @@ runtime_contract:
     - "2a_plan"
     - "2b_contracts"
     - "2b5_test_goals"
+    - name: "2b5a_codex_test_goal_lane"
+      required_unless_flag: "--skip-codex-test-goal-lane"
     - "2c_verify"
     # OHOK-9 (d): crossai marker waived when --skip-crossai flag present
     # (aligns with forbidden_without_override — user can opt-out via
@@ -78,6 +86,7 @@ runtime_contract:
     - "--allow-missing-org"
     - "--allow-crossai-inconclusive"
     - "--skip-crud-surface-contract"
+    - "--skip-codex-test-goal-lane"
     - "--skip-crossai"
     - "--override-reason"
 ---
@@ -192,6 +201,7 @@ Extract from `$ARGUMENTS`: phase_number (required), plus optional flags:
 - `--allow-missing-persistence` — bypass Rule 3b persistence check gate (2b5). Log debt.
 - `--allow-missing-org` — bypass Rule 6 ORG 6-dim critical gate (2a5). Log debt.
 - `--allow-crossai-inconclusive` — treat CrossAI timeout/crash as non-blocking (2d-6). Log debt.
+- `--skip-codex-test-goal-lane` — skip independent Codex TEST-GOALS proposal/delta lane. Log debt; use only when Codex CLI is unavailable or phase is tiny.
 
 Validate: phase exists. Determine `$PHASE_DIR`.
 
@@ -239,12 +249,14 @@ if [ -n "$FROM_STEP" ] || [[ "$ARGUMENTS" =~ --crossai-only ]]; then
       ls "${PHASE_DIR}"/PLAN*.md >/dev/null 2>&1 || MISSING_PREREQ="${MISSING_PREREQ} PLAN*.md(step 2a)"
       [ -f "${PHASE_DIR}/API-CONTRACTS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} API-CONTRACTS.md(step 2b)"
       [ -f "${PHASE_DIR}/TEST-GOALS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} TEST-GOALS.md(step 2b5)"
+      [[ "$ARGUMENTS" =~ --skip-codex-test-goal-lane ]] || [ -f "${PHASE_DIR}/.step-markers/2b5a_codex_test_goal_lane.done" ] || MISSING_PREREQ="${MISSING_PREREQ} marker:2b5a_codex_test_goal_lane"
       ;;
     2d)
       # Needs all above + 2c verify marker
       ls "${PHASE_DIR}"/PLAN*.md >/dev/null 2>&1 || MISSING_PREREQ="${MISSING_PREREQ} PLAN*.md(step 2a)"
       [ -f "${PHASE_DIR}/API-CONTRACTS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} API-CONTRACTS.md(step 2b)"
       [ -f "${PHASE_DIR}/TEST-GOALS.md" ] || MISSING_PREREQ="${MISSING_PREREQ} TEST-GOALS.md(step 2b5)"
+      [[ "$ARGUMENTS" =~ --skip-codex-test-goal-lane ]] || [ -f "${PHASE_DIR}/.step-markers/2b5a_codex_test_goal_lane.done" ] || MISSING_PREREQ="${MISSING_PREREQ} marker:2b5a_codex_test_goal_lane"
       [ -f "${PHASE_DIR}/.step-markers/2c_verify.done" ] || MISSING_PREREQ="${MISSING_PREREQ} marker:2c_verify"
       ;;
   esac
@@ -1750,6 +1762,113 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 ```
 </step>
 
+<step name="2b5a_codex_test_goal_lane">
+## Sub-step 2b5a: CODEX TEST-GOAL PROPOSAL + DELTA
+
+Purpose: prevent the "review after final artifact" trap. CrossAI still reviews
+the final blueprint, but Codex first acts as an independent co-author for
+TEST-GOALS coverage. Codex does NOT edit TEST-GOALS.md directly. It writes a
+proposal artifact, then a deterministic delta script forces the planner to
+reconcile or explicitly skip with override debt.
+
+Artifacts:
+- `${PHASE_DIR}/TEST-GOALS.codex-proposal.md`
+- `${PHASE_DIR}/TEST-GOALS.codex-delta.md`
+
+```bash
+CODEX_GOAL_MARKER="${PHASE_DIR}/.step-markers/2b5a_codex_test_goal_lane.done"
+CODEX_GOAL_SKIP_MARKER="${PHASE_DIR}/.step-markers/2b5a_codex_test_goal_lane.skipped"
+CODEX_GOAL_PROPOSAL="${PHASE_DIR}/TEST-GOALS.codex-proposal.md"
+CODEX_GOAL_DELTA="${PHASE_DIR}/TEST-GOALS.codex-delta.md"
+
+if [[ "$ARGUMENTS" =~ --skip-codex-test-goal-lane ]]; then
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  touch "$CODEX_GOAL_SKIP_MARKER"
+  if type -t log_override_debt >/dev/null 2>&1; then
+    log_override_debt "blueprint-codex-test-goal-lane-skipped" \
+      "${PHASE_NUMBER}" \
+      "Codex TEST-GOALS co-author proposal/delta lane skipped" \
+      "$PHASE_DIR"
+  fi
+  echo "⚠ --skip-codex-test-goal-lane set — proposal lane skipped and debt logged"
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2b5a_codex_test_goal_lane" "${PHASE_DIR}") || touch "$CODEX_GOAL_MARKER"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b5a_codex_test_goal_lane 2>/dev/null || true
+else
+  CODEX_SPAWN="${REPO_ROOT}/.claude/commands/vg/_shared/lib/codex-spawn.sh"
+  if [ ! -x "$CODEX_SPAWN" ] && [ ! -f "$CODEX_SPAWN" ]; then
+    echo "⛔ codex-spawn.sh missing — cannot run independent Codex TEST-GOALS lane" >&2
+    echo "   Fix: /vg:update or sync latest VGFlow. Override: --skip-codex-test-goal-lane" >&2
+    exit 1
+  fi
+  if ! command -v codex >/dev/null 2>&1; then
+    echo "⛔ codex CLI not found — cannot run independent Codex TEST-GOALS lane" >&2
+    echo "   Fix: install/login Codex CLI. Override: --skip-codex-test-goal-lane" >&2
+    exit 1
+  fi
+
+  CODEX_GOAL_PROMPT="${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-test-goals-${PHASE_NUMBER}.md"
+  mkdir -p "$(dirname "$CODEX_GOAL_PROMPT")" 2>/dev/null
+  {
+    echo "# Codex TEST-GOALS Co-Author Proposal"
+    echo ""
+    echo "You are an independent VGFlow planning reviewer. Do not edit files."
+    echo "Read the artifacts below and propose missing TEST-GOALS coverage only."
+    echo ""
+    echo "Output requirements:"
+    echo "- Write markdown only."
+    echo "- For each proposal, reference the decision ID (P{phase}.D-XX or D-XX)."
+    echo "- Focus on real product coverage: CRUD list/form/delete, business flow,"
+    echo "  authz/security, abuse, performance, persistence, URL state, mobile/web platform differences."
+    echo "- Do not propose selectors or implementation steps."
+    echo ""
+    echo "## CONTEXT.md"
+    sed -n '1,260p' "${PHASE_DIR}/CONTEXT.md" 2>/dev/null || true
+    echo ""
+    echo "## PLAN.md"
+    sed -n '1,260p' "${PHASE_DIR}/PLAN.md" 2>/dev/null || true
+    echo ""
+    echo "## API-CONTRACTS.md"
+    sed -n '1,260p' "${PHASE_DIR}/API-CONTRACTS.md" 2>/dev/null || true
+    echo ""
+    echo "## TEST-GOALS.md FINAL DRAFT"
+    sed -n '1,320p' "${PHASE_DIR}/TEST-GOALS.md" 2>/dev/null || true
+    echo ""
+    echo "## CRUD-SURFACES.md"
+    sed -n '1,260p' "${PHASE_DIR}/CRUD-SURFACES.md" 2>/dev/null || true
+  } > "$CODEX_GOAL_PROMPT"
+
+  bash "$CODEX_SPAWN" \
+    --tier planner \
+    --sandbox read-only \
+    --prompt-file "$CODEX_GOAL_PROMPT" \
+    --out "$CODEX_GOAL_PROPOSAL" \
+    --timeout 900 \
+    --cd "$REPO_ROOT"
+
+  if [ ! -s "$CODEX_GOAL_PROPOSAL" ]; then
+    echo "⛔ Codex proposal output empty: $CODEX_GOAL_PROPOSAL" >&2
+    exit 1
+  fi
+
+  if ! "${PYTHON_BIN:-python3}" .claude/scripts/test-goal-delta.py \
+      --phase-dir "$PHASE_DIR" \
+      --final "$PHASE_DIR/TEST-GOALS.md" \
+      --proposal "$CODEX_GOAL_PROPOSAL" \
+      --out "$CODEX_GOAL_DELTA"; then
+    echo "⛔ Codex TEST-GOALS delta has unresolved coverage." >&2
+    echo "   Read: $CODEX_GOAL_DELTA" >&2
+    echo "   Fix: update TEST-GOALS.md with the missing coverage, then rerun /vg:blueprint ${PHASE_NUMBER} --from=2b5." >&2
+    echo "   Override: --skip-codex-test-goal-lane (logs debt; not recommended)." >&2
+    exit 1
+  fi
+
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2b5a_codex_test_goal_lane" "${PHASE_DIR}") || touch "$CODEX_GOAL_MARKER"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b5a_codex_test_goal_lane 2>/dev/null || true
+fi
+```
+</step>
+
 <step name="2b6_ui_spec">
 ## Sub-step 2b6: UI SPEC (FE tasks only)
 
@@ -2634,6 +2753,25 @@ if [ -x "$TG_VAL" ]; then
       if [[ ! "$ARGUMENTS" =~ --skip-platform-essentials ]]; then exit 1; fi
       ;;
     *) echo "ℹ test-goals-platform-essentials: $TG_V" ;;
+  esac
+fi
+
+# Gate B2: Codex TEST-GOALS proposal/delta lane
+CODEX_TG_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-codex-test-goal-lane.py"
+if [ -x "$CODEX_TG_VAL" ]; then
+  ${PYTHON_BIN} "$CODEX_TG_VAL" --phase "${PHASE_NUMBER}" \
+      > "${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-test-goal-lane.json" 2>&1 || true
+  CODEX_TG_V=$(${PYTHON_BIN} -c "import json,sys; print(json.load(open(sys.argv[1])).get('verdict','SKIP'))" \
+        "${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-test-goal-lane.json" 2>/dev/null)
+  case "$CODEX_TG_V" in
+    PASS|WARN) echo "✓ codex-test-goal-lane: $CODEX_TG_V" ;;
+    BLOCK)
+      echo "⛔ codex-test-goal-lane: BLOCK — see ${VG_TMP}/codex-test-goal-lane.json" >&2
+      echo "   TEST-GOALS must reconcile independent Codex proposal/delta before build." >&2
+      echo "   Override: --skip-codex-test-goal-lane (logs override-debt)" >&2
+      if [[ ! "$ARGUMENTS" =~ --skip-codex-test-goal-lane ]]; then exit 1; fi
+      ;;
+    *) echo "ℹ codex-test-goal-lane: $CODEX_TG_V" ;;
   esac
 fi
 

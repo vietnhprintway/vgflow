@@ -1296,20 +1296,31 @@ vg_build_progress_start_task "$PHASE_DIR" "$TASK_NUM" "pending-agent"
 **Fill context variables via pre-executor-check.py (deterministic, not pseudocode):**
 ```bash
 # Run ONCE per task — outputs JSON with all context blocks ready
+TASK_CAPSULE_DIR="${PHASE_DIR}/.task-context-capsules"
+mkdir -p "$TASK_CAPSULE_DIR" 2>/dev/null
+TASK_CAPSULE_PATH="${TASK_CAPSULE_DIR}/task-${TASK_NUM}.json"
 CONTEXT_JSON=$(${PYTHON_BIN} .claude/scripts/pre-executor-check.py \
   --phase-dir "${PHASE_DIR}" \
   --task-num ${TASK_NUM} \
-  --config .claude/vg.config.md)
+  --config .claude/vg.config.md \
+  --capsule-out "$TASK_CAPSULE_PATH")
 
 # Parse output into variables
 TASK_CONTEXT=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['task_context'])")
 CONTRACT_CONTEXT=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['contract_context'])")
 GOALS_CONTEXT=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['goals_context'])")
 CRUD_SURFACE_CONTEXT=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin).get('crud_surface_context','CRUD-SURFACES.md not found'))")
+TASK_CONTEXT_CAPSULE=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.dumps(json.load(sys.stdin)['task_context_capsule'], indent=2, ensure_ascii=False))")
 TASK_SIBLINGS=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['sibling_context'])")
 TASK_CALLERS=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['downstream_callers'])")
 DESIGN_CONTEXT=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.load(sys.stdin)['design_context'])")
 BUILD_CONFIG=$(echo "$CONTEXT_JSON" | ${PYTHON_BIN} -c "import sys,json; print(json.dumps(json.load(sys.stdin)['build_config']))")
+
+if [ ! -s "$TASK_CAPSULE_PATH" ]; then
+  echo "⛔ Task context capsule missing for task ${TASK_NUM}: $TASK_CAPSULE_PATH" >&2
+  echo "   pre-executor-check.py must write this before spawning. Do not spawn with ad-hoc context." >&2
+  exit 1
+fi
 
 # ─── Phase 15 D-12a + D-14 — UI-MAP wave-scoped subtree injection ────────
 # Pull the ~50-line subtree owned by the current wave (and optionally the
@@ -1599,6 +1610,10 @@ WAVE_CONTEXT="NONE - wave context unavailable."
 # validator verifies that this full prompt contains TASK_CONTEXT verbatim, not
 # just a pointer to a task file or a paraphrased summary.
 {
+  echo "<task_context_capsule path=\"$TASK_CAPSULE_PATH\">"
+  printf '%s\n' "$TASK_CONTEXT_CAPSULE"
+  echo "</task_context_capsule>"
+  echo ""
   echo "<vg_executor_rules>"
   printf '%s\n' "$VG_EXECUTOR_RULES"
   echo "</vg_executor_rules>"
@@ -1656,6 +1671,10 @@ echo "✓ Full executor prompt persisted -> $PROMPT_FULL_PERSIST"
 ```
 Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
   prompt: |
+    <task_context_capsule path="${TASK_CAPSULE_PATH}">
+    ${TASK_CONTEXT_CAPSULE}
+    </task_context_capsule>
+
     <vg_executor_rules>
     ${VG_EXECUTOR_RULES}
     </vg_executor_rules>
