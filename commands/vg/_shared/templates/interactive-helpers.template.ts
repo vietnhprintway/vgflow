@@ -366,7 +366,9 @@ function _readVgConfigAccount(role: string, configPath: string): RoleAccount | n
   if (!fs.existsSync(configPath)) return null;
   const text = fs.readFileSync(configPath, 'utf8');
   // Locate accounts block under environments.local.accounts:
-  const accountsRe = /environments:\s*\n[\s\S]*?local:\s*\n[\s\S]*?accounts:\s*\n([\s\S]*?)(?=\n\S|\n*$)/m;
+  // NOTE: no /m flag — we want $ to mean end-of-string, not end-of-line.
+  // With /m the (?=\n*$) lookahead fires at the first newline → empty capture.
+  const accountsRe = /environments:\s*\n[\s\S]*?local:\s*\n[\s\S]*?accounts:\s*\n([\s\S]*?)(?=\n\S|$)/;
   const m = accountsRe.exec(text);
   if (!m) return null;
   const block = m[1];
