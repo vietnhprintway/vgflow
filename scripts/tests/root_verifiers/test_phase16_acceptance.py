@@ -308,3 +308,255 @@ class TestPhase16TaskFidelity:
                            ["--phase", "16", "--prompts-dir", str(pd)], tmp_path)
         assert r.returncode == 1
         assert _verdict(r.stdout) == "BLOCK"
+
+
+# ─── 9. Phase 16 hot-fix v2.11.1 — production-path regression tests ──────
+#
+# These tests exercise the actual /vg pipeline code paths the cross-AI
+# review found to be silently broken pre-hotfix. Each test is named after
+# the BLOCKer it guards against (B1..B6 from the cross-AI review).
+
+
+class TestPhase16HotfixParaphraseGate:
+    """B1 regression: hash compare must catch same-line-count paraphrase.
+
+    Codex GPT-5.5 verified pre-hotfix that replacing every body line with
+    "PARAPHRASED LINE N" at identical line count returned PASS (audit only
+    compared line counts, not content hashes). After C4, hash mismatch is
+    the primary signal — same-size rewrite must BLOCK as content_paraphrase.
+    """
+
+    def _seed_paraphrase(self, tmp_path: Path):
+        phase_dir = _seed_phase(tmp_path)
+        shutil.copy(FIXTURES / "plans" / "heading-format.PLAN.md", phase_dir / "PLAN.md")
+        (tmp_path / "vg.config.md").write_text("# minimal\n", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, str(SCRIPTS / "pre-executor-check.py"),
+             "--phase-dir", str(phase_dir), "--task-num", "1",
+             "--config", str(tmp_path / "vg.config.md"),
+             "--repo-root", str(tmp_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        ctx = json.loads(r.stdout)
+        body = ctx["task_context"]
+        meta = ctx["task_meta"]
+        meta["wave"] = "wave-1"
+
+        # Replace every line with same-length paraphrase keeping the line
+        # count identical (the exact attack Codex used).
+        original_lines = body.splitlines()
+        paraphrased = "\n".join(
+            f"PARAPHRASED LINE {i + 1} (same line count, different content)"
+            for i in range(len(original_lines))
+        )
+
+        prompt_dir = phase_dir / ".build" / "wave-1" / "executor-prompts"
+        prompt_dir.mkdir(parents=True)
+        (prompt_dir / "1.body.md").write_text(paraphrased, encoding="utf-8")
+        (prompt_dir / "1.meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        return phase_dir, prompt_dir
+
+    def test_same_line_paraphrase_blocks_as_content_paraphrase(self, tmp_path):
+        _, pd = self._seed_paraphrase(tmp_path)
+        r = _run_validator(VALIDATORS / "verify-task-fidelity.py",
+                           ["--phase", "16", "--prompts-dir", str(pd)], tmp_path)
+        assert r.returncode == 1, f"paraphrase MUST BLOCK; stdout={r.stdout[:400]}"
+        out = json.loads(r.stdout)
+        assert out["verdict"] == "BLOCK"
+        types = [e.get("type") for e in out.get("evidence", [])]
+        assert "content_paraphrase" in types, (
+            f"expected content_paraphrase evidence; got {types}; "
+            f"stdout={r.stdout[:400]}"
+        )
+
+
+class TestPhase16HotfixXmlMain:
+    """B4 regression: pre-executor-check.py main() must extract XML task body.
+
+    Codex GPT-5.5 verified pre-hotfix that XML PLANs returned the
+    "Task N not found in PLAN files" sentinel via legacy v1 extract,
+    while v2 (used only for meta) reported source_format=xml. Two
+    extraction sources of truth → silent drift. C1 unified to v2.
+    """
+
+    def test_xml_format_main_returns_body_not_sentinel(self, tmp_path):
+        phase_dir = _seed_phase(tmp_path)
+        shutil.copy(FIXTURES / "plans" / "xml-format.PLAN.md", phase_dir / "PLAN.md")
+        (tmp_path / "vg.config.md").write_text("# minimal\n", encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, str(SCRIPTS / "pre-executor-check.py"),
+             "--phase-dir", str(phase_dir), "--task-num", "1",
+             "--config", str(tmp_path / "vg.config.md"),
+             "--repo-root", str(tmp_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        ctx = json.loads(r.stdout)
+        body = ctx.get("task_context", "")
+        assert "not found in PLAN files" not in body.lower(), (
+            f"XML PLAN must return body, got sentinel. body[:200]={body[:200]!r}"
+        )
+        assert "create-site" in body.lower() or "sites.controller.ts" in body, (
+            f"expected XML task 1 body content; got body[:200]={body[:200]!r}"
+        )
+        # Meta format must agree with what was extracted
+        meta = ctx.get("task_meta", {})
+        assert meta.get("source_format") == "xml", (
+            f"meta source_format must be xml; got {meta.get('source_format')}"
+        )
+
+
+class TestPhase16HotfixCrossaiHeading:
+    """B6 regression: verify-crossai-output diff parser must handle heading
+    PLAN format. Codex verified pre-hotfix: 50-line prose addition to a
+    ## Task N: heading-format PLAN returned silent PASS (parser only matched
+    XML <task id="N">). C2 added heading_task_re branch.
+    """
+
+    def _make_diff_with_heading_prose_growth(self) -> str:
+        # Synthesize a unified diff that adds 35 prose lines under ## Task 1:
+        # in a heading-format PLAN, with NO <context-refs>. Should BLOCK.
+        prose_lines = "\n".join(f"+Line {i} of new prose explaining design" for i in range(35))
+        return (
+            "diff --git a/PLAN.md b/PLAN.md\n"
+            "--- a/PLAN.md\n"
+            "+++ b/PLAN.md\n"
+            "@@ -10,3 +10,38 @@\n"
+            " ## Task 1: existing\n"
+            " existing line\n"
+            f"{prose_lines}\n"
+        )
+
+    def test_classify_diff_lines_handles_heading_format(self):
+        # Direct unit test on the function (no subprocess, no git).
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "verify_crossai_output", VALIDATORS / "verify-crossai-output.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        diff = self._make_diff_with_heading_prose_growth()
+        result = mod._classify_diff_lines_per_task(diff)
+        # Task "1" should appear in result with ≥ 30 prose_added (the threshold)
+        assert "1" in result, f"heading task scope not detected; result={result}"
+        assert result["1"]["prose_added"] >= 30, (
+            f"prose_added must reflect ≥30 lines; got {result['1']}"
+        )
+        assert result["1"]["context_refs_added"] == 0
+
+
+class TestPhase16HotfixUnconditionalPersist:
+    """B3 regression: build.md step 8c must persist body.md + meta.json
+    UNCONDITIONALLY (not gated on UI conditional). Codex verified pre-hotfix
+    that backend tasks (no UI subtree, no design context) got no meta.json
+    → fidelity audit silent PASS → orchestrator could paraphrase backend
+    task bodies freely. C3 split persist.
+    """
+
+    @pytest.fixture(scope="class")
+    def build_md(self):
+        return (COMMANDS / "build.md").read_text(encoding="utf-8")
+
+    def test_body_persist_outside_ui_conditional(self, build_md):
+        # Find the ${TASK_NUM}.body.md persist line and confirm it is NOT
+        # inside the `if [ -n "$UI_MAP_SUBTREE_BLOCK" ] || [ -n "$DESIGN_CONTEXT" ]; then`
+        # block. Heuristic: the body persist line must appear BEFORE that
+        # conditional in the same step section.
+        body_persist_idx = build_md.find('${TASK_NUM}.body.md')
+        ui_cond_idx = build_md.find('if [ -n "$UI_MAP_SUBTREE_BLOCK" ] || [ -n "$DESIGN_CONTEXT" ]; then')
+        assert body_persist_idx > 0, "body.md persist not found in build.md"
+        assert ui_cond_idx > 0, "UI conditional not found in build.md"
+        # body persist must be FIRST occurrence; UI conditional comes after
+        assert body_persist_idx < ui_cond_idx, (
+            "${TASK_NUM}.body.md persist must be unconditional (before UI conditional); "
+            f"got body.md at {body_persist_idx}, UI cond at {ui_cond_idx}"
+        )
+
+    def test_meta_json_persist_unconditional(self, build_md):
+        # Same check for .meta.json persist
+        meta_persist_idx = build_md.find('${TASK_NUM}.meta.json')
+        ui_cond_idx = build_md.find('if [ -n "$UI_MAP_SUBTREE_BLOCK" ] || [ -n "$DESIGN_CONTEXT" ]; then')
+        assert meta_persist_idx > 0
+        assert ui_cond_idx > 0
+        assert meta_persist_idx < ui_cond_idx, (
+            "${TASK_NUM}.meta.json persist must be unconditional; "
+            "C3 hot-fix moved it outside the UI conditional"
+        )
+
+    def test_uimap_persist_still_gated(self, build_md):
+        # The uimap.md wrapper SHOULD remain conditional (only UI tasks
+        # need the UI-MAP+DESIGN-REF audit input). Search for the actual
+        # variable assignment (unique) rather than the bare filename which
+        # also appears in the surrounding documentation comment.
+        uimap_assign_idx = build_md.find('PROMPT_UIMAP_PERSIST="${PROMPT_PERSIST_DIR}/${TASK_NUM}.uimap.md"')
+        ui_cond_idx = build_md.find('if [ -n "$UI_MAP_SUBTREE_BLOCK" ] || [ -n "$DESIGN_CONTEXT" ]; then')
+        assert uimap_assign_idx > 0, "PROMPT_UIMAP_PERSIST assignment not found"
+        assert ui_cond_idx > 0
+        assert uimap_assign_idx > ui_cond_idx, (
+            "PROMPT_UIMAP_PERSIST assignment must be INSIDE UI conditional "
+            "(uimap.md wrapper is for UI tasks only)"
+        )
+
+
+class TestPhase16HotfixWiring:
+    """B5 regression: skill bodies + orchestrator dispatch must invoke
+    verify-task-schema and verify-crossai-output. Pre-hotfix the validators
+    were registered but never called from any /vg command. C5 wired skill
+    bodies; C7 wired orchestrator COMMAND_VALIDATORS dict.
+    """
+
+    @pytest.fixture(scope="class")
+    def blueprint_md(self):
+        return (COMMANDS / "blueprint.md").read_text(encoding="utf-8")
+
+    @pytest.fixture(scope="class")
+    def scope_md(self):
+        return (COMMANDS / "scope.md").read_text(encoding="utf-8")
+
+    @pytest.fixture(scope="class")
+    def orchestrator_text(self):
+        return (SCRIPTS / "vg-orchestrator" / "__main__.py").read_text(encoding="utf-8")
+
+    def test_blueprint_md_invokes_task_schema(self, blueprint_md):
+        assert "verify-task-schema.py" in blueprint_md, (
+            "blueprint.md skill body must invoke verify-task-schema.py "
+            "(C5 hot-fix wired into 2d-3c)"
+        )
+
+    def test_blueprint_md_invokes_crossai_output(self, blueprint_md):
+        assert "verify-crossai-output.py" in blueprint_md, (
+            "blueprint.md skill body must invoke verify-crossai-output.py"
+        )
+        # Should be gated on --crossai flag (only fires after enrichment ran)
+        assert re.search(r"ARGUMENTS.*=~.*--crossai", blueprint_md), (
+            "verify-crossai-output invocation in blueprint.md must be "
+            "gated on --crossai flag"
+        )
+
+    def test_scope_md_invokes_crossai_output(self, scope_md):
+        assert "verify-crossai-output.py" in scope_md, (
+            "scope.md skill body must invoke verify-crossai-output.py "
+            "(C6 hot-fix)"
+        )
+
+    def test_orchestrator_dispatch_blueprint_includes_p16(self, orchestrator_text):
+        # COMMAND_VALIDATORS["vg:blueprint"] must include both new validators
+        # (defense-in-depth alongside the skill body invocations).
+        assert '"verify-task-schema"' in orchestrator_text, (
+            "COMMAND_VALIDATORS must include verify-task-schema for vg:blueprint"
+        )
+        assert '"verify-crossai-output"' in orchestrator_text, (
+            "COMMAND_VALIDATORS must include verify-crossai-output for vg:blueprint"
+        )
+
+    def test_orchestrator_dispatch_scope_includes_crossai_output(self, orchestrator_text):
+        # Confirm verify-crossai-output appears in the vg:scope list (after
+        # verify-human-language-response per C7 placement).
+        scope_section_idx = orchestrator_text.find('"vg:scope": [')
+        assert scope_section_idx > 0, "vg:scope key not found in COMMAND_VALIDATORS"
+        # Slice from vg:scope to next top-level dict key (or end of dict)
+        scope_slice_end = orchestrator_text.find("}", scope_section_idx)
+        scope_section = orchestrator_text[scope_section_idx:scope_slice_end]
+        assert '"verify-crossai-output"' in scope_section, (
+            "vg:scope COMMAND_VALIDATORS list must include verify-crossai-output"
+        )
