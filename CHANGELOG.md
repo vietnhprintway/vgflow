@@ -1,5 +1,99 @@
 # Changelog
 
+## v2.11.0 (2026-04-27) — Phase 17 ship + extraction-quality polish + orphan validator wire
+
+Minor release combining 3 layers of work that surfaced from Phase 15
+dogfood + Phase 17 cross-AI review:
+
+### Phase 17 — Test Session Reuse (D-01..D-06)
+
+User observation in Phase 7.14.3 RTB: test dashboard window opens many
+times → wall-clock + resource waste. Phase 15 D-16 (10 spec files per
+filter+pagination control) multiplies the cost — must fix before
+consumer dogfood at scale.
+
+Shipped:
+- `commands/vg/_shared/templates/interactive-helpers.template.ts` — extended
+  with `loginOnce(role, opts?)` (auto/api/ui strategy with TTL +
+  config_hash invalidation) + `useAuth(role)` (Playwright fixture
+  override) + `LoginOnceOptions` interface. Backward-compat preserved
+  (`loginAs` legacy export untouched).
+- `commands/vg/_shared/templates/playwright-global-setup.template.ts` +
+  `playwright-config.partial.ts` — global setup template + merge
+  fragment so consumer's playwright.config.ts wires globalSetup once.
+- 10 Phase 15 D-16 templates updated: `test.use(useAuth(ROLE))` replaces
+  `test.beforeEach(loginAs(page, ROLE))`. Login flows go from O(N spec
+  files) to O(M roles).
+- `vg.config.template.md` extended with `test:` block (storage_state_path,
+  ttl_hours, playwright.workers, fully_parallel, login_strategy).
+- `commands/vg/test.md` step 5d-pre auto-setup: detect E2E dir, copy
+  global-setup.ts, export VG_STORAGE_STATE_PATH/VG_STORAGE_STATE_TTL_HOURS/
+  VG_LOGIN_STRATEGY env vars, append `.auth/` to `.gitignore`,
+  discover VG_ROLES from vg.config accounts.
+- `scripts/validators/verify-test-session-reuse.py` (D-06): WARN on
+  generated specs still using legacy beforeEach(loginAs); --strict mode
+  escalates to BLOCK.
+
+53 acceptance tests + 18 helper smoke tests across 6 dimensions.
+
+### P17 polish — cross-AI review hotfix (5 WARN findings)
+
+W-1 useAuth pre-check storage state file existence (cryptic ENOENT → console.warn pointing at root cause).
+W-2 _loginViaApi validate cookies > 0 (server 200 with no Set-Cookie no longer pollutes 24h cache with empty file).
+W-5 broaden cross-phase regression glob `1[57]` → `1[5-9]` (catch P16/P18+ when added).
+
+W-3 (validator backtick edge case) + W-4 (awk YAML indent fragility) deferred — both rare, non-blocking.
+
+### Self-audit hotfix — orphan validators wired + extraction bugs fixed
+
+User raised concern (Q1): "long blueprint → AI lazy-read, miss content
+→ build code thiếu". Self-audit found this concern was already addressed
+in code BUT validators never fired:
+
+- `verify-blueprint-completeness.py` — META-GATE for GOAL↔PLAN coverage
+  (C1) + ENDPOINT↔GOAL coverage (C2 incl auth_path/happy/4xx/401)
+- `verify-test-goals-platform-essentials.py` — Phase 7.14.3 retrospective
+  gate for filter row + pagination + column visibility persistence +
+  mutation 4-layer + state-machine guards
+
+Both pre-existed with explicit Phase 7.14.3 rationale in docstrings,
+but were never registered in registry.yaml or wired into any skill.
+Wired into `commands/vg/blueprint.md` step 2d-3b (after the existing
+bash grep cross-checks pass). Override flags `--skip-blueprint-completeness`
+and `--skip-platform-essentials` log override-debt.
+
+Plus 2 silent-truncation bugs in `scripts/pre-executor-check.py`:
+
+- `extract_contract_section`: matched on LAST PATH SEGMENT only
+  → `/api/v1/sites` and `/api/v2/sites` collide → executor for v2 task
+  could receive v1 contract. Fix: prefer FULL-PATH match first; fall
+  back to last-segment only when full path absent. 3000-char silent
+  truncate softened with visible HTML comment.
+- `extract_goals_context`: 30-line cap on the LAST goal in
+  TEST-GOALS.md → Phase 15 D-16 goals (interactive_controls + persistence
+  check + criteria, 50-100+ lines) silently truncated → executor missed
+  filter/pagination test plans. Fix: take from start to EOF (R4 budget
+  caps prompt size downstream as the right place for that policy).
+
+4 regression tests in `test_phase17_extraction_fixes.py`:
+v1/v2 disambiguation (both directions) + last-goal-no-truncation
+(persistence check + interactive_controls survive) + non-last-goal still
+terminates at next ## Goal heading.
+
+### Test infrastructure
+
+- `scripts/tests/root_verifiers/test_phase17_helpers.py` (18 tests)
+- `scripts/tests/root_verifiers/test_phase17_acceptance.py` (42 tests)
+- `scripts/tests/root_verifiers/test_phase17_extraction_fixes.py` (4 tests)
+
+Total: 164 passed, 1 skipped (cheerio AST conditional).
+
+### Distribution
+
+`install.sh` Phase 15 wildcard for `_shared/templates/*` auto-catches
+the 2 new Playwright templates (no install.sh edit needed). Confirmed
+via `bash install.sh /tmp/p17-test`.
+
 ## v2.10.0 (2026-04-27) — Phase 15 ship: VG Design Fidelity + UAT Narrative + Filter Test Rigor
 
 Minor release shipping the 4 fixes Phase 7.14.3 RTB exposed in the prior
