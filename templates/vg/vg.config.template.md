@@ -256,6 +256,14 @@ visual_checks:
   read_evidence:
     enabled: false
 
+# === Planner mode (P19 D-04) ===
+# Fine-grained component-scope tasks decompose 1 page → N component tasks.
+# Requires VIEW-COMPONENTS.md from blueprint step 2b6c (D-02 must be on first).
+# Default OFF — opt-in once VIEW-COMPONENTS quality is validated by dogfood.
+planner:
+  fine_grained_components:
+    enabled: false
+
 # === Commit-msg design citation gate (P19 D-08) ===
 # Enforces PR #15 L-002 rule at the commit boundary: FE files require
 # "Per design/{slug}.png", "Design: no-asset (reason)", or "Design: refactor-only"

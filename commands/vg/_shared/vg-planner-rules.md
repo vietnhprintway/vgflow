@@ -113,6 +113,31 @@ omits `<design-ref>` entirely OR cites a slug not present in
 `manifest.json[screens][].slug`. Form B's `no-asset:{reason}` is allowed
 but logged to override-debt for review.
 
+### Rule 9 — fine-grained component scope (P19 D-04, FEATURE-FLAGGED)
+
+**Default OFF.** Enable per-project via `planner.fine_grained_components.enabled: true` in `vg.config.md` after dogfooding view-decomposition.
+
+When the flag is on AND the phase has `${PHASE_DIR}/VIEW-COMPONENTS.md` (produced by `/vg:blueprint` step 2b6c), the planner MUST emit a separate task per top-level component instead of one task per page. Each component-scoped task carries:
+
+```xml
+<component-scope>{ComponentName}</component-scope>
+<!-- e.g. <component-scope>Sidebar</component-scope> -->
+```
+
+**Decomposition rules:**
+
+1. For each row in VIEW-COMPONENTS.md with `child_count >= 3` OR `position area >= 20% viewport`, emit a dedicated task. Smaller decorative components batch with their parent.
+2. Wave grouping by parent dependency: AppShell (root) → Sidebar+TopBar (parallel, no inter-dep) → MainContent → cards/sections (parallel within MainContent).
+3. Task LOC budget loosened to 50–250 (was 250 max only) — components like Button often legitimately ship at 50 LOC.
+
+**Executor scope enforcement:** when `<component-scope>` is set, the executor (per `vg-executor-rules.md` updated section) refuses to touch sibling components outside the scope. Touching `Sidebar.tsx` while `<component-scope>Header</component-scope>` is set → Rule 4 deviation, ask user.
+
+**Validation:** validator `verify-component-scope.py` runs at /vg:build step 9, checks every staged file in a `<component-scope>` task is either inside the scope subdirectory OR explicitly listed in the task `<file-path>` block.
+
+**Rationale:** v2.13 + v2.14 force the executor to Read PNG and stay close to the design, but task scope was still "build HomePage" — too wide. Drift creeps in at sibling components the executor "remembered" while focused on something else. Per-component task = narrow visual surface = each L3/L5 gate evaluates a smaller change = smaller chance of drift slipping through.
+
+**Migration impact:** existing PLAN.md files with one task per page DO NOT need rewrite. The flag governs new planning runs only. Validator no-ops on tasks without `<component-scope>`.
+
 ### Wave grouping rules
 
 1. **BE before FE** — API endpoint task MUST be in earlier wave than its FE consumer

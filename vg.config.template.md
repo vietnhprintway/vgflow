@@ -338,6 +338,12 @@ visual_checks:
   read_evidence:
     enabled: false
 
+# P19 D-04 — fine-grained planner component-scope. OFF by default; requires
+# VIEW-COMPONENTS.md (D-02). Decomposes 1 page → N component tasks.
+planner:
+  fine_grained_components:
+    enabled: false
+
 # P19 D-02 — view-decomposition: vision-Read PNG → per-slug component list.
 # OFF by default; ~$0.05-0.10/slug Opus vision (cached by PNG mtime).
 design_assets_view_decomposition:
