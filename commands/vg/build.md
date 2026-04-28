@@ -3609,6 +3609,73 @@ except Exception:
   fi
 fi
 
+# ─── L6 read-evidence sentinel (P19 D-09) ─────────────────────────────────
+# Strongest "prove you Read it" gate available without runtime hook
+# transcript surface. Validator re-hashes every PNG declared in
+# .read-evidence/task-${N}.json — fabricated sentinels with wrong sha256
+# get BLOCK. Off by default until executor rule rollout.
+L6_ENABLED=$(vg_config_get visual_checks.read_evidence.enabled false 2>/dev/null || echo false)
+if [ "$L6_ENABLED" = "true" ] && [[ ! "$ARGUMENTS" =~ --skip-read-evidence ]]; then
+  L6_BLOCKED=""
+  L6_CHECKS=0
+  for plan in "${PHASE_DIR}"/PLAN*.md; do
+    [ -f "$plan" ] || continue
+    "${PYTHON_BIN:-python3}" - "$plan" <<'PY' >> "${PHASE_DIR}/.tmp/l6-tasks.tsv" 2>/dev/null
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
+slug_re = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
+def emit_for(tid, body):
+    refs = []
+    for raw in re.findall(r"<design-ref>([^<]+)</design-ref>", body):
+        for r in re.split(r"[,\s]+", raw.strip()):
+            r = r.strip()
+            if r and slug_re.match(r):
+                refs.append(r)
+    for slug in refs:
+        print(f"{tid}\t{slug}")
+for m in re.finditer(r'<task\s+id\s*=\s*["\']?(\d+)["\']?\s*>(.*?)</task>', text, re.DOTALL | re.IGNORECASE):
+    emit_for(m.group(1), m.group(2))
+heading_re = re.compile(r'^#{2,3}\s+Task\s+(0?\d+)\b', re.IGNORECASE | re.MULTILINE)
+lines = text.splitlines()
+heads = [(i, m.group(1).lstrip("0") or "0") for i, line in enumerate(lines) for m in [heading_re.match(line)] if m]
+for idx, (line_no, tid) in enumerate(heads):
+    end = heads[idx+1][0] if idx+1 < len(heads) else len(lines)
+    emit_for(tid, "\n".join(lines[line_no:end]))
+PY
+  done
+  if [ -s "${PHASE_DIR}/.tmp/l6-tasks.tsv" ]; then
+    DESIGN_DIR_REL_L6="$(vg_config_get design_assets.output_dir .vg/design-normalized 2>/dev/null || echo .vg/design-normalized)"
+    while IFS=$'\t' read -r task_num slug; do
+      [ -z "$task_num" ] && continue
+      L6_REPORT="${PHASE_DIR}/.tmp/l6-task-${task_num}-${slug}.json"
+      "${PYTHON_BIN:-python3}" .claude/scripts/validators/verify-read-evidence.py \
+        --phase-dir "${PHASE_DIR}" --task-num "${task_num}" --slug "${slug}" \
+        --design-dir "${DESIGN_DIR_REL_L6}" \
+        --output "${L6_REPORT}" >/dev/null 2>&1
+      RC=$?
+      L6_CHECKS=$((L6_CHECKS + 1))
+      if [ "$RC" != "0" ]; then
+        L6_BLOCKED="${L6_BLOCKED} task-${task_num}/${slug}"
+      fi
+    done < "${PHASE_DIR}/.tmp/l6-tasks.tsv"
+    rm -f "${PHASE_DIR}/.tmp/l6-tasks.tsv"
+  fi
+  if [ -n "$L6_BLOCKED" ]; then
+    echo "⛔ L6 read-evidence gate: sentinel missing or sha256 mismatch for:${L6_BLOCKED}"
+    echo "   See per-task report: ${PHASE_DIR}/.tmp/l6-task-*.json"
+    echo "   Cause: executor did not Write .read-evidence/task-N.json after Read PNG,"
+    echo "          OR sentinel sha256 differs from disk (likely fabricated)."
+    echo "   Override: --skip-read-evidence (logs override-debt; defeats the forcing function)"
+    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+      emit_telemetry_v2 "build_l6_read_evidence" "${PHASE_NUMBER}" "build.9" \
+        "read_evidence" "BLOCK" "{\"blocked\":\"${L6_BLOCKED}\"}"
+    fi
+    exit 1
+  elif [ "${L6_CHECKS:-0}" -gt 0 ]; then
+    echo "✓ L6 read-evidence gate: ${L6_CHECKS} sentinel(s) verified, sha256 matches disk"
+  fi
+fi
+
 # v2.2 — step marker for runtime contract
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "9_post_execution" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/9_post_execution.done"

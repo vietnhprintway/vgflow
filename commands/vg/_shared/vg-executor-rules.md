@@ -360,6 +360,41 @@ If you write JSX/HTML before reading every listed PNG, your output is
 unverified. The L3 gate compares your rendered UI against these PNGs;
 drift past threshold = BLOCK.
 
+### L1.5 — Write `.read-evidence/task-${TASK_NUM}.json` (P19 D-09 sentinel)
+
+Immediately after Reading each PNG (before writing any UI code), use
+the Write tool to create `<phase-dir>/.read-evidence/task-${TASK_NUM}.json`
+with this exact schema:
+
+```json
+{
+  "task": <int>,
+  "slug": "<design-ref slug>",
+  "read_paths": [
+    {
+      "path": "<absolute path you Read>",
+      "sha256_at_read": "<64-hex SHA256 of the file at the moment you Read it>"
+    }
+  ],
+  "read_at": "<ISO 8601 UTC>"
+}
+```
+
+You can compute SHA256 via Bash: `sha256sum "<path>"` or
+`python -c "import hashlib; print(hashlib.sha256(open(r'<path>','rb').read()).hexdigest())"`.
+
+**Why this exists:** validator `verify-read-evidence.py` re-hashes every
+declared PNG at gate time. A model fabricating the sentinel without
+actually Reading the file would have to know the exact SHA256 (search
+space 2^256), which is cryptographically infeasible. This is the
+strongest "prove you Read it" gate available — direct subagent
+transcript inspection is not exposed by Claude Code's hook surface
+(see `dev-phases/19-design-fidelity-95-pct-v1/RESEARCH.md`).
+
+The validator BLOCKs when sentinel is missing, when the required PNG
+path is absent from `read_paths`, or when the declared SHA256 differs
+from the file's current hash on disk.
+
 ### L2 — Write LAYOUT-FINGERPRINT.md as your forcing function
 
 After reading the PNGs, BEFORE writing UI code, create:

@@ -248,6 +248,13 @@ visual_checks:
     enabled: false
     model: "claude-haiku-4-5-20251001"
     timeout_s: 30
+  # L6 (P19 D-09) — read-evidence sentinel with PNG SHA256.
+  # Forces executor to Write .read-evidence/task-${N}.json after Read PNG;
+  # validator re-hashes the file. Mismatch = BLOCK. Cryptographically
+  # infeasible to fabricate (search space 2^256). Strongest "prove you
+  # Read it" gate without runtime hook transcript surface (RESEARCH.md).
+  read_evidence:
+    enabled: false
 
 # === Commit-msg design citation gate (P19 D-08) ===
 # Enforces PR #15 L-002 rule at the commit boundary: FE files require
