@@ -744,7 +744,7 @@ validators:
     domain: artifact
     runtime_target_ms: 2000
     added_in: pre-existed; wired-in v2.11.0-phase-17-polish
-    description: Platform-aware coverage gate — list/table/grid views must declare interactive_controls (filter row + pagination + column visibility); mutation goals must declare 4-layer persistence check (toast + API + reload + re-read + diff); state-machine guards must be tested. Phase 7.14.3 retrospective: each gap surfaced as phantom bug at runtime.
+    description: 'Platform-aware coverage gate — list/table/grid views must declare interactive_controls (filter row + pagination + column visibility); mutation goals must declare 4-layer persistence check (toast + API + reload + re-read + diff); state-machine guards must be tested. Phase 7.14.3 retrospective: each gap surfaced as phantom bug at runtime.'
 
   # ──── Phase 16 — Task Fidelity Lock (D-02 + D-05 + D-06) ────
   # Closes the PARAPHRASE leg of the "AI lazy-read" failure mode (Q1
@@ -886,4 +886,4 @@ validators:
     domain: artifact
     runtime_target_ms: 500
     added_in: v2.18.0
-    description: P20 D-15. Defensive sanity check on .pen files produced by /vg:design-scaffold --tool=pencil-mcp. Catches Pencil MCP batch_design syntax errors that silently produce 0-byte / wrong-format output. Heuristics: size >= 100 bytes; not PNG/JPG/HTML/JSON magic. NO-OPS when no pencil-mcp evidence entries.
+    description: 'P20 D-15. Defensive sanity check on .pen files produced by /vg:design-scaffold --tool=pencil-mcp. Catches Pencil MCP batch_design syntax errors that silently produce 0-byte / wrong-format output. Heuristics: size >= 100 bytes; not PNG/JPG/HTML/JSON magic. NO-OPS when no pencil-mcp evidence entries.'
