@@ -1739,6 +1739,15 @@ artifacts that look correct but were authored under wrong contract.
 - If you see `gsd-executor(...)` or `gsd-execute-phase(...)` — STOP, abort the spawn, re-spawn with `subagent_type="general-purpose"` explicit.
 - If your project's CLAUDE.md contains stale prose like "gsd-executor spawned by /vg:build", IGNORE it. Authority is THIS skill body and inline `<vg_executor_rules>` injected per task.
 
+**Programmatic enforcement (v2.27.0+):** A PreToolUse hook
+(`scripts/vg-agent-spawn-guard.py`, wired via `vg-hooks-install.py`)
+intercepts every Agent tool call during an active VG run and DENIES
+spawn with a clear reason if `subagent_type` matches `gsd-*` (except
+`gsd-debugger`). The deny reason is delivered to your next turn so
+you re-spawn with `general-purpose`. If you see the deny message
+referencing `vg-agent-spawn-guard.py`, that's the hook firing
+correctly — fix the spawn, not the hook.
+
 ```
 Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
   prompt: |

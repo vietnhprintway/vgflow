@@ -1,5 +1,71 @@
 # Changelog
 
+## v2.27.0 (2026-04-28) — programmatic gsd-* spawn guard (PreToolUse hook)
+
+User pushback on v2.26.0: "rule chỉ là text, có chắc AI sẽ không gọi GSD nữa không?". Right — informational reinforcement is a soft enforce. Investigation found a real programmatic mechanism + shipped it.
+
+### Investigation
+
+GSD's own `execute-phase.md` workflow uses identical text-only enforcement:
+
+```
+<available_agent_types>
+- gsd-executor — Executes plan tasks, commits, creates SUMMARY.md
+- gsd-verifier — ...
+Always use the exact name from this list — do not fall back to
+'general-purpose' or other built-in types
+</available_agent_types>
+```
+
+GSD has no programmatic guard either. Both VG (now) and GSD relied on the AI reading prose. Both had drift exactly because Claude Code's agent picker scores subagent descriptions and can override "soft should-not" rules from the calling skill.
+
+**Real enforcement vector found:** Claude Code's PreToolUse hook with `matcher: "Agent"` receives the full `tool_input` (including `subagent_type`) BEFORE the spawn fires. Returning `{"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "..."}}` blocks the spawn AND delivers the reason to Claude for the next turn so it re-spawns correctly.
+
+This is a hard enforce — not a rule the AI can rationalize past, an OS-level interception of the tool call.
+
+### Fix
+
+- **NEW** `scripts/vg-agent-spawn-guard.py`: PreToolUse hook script. Logic:
+  1. Reads stdin JSON for `tool_name` + `tool_input.subagent_type`
+  2. If tool isn't `Agent` → allow (no-op for Bash/Read/Edit/etc.)
+  3. If subagent_type doesn't start with `gsd-` → allow (general-purpose, Explore, custom agents pass)
+  4. If subagent_type is in allow-list (`gsd-debugger` only — VG legitimately uses it in build.md step 12) → allow
+  5. If `.vg/current-run.json` doesn't exist OR active run command doesn't start with `vg:` → allow (don't break GSD users running `/gsd-execute-phase` directly)
+  6. Otherwise → DENY with detailed reason listing VG vs GSD rule-set differences and instructing re-spawn with `general-purpose`
+- `scripts/vg-hooks-install.py`: new `PreToolUse` matcher entry for `Agent`. Wires the guard into `.claude/settings.local.json` on next install/repair pass. Allow-list extended for the new script.
+- `commands/vg/build.md` step 7: appends "Programmatic enforcement (v2.27.0+)" block telling AI the hook exists and what its deny message looks like — so when the AI sees the reason, it knows the hook fired correctly and re-spawns instead of treating the deny as a transient error.
+
+### Smoke-tested 6 scenarios
+
+- gsd-executor in active VG run → DENY with reason ✓
+- general-purpose in active VG run → ALLOW (empty stdout) ✓
+- gsd-debugger in active VG run → ALLOW (allow-listed) ✓
+- gsd-executor outside any VG run (no current-run.json) → ALLOW ✓
+- gsd-executor with stale non-VG run (e.g., gsd:execute-phase active) → ALLOW ✓
+- Non-Agent tool (Bash) during VG run → ALLOW ✓
+
+### User action
+
+Re-run hooks installer to land the new guard:
+
+```bash
+cd /path/to/your/project
+python3 .claude/scripts/vg-hooks-install.py
+```
+
+Or the full sync:
+
+```bash
+bash sync.sh /path/to/your/project
+```
+
+After install, hooks active on next Claude Code session start. Test by running `/vg:build <phase>` and observe wave dispatch — should consistently show `general-purpose(Wave N Task M)`. If you intentionally try to spawn `gsd-executor` (e.g., for debugging), the hook will deny with a clear message; you'll see it in next turn.
+
+**Note on GSD compatibility:** Hook is no-op outside VG context. `/gsd-execute-phase`, `/gsd-autonomous`, etc. continue to spawn `gsd-executor` normally because their `current-run.json` either doesn't exist (not VG-managed) or has a non-`vg:` command prefix. No interference with users who use both VG + GSD on different projects.
+
+### Closed
+N/A — pushback follow-up to v2.26.0; no separate issue. Reinforces the v2.20-v2.26 chain.
+
 ## v2.26.0 (2026-04-28) — hardened gsd-executor rejection in build.md (root cause traced)
 
 User reported `gsd-executor(Wave 6 Task 16 — Replica set verify)` STILL appearing in wave dispatch despite v2.25.0's text-only fix. Investigation traced the actual root cause this time.

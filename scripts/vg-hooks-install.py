@@ -127,6 +127,33 @@ HOOK_ENTRY = {
             ]
         }
     ],
+    # v2.27.0: programmatic enforcement of "no gsd-* subagents during VG
+    # runs". Until v2.26 the rule was prose-only — Claude Code's agent
+    # picker scored gsd-executor higher than general-purpose for plan
+    # dispatch and the AI sometimes resolved against VG's "should not"
+    # text. PreToolUse Agent hook denies the spawn with a clear reason
+    # so the AI re-spawns with general-purpose. Outside active VG runs
+    # the hook is a no-op so GSD users aren't affected.
+    "PreToolUse": [
+        {
+            "matcher": "Agent",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": (
+                        f'{PYTHON_CMD} '
+                        '"${CLAUDE_PROJECT_DIR}/.claude/scripts/vg-agent-spawn-guard.py"'
+                    ),
+                    "comment": (
+                        "VG agent-spawn guard. Blocks subagent_type=gsd-* "
+                        "(except gsd-debugger) during active VG run; lets "
+                        "everything else through. Closes the gsd-executor "
+                        "leak the v2.26.0 prose fix didn't fully cover."
+                    ),
+                }
+            ],
+        }
+    ],
 }
 
 
@@ -146,7 +173,7 @@ def merge_hooks(existing: dict, new_hooks: dict) -> tuple[dict, list[str]]:
     # Match any VG-owned hook script name; allows adding more hooks later.
     VG_SCRIPTS = (
         "vg-verify-claim", "vg-edit-warn", "vg-hooks-selftest", "vg-entry-hook",
-        "vg-step-tracker",
+        "vg-step-tracker", "vg-agent-spawn-guard",
     )
 
     for event, new_matchers in new_hooks.items():
