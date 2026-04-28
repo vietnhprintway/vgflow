@@ -306,12 +306,22 @@ def _mirror_sync_preflight(command: str, phase: str, extra_args: str) -> None:
 def _is_run_stale(active: dict) -> bool:
     """True if active run is old enough to be considered abandoned.
     Matches Stop hook's STALE_MINUTES so the two layers stay consistent.
+
+    Pre-existing bug: `fromisoformat(started.rstrip("Z"))` produced a
+    NAIVE datetime; subtracting from `now(tz=utc)` raised TypeError
+    (aware-naive mismatch); except branch returned True → ALWAYS stale.
+    Fix: normalize Z → +00:00 and add UTC tz if parser still returned
+    naive. Same fix applied in vg-verify-claim.py is_stale().
     """
     started = active.get("started_at", "")
     if not started:
         return True
     try:
-        ts = datetime.fromisoformat(started.rstrip("Z"))
+        if started.endswith("Z"):
+            started = started[:-1] + "+00:00"
+        ts = datetime.fromisoformat(started)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
         age_min = (datetime.now(timezone.utc) - ts).total_seconds() / 60
         return age_min > _RUN_STALE_MINUTES
     except Exception:

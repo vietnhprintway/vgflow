@@ -76,13 +76,27 @@ def three_way_merge(ancestor, current, upstream) -> MergeResult:
         return MergeResult("clean", current.read_text(encoding="utf-8"))
 
     if not ancestor.exists():
-        # Conservative: no ancestor means can't safely merge.
-        # Only clean if current == upstream.
+        # Issue #30: prior implementation returned ("conflict", cur_text)
+        # when ancestor missing AND current != upstream. The caller in
+        # update.md step 6 then parked `.merged` (= local content) as
+        # `.conflict` and never copied upstream over local. Result:
+        # /vg:update reported "updated=N conflicts=M skipped=K" with a
+        # success-shaped UI, while ALL bug fixes silently failed to land.
+        # Reproduces every time vgflow-ancestor/v${INSTALLED}/{rel} stash
+        # is missing or stale — common after a prior failed update or a
+        # manual VGFLOW-VERSION bump.
+        #
+        # Resilient default: when ancestor missing, take UPSTREAM as
+        # authoritative. Without a baseline, 3-way merge is impossible;
+        # the user's intent in running /vg:update is "give me the new
+        # version", so prefer upstream over local. New status string
+        # "force-upstream" lets the caller log distinctly without
+        # treating it as a conflict.
         cur_text = current.read_text(encoding="utf-8")
         up_text = upstream.read_text(encoding="utf-8")
         if cur_text == up_text:
             return MergeResult("clean", cur_text)
-        return MergeResult("conflict", cur_text)
+        return MergeResult("force-upstream", up_text)
 
     # git merge-file mutates the "current" file in place; copy to temp first.
     # Use binary mode to preserve line endings exactly (Windows text mode would
@@ -285,11 +299,21 @@ def cmd_fetch(args):
 
 
 def cmd_merge(args):
-    """3-way merge a single file and write merged content to --output."""
+    """3-way merge a single file and write merged content to --output.
+
+    Exit codes:
+      0 — clean merge or force-upstream (caller can move .merged → target)
+      1 — conflict with markers (caller should park as .conflict)
+
+    Status strings on stdout:
+      "clean"          — true 3-way clean OR upstream==local (no-op)
+      "force-upstream" — ancestor missing, took upstream verbatim (issue #30)
+      "conflict"       — markers present, caller parks
+    """
     res = three_way_merge(Path(args.ancestor), Path(args.current), Path(args.upstream))
     Path(args.output).write_text(res.content, encoding="utf-8")
     print(res.status)
-    return 0 if res.status == "clean" else 1
+    return 0 if res.status in ("clean", "force-upstream") else 1
 
 
 # ---- T8: Gate integrity verification (v1.8.0) -------------------------------

@@ -243,7 +243,19 @@ mkdir -p "$PATCHES_DIR"
 UPDATED=0
 NEW_FILES=0
 CONFLICTS=0
+FORCE_UPSTREAM=0
 SKIPPED=0
+
+# Issue #30: warn user up-front if ancestor stash missing — every file
+# will be force-upstream-copied, no 3-way merge possible.
+if [ ! -d "$ANCESTOR_DIR" ]; then
+  echo "⚠ Ancestor stash missing: $ANCESTOR_DIR"
+  echo "   Cannot perform true 3-way merge for any file."
+  echo "   Files differing from upstream will be force-upgraded to upstream."
+  echo "   Cause: prior install never snapshotted, OR VGFLOW-VERSION"
+  echo "          mismatched ancestor stash version, OR previous failed update."
+  echo ""
+fi
 
 # Process substitution instead of pipe so counter vars persist in this shell
 while IFS= read -r upstream_file; do
@@ -299,8 +311,15 @@ while IFS= read -r upstream_file; do
   if [ "$MERGE_STATUS" = "clean" ]; then
     mv "${ABS_TARGET}.merged" "$ABS_TARGET"
     UPDATED=$((UPDATED + 1))
+  elif [ "$MERGE_STATUS" = "force-upstream" ]; then
+    # Issue #30: ancestor missing → take upstream as authoritative.
+    # Apply upstream + log distinct count so user sees we couldn't 3-way
+    # merge. This is the safe default; without baseline 3-way merge is
+    # impossible and user's intent in /vg:update is "give me new version".
+    mv "${ABS_TARGET}.merged" "$ABS_TARGET"
+    FORCE_UPSTREAM=$((FORCE_UPSTREAM + 1))
   else
-    # Conflict — park in patches dir + add to manifest
+    # Real conflict — git merge-file produced markers, park for /vg:reapply-patches
     PARKED="${PATCHES_DIR}/${REL}.conflict"
     mkdir -p "$(dirname "$PARKED")"
     mv "${ABS_TARGET}.merged" "$PARKED"
@@ -317,7 +336,13 @@ PatchesManifest(Path(os.environ['MANIFEST'])).add(os.environ['REL'], 'conflict')
 done < <(find "$EXTRACTED" -type f)
 
 echo ""
-echo "Merge pass done: updated=${UPDATED} new=${NEW_FILES} conflicts=${CONFLICTS} skipped_meta=${SKIPPED}"
+echo "Merge pass done: updated=${UPDATED} new=${NEW_FILES} conflicts=${CONFLICTS} force_upstream=${FORCE_UPSTREAM} skipped_meta=${SKIPPED}"
+if [ "$FORCE_UPSTREAM" -gt 0 ]; then
+  echo "  ⚠ ${FORCE_UPSTREAM} file(s) force-upgraded to upstream because ancestor stash missing."
+  echo "    Local edits to those files (if any) were OVERWRITTEN. Inspect with:"
+  echo "      git diff HEAD -- .claude/ | head -100"
+  echo "    Recover via git checkout if needed."
+fi
 ```
 </step>
 

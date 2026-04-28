@@ -92,11 +92,70 @@ def is_stale(run: dict) -> bool:
     if not started:
         return True
     try:
-        ts = datetime.datetime.fromisoformat(started.rstrip("Z"))
+        # PRE-EXISTING BUG (any version): used to be
+        #   ts = datetime.datetime.fromisoformat(started.rstrip("Z"))
+        # which produces a NAIVE datetime, then `datetime.now(tz=utc) - ts`
+        # raised TypeError: "can't subtract offset-naive and offset-aware
+        # datetimes". The except branch returned True → is_stale() was
+        # ALWAYS True regardless of actual age. Result: Stop hook BLOCKED
+        # on every active run with the "stale" message even on fresh runs.
+        # This compounded #32 because cross-session detection couldn't
+        # distinguish stale vs fresh either.
+        # Fix: convert Z → +00:00 then add UTC tz if parser still returned
+        # naive, so subtraction works on aware-aware as intended.
+        if started.endswith("Z"):
+            started = started[:-1] + "+00:00"
+        ts = datetime.datetime.fromisoformat(started)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=datetime.timezone.utc)
         age_min = (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
         return age_min > STALE_MINUTES
     except Exception:
         return True
+
+
+def get_run_session_id(run: dict) -> str | None:
+    """Read session_id for the active run.
+
+    Issue #32: prior Stop hook treated all active runs as belonging to the
+    current session, so a crashed Session A run blocked Session B even on
+    completely unrelated phases. Read session_id from current-run.json
+    first; fall back to best-effort sqlite lookup by run_id. Returns None
+    if neither source has it (cannot differentiate — preserve legacy block).
+    """
+    sid = run.get("session_id")
+    if sid:
+        return sid
+    run_id = run.get("run_id")
+    if not run_id:
+        return None
+    try:
+        import sqlite3
+        db_path = REPO_ROOT / ".vg" / "events.db"
+        if not db_path.exists():
+            return None
+        conn = sqlite3.connect(str(db_path), timeout=2.0)
+        try:
+            row = conn.execute(
+                "SELECT session_id FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            return row[0] if row and row[0] else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def auto_abort_run(reason: str) -> None:
+    """Best-effort run-abort via orchestrator. Never raises."""
+    try:
+        subprocess.run(
+            [sys.executable, str(ORCHESTRATOR), "run-abort",
+             "--reason", reason],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as e:
+        log(f"auto_abort_run failed: {e}")
 
 
 def run_orchestrator_complete() -> tuple[int, str, str]:
@@ -261,6 +320,49 @@ def main() -> int:
 
     command = current.get("command", "?")
     phase = current.get("phase", "?")
+
+    # Issue #32: cross-session zombie detection. If active run was started
+    # by a DIFFERENT Claude Code session than the one firing this Stop
+    # hook, current session has no business validating that run's
+    # contract. Two sub-cases:
+    #   - Stale cross-session zombie → auto-abort (best-effort) + approve
+    #   - Fresh cross-session run → don't touch (might be parallel work) +
+    #     approve current Stop without validating
+    # Only differentiate when we can identify both sessions. If either is
+    # unknown (legacy install, env var missing), fall through to existing
+    # OHOK-6 stale-block behavior to preserve security.
+    run_session = get_run_session_id(current)
+    hook_session = session_id if session_id and session_id != "?" else None
+    cross_session = bool(
+        run_session and hook_session and run_session != hook_session
+    )
+
+    if cross_session:
+        run_id = current.get("run_id", "?")
+        if is_stale(current):
+            log(f"cross-session stale zombie {command} phase={phase} "
+                f"from session={run_session[:12]}; auto-abort + approve")
+            auto_abort_run(
+                f"cross-session-auto-abort: zombie from session "
+                f"{run_session[:12] if run_session else '?'}, "
+                f"current session={hook_session[:12] if hook_session else '?'}"
+            )
+            print(json.dumps({
+                "decision": "approve",
+                "reason": "cross-session-stale-zombie-cleared",
+                "aborted_run": run_id[:12] if run_id else "?",
+            }))
+            return 0
+        # Fresh run from a parallel session — don't abort it, just approve
+        # this Stop. Other session is responsible for completing its run.
+        log(f"cross-session fresh run {command} phase={phase} "
+            f"from session={run_session[:12]}; approve without touching")
+        print(json.dumps({
+            "decision": "approve",
+            "reason": "cross-session-fresh-no-action",
+            "other_session_run": run_id[:12] if run_id else "?",
+        }))
+        return 0
 
     if is_stale(current):
         # OHOK-6 (Gemini P1): previously auto-cleared + approved. That was

@@ -1,5 +1,53 @@
 # Changelog
 
+## v2.24.0 (2026-04-28) — silent update fix + cross-session zombie + is_stale tz bug
+
+3 issues, 1 critical hidden bug. Closes #30, #32, partial #31.
+
+### 1. `/vg:update` silent merge failure (#30, CRITICAL)
+
+**User-visible symptom:** `/vg:update v2.12.7 → v2.23.0` reported `updated=526 new=3 conflicts=51` and rotated VGFLOW-VERSION cleanly. But none of the v2.20-v2.23 bug fixes actually landed in install files. User had to manually `cp` 51 files from `vgflow-ancestor/v2.23.0/` → `.claude/` to recover.
+
+**Root cause:** `vg_update.py three_way_merge()` lines 78-85 — when ancestor missing AND current ≠ upstream, returned `MergeResult("conflict", cur_text)` (LOCAL content, not upstream). Caller in `update.md` step 6 wrote LOCAL as `.merged`, parked it as `.conflict`. `/vg:reapply-patches` saw zero markers and treated as resolved (or deleted as identical-to-local). Upstream content **never reached install**. Worst case: success-shaped UI, partial silent failure.
+
+**Fix:**
+- `three_way_merge()`: when ancestor missing AND current ≠ upstream, return `MergeResult("force-upstream", up_text)`. Without baseline, 3-way merge is impossible; user's intent in `/vg:update` is "give me new version" → take upstream as authoritative.
+- `cmd_merge` exits 0 for both `clean` and `force-upstream` (caller mv `.merged` → target).
+- `commands/vg/update.md` step 6: handles `force-upstream` status as a valid clean-apply path with distinct counter `FORCE_UPSTREAM`. Final summary now reads `updated=N new=M conflicts=K force_upstream=L skipped_meta=S` so user sees count of force-upgraded files. Pre-flight warns if `vgflow-ancestor/v${INSTALLED}/` missing.
+- Verified: ancestor-missing fixture → returns `force-upstream`, output content == upstream verbatim. Ancestor-missing + current==upstream → `clean`. Ancestor exists with conflict → markers preserved.
+
+### 2. Cross-session zombie blocks unrelated Stop hook (#32)
+
+**User-visible symptom:** Session A `/vg:build 3.1` crashes without run-complete. Session B working on `/vg:blueprint 2` (different phase entirely) hits Stop hook → blocked by Session A's zombie active-run reporting Phase 3.1's missing telemetry/markers. User must manually `vg-orchestrator run-abort` after every turn. 3 zombie runs aborted in 1 day.
+
+**Root cause:** `vg-verify-claim.py` Stop hook read `current-run.json` blindly without checking which session started the run. The orchestrator's "1 active run at a time" model was project-global, not session-scoped.
+
+**Fix:**
+- `vg-verify-claim.py`: new `get_run_session_id(run)` reads session_id from `current-run.json` first, falls back to sqlite query against runs table by run_id.
+- Stop hook now branches on cross-session detection (when both sessions have IDs and they differ):
+  - **Stale + cross-session** → auto-`run-abort` zombie via orchestrator + approve current Stop. Audit event emitted.
+  - **Fresh + cross-session** → don't touch (might be parallel work) + approve current Stop without validating the other session's contract.
+  - **Same-session OR unidentifiable** → existing logic preserved (OHOK-6 still blocks AI from gaming threshold).
+- Verified 4 scenarios: stale+xsession → cleared, fresh+xsession → no-action, same+stale → BLOCK (OHOK-6 preserved), same+fresh → fall-through.
+
+### 3. `is_stale()` always-True tz bug (PRE-EXISTING, surfaced during #32 work)
+
+**Hidden bug found while testing #32:** `vg-verify-claim.py:is_stale()` and `vg-orchestrator __main__.py:_is_run_stale()` parsed `started_at` via `datetime.fromisoformat(started.rstrip("Z"))` → produces NAIVE datetime. Subtracting from `datetime.now(timezone.utc)` (AWARE) raised `TypeError: can't subtract offset-naive and offset-aware datetimes`. Except branch returned `True` → **is_stale() always returned True regardless of actual age**.
+
+**Impact this caused:** Stop hook BLOCKED on every active run with the "stale" message even when 5 seconds old. Orchestrator's `run-start` auto-cleared every active run as "stale". Users lived with constant Stop hook blocks ascribed to "OHOK-6 threshold protection" but actually triggered by tz parse error.
+
+**Fix:** Normalize `Z` → `+00:00` then add UTC tz if parser still returned naive. Aware-aware subtraction works → real age comparison.
+
+### Closed
+- **#30** (this release — force-upstream fix)
+- **#32** (this release — cross-session detection + tz bug)
+- **#31** — duplicate noise (sig 26ebcf1f, install_success info, vg=unknown). Same empty-context class as #24/#25/#29. Already fixed in v2.19.0 redact rewrite. Reporter v=unknown can't be on v2.19.0+; close as stale.
+
+### Pipeline impact
+- `/vg:update` users on stale-ancestor projects will now actually receive bug fixes instead of silently keeping old version
+- Multi-session workflows on same project no longer interfere across phases
+- Active-run age check now functions correctly (was always-stale-block before)
+
 ## v2.23.0 (2026-04-28) — CRUD validator BE-only fix (closes #26)
 
 Backend-only phases in `web-fullstack` projects (wallet/ledger/billing/integration types) generated 270+ field-missing errors per resource at `/vg:blueprint` step 2d_validation_gate because `verify-crud-surface-contract.py` forced a `platforms.web` overlay even when the phase had zero FE work.
