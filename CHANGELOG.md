@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.15.2 (2026-04-28) — Codex mirror regen (fixes #16)
+
+Patch release closing #16. v2.15.1 release tarball shipped stale `codex-skills/*/SKILL.md` mirrors because Phase 19 commits (v2.13.0–v2.15.0) modified canonical `commands/vg/{accept,blueprint,build,review}.md` without re-running `scripts/generate-codex-skills.sh`. `/vg:sync --verify` after standard-install upgrade reported 5 functional drifts.
+
+- Re-ran generator with `--force`; verifier reports 61/61 pairs OK (zero functional drift after adapter strip).
+- 4 mirrors regenerated: vg-accept (+74 lines for D-06), vg-blueprint (+196 for D-01+D-02+D-03), vg-build (+343 for L1+L2+L3+L5+L6 gates), vg-review (+117 for phase 2.5 sub-step 6e).
+- Process gap noted: codex mirror regen should auto-fire on canonical change, or be enforced by pre-release CI. Tracking as follow-up; until then, `generate-codex-skills.sh --force` must run before any release tag.
+
 ## v2.15.1 (2026-04-28) — Validator registry catch-up (install/update propagation)
 
 Patch release. No behaviour change — closes the catalog gap so the new gates from v2.13.0–v2.15.0 surface in `/vg:validators`, `/vg:doctor`, `/vg:gate-stats`, and the validator-drift check.
