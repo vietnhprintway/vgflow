@@ -877,3 +877,13 @@ validators:
     runtime_target_ms: 1000
     added_in: v2.15.0
     description: P19 D-04 (FEATURE-FLAGGED). When planner.fine_grained_components.enabled=true and task has <component-scope>{Name}</component-scope>, staged files must be inside scope subdirectory or in <file-path>. NO-OPS on tasks without the tag — backward compatible.
+
+  # ──── v2.18.0 — Phase 20 Wave C ────
+  - id: pencil-output
+    path: .claude/scripts/validators/verify-pencil-output.py
+    severity: block
+    phases_active: [scaffold]
+    domain: artifact
+    runtime_target_ms: 500
+    added_in: v2.18.0
+    description: P20 D-15. Defensive sanity check on .pen files produced by /vg:design-scaffold --tool=pencil-mcp. Catches Pencil MCP batch_design syntax errors that silently produce 0-byte / wrong-format output. Heuristics: size >= 100 bytes; not PNG/JPG/HTML/JSON magic. NO-OPS when no pencil-mcp evidence entries.

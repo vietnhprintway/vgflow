@@ -129,7 +129,7 @@ Pages new: <P>
 <step name="3_tool_selector">
 ## Step 3: Tool selector
 
-If `--tool=<name>` flag → validate name in {pencil-mcp, penboard-mcp, ai-html, claude-design, stitch, v0, figma, manual-html} and skip prompt.
+If `--tool=<name>` flag → validate name in {pencil-mcp, penboard-mcp, ai-html, claude-design, stitch, v0, figma, manual-html, sketch} and skip prompt.
 
 Else AskUserQuestion with decision matrix:
 
@@ -145,6 +145,7 @@ Pick a tool:
   [f] v0             — Vercel v0 (manual export, paid). React-first.
   [g] figma          — Figma (manual export). Industry standard for designer teams.
   [h] manual-html    — You write HTML mockups by hand. Trivial integration.
+  [i] sketch         — Sketch.app (macOS only). Mobile-friendly artboard presets (Wave C D-13).
   [help]             — print full decision matrix + trade-offs.
 ```
 
@@ -166,6 +167,7 @@ case "$TOOL" in
   v0)            SCAFFOLD_LIB="scaffold-v0.sh" ;;
   figma)         SCAFFOLD_LIB="scaffold-figma.sh" ;;
   manual-html)   SCAFFOLD_LIB="scaffold-manual.sh" ;;
+  sketch)        SCAFFOLD_LIB="scaffold-sketch.sh" ;;        # Wave C D-13
   *) echo "⛔ Unknown tool: $TOOL"; exit 1 ;;
 esac
 
@@ -259,6 +261,7 @@ Mark step + emit telemetry `design_scaffold.completed`.
 | v0 | 🔴 manual | paid Vercel | `.html` React | React shop, has v0 sub |
 | figma | 🔴 manual | varies | `.png` (export) | Designer-team, Figma-native |
 | manual-html | trivial | $0 | `.html` | Existing hand-written mockups |
+| **sketch** | 🔴 manual | $9/mo Sketch sub | `.png` (export 2x) | Mobile-friendly (iOS/Android artboards), macOS only |
 
 </help_tools_matrix>
 
