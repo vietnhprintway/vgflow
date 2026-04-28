@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.15.1 (2026-04-28) — Validator registry catch-up (install/update propagation)
+
+Patch release. No behaviour change — closes the catalog gap so the new gates from v2.13.0–v2.15.0 surface in `/vg:validators`, `/vg:doctor`, `/vg:gate-stats`, and the validator-drift check.
+
+- 9 catalog entries added to `scripts/validators/registry.yaml`: `layout-fingerprint`, `build-visual`, `design-ref-coverage` (v2.13.0); `ui-spec-scan-coverage`, `view-decomposition`, `vision-self-verify`, `override-debt-threshold` (v2.14.0); `read-evidence`, `component-scope` (v2.15.0). Each entry declares severity, phases_active, domain, runtime_target_ms, added_in, and one-line description per registry schema.
+- `install.sh` and `/vg:update` mechanisms verified to deploy the new artifacts without changes:
+  - Fresh `install.sh` smoke landed all 9 new validators + `verify-build-visual.py` + `commands/vg/_shared/design-fidelity-guard.md` + commit-msg hook with D-08 citation gate.
+  - `/vg:update` step 6 maps `scripts/*` → `.claude/scripts/*` and uses straight-copy (NEW_FILES path) for files absent locally; modified files use existing 3-way merge.
+- No code change to install.sh / update.md was required — recursive `cp` patterns and path-mapping case statements already handle the new files.
+
 ## v2.15.0 (2026-04-28) — Closing Phase 19: cryptographic Read evidence + fine-grained planner
 
 Closes the two items v2.14.0 left open. With this release, every Phase 19 decision (D-01 through D-09) has shipped or is documented research.
