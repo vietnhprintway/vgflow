@@ -1797,6 +1797,162 @@ def cmd_run_repair(args) -> int:
     return 0
 
 
+# Issue #21: required artifacts per command — mirrors event-reconciliation.py
+# REQUIRED_ARTIFACTS so backfill validates with the same evidence the validator
+# would later check. Kept inline to avoid cross-package imports.
+_BACKFILL_REQUIRED_ARTIFACTS = {
+    "vg:scope": ["CONTEXT.md"],
+    "vg:blueprint": ["PLAN*.md", "API-CONTRACTS.md", "TEST-GOALS.md"],
+    "vg:build": ["SUMMARY*.md"],
+    "vg:review": ["RUNTIME-MAP.json", "GOAL-COVERAGE-MATRIX.md"],
+    "vg:test": ["SANDBOX-TEST*.md"],
+}
+
+
+def cmd_run_backfill(args) -> int:
+    """Backfill `run.completed` for runs that predate Stop-hook contract
+    enforcement (issue #21).
+
+    Projects upgrading across the contract-tightening point have in-flight
+    phases whose blueprint/build/test runs have a `run.started` event but
+    no `run.completed`. The `event-reconciliation` validator at
+    `/vg:accept` blocks until they exist; re-running the original command
+    would redo functionally-completed work and may diverge.
+
+    This subcommand provides a paved path that honors the same evidence
+    the validator already checks (artifact existence on disk). Strict
+    pre-conditions:
+
+      1. `run.started` event exists for the given --run-id
+      2. No terminal event already recorded (run.completed/blocked/aborted)
+      3. command is in the supported set (scope/blueprint/build/review/test)
+      4. all required artifacts for that command exist in phase dir
+      5. --reason is non-empty and ≥ 10 chars (avoid "test" reasons)
+
+    On success: emits `run.completed` with `payload.backfill=true` and
+    appends a critical-severity entry to OVERRIDE-DEBT.md (so the reviewer
+    sees it during /vg:accept). Refuses otherwise with explicit reason.
+    """
+    import sqlite3 as _sqlite3
+    import datetime as _dt
+
+    if not args.reason or len(args.reason.strip()) < 10:
+        print("⛔ --reason required, ≥ 10 chars (audit trail).", file=sys.stderr)
+        return 1
+
+    conn = _sqlite3.connect(str(db.DB_PATH))
+    conn.row_factory = _sqlite3.Row
+    try:
+        started = conn.execute(
+            "SELECT * FROM events WHERE run_id = ? AND event_type = 'run.started' "
+            "ORDER BY id ASC LIMIT 1",
+            (args.run_id,),
+        ).fetchone()
+        if not started:
+            print(f"⛔ run.started event not found for run_id={args.run_id}",
+                  file=sys.stderr)
+            print("   Run: vg-orchestrator query-events --event-type=run.started",
+                  file=sys.stderr)
+            return 2
+
+        terminal = conn.execute(
+            "SELECT id, event_type FROM events WHERE run_id = ? AND "
+            "event_type IN ('run.completed', 'run.blocked', 'run.aborted') "
+            "LIMIT 1",
+            (args.run_id,),
+        ).fetchone()
+        if terminal:
+            print(f"⛔ run {args.run_id[:8]} already has terminal event "
+                  f"id={terminal['id']} type={terminal['event_type']} — "
+                  f"backfill rejected.", file=sys.stderr)
+            return 3
+
+        command = started["command"]
+        phase = started["phase"]
+    finally:
+        conn.close()
+
+    patterns = _BACKFILL_REQUIRED_ARTIFACTS.get(command)
+    if patterns is None:
+        print(f"⛔ command {command!r} not in backfill table — supported: "
+              f"{sorted(_BACKFILL_REQUIRED_ARTIFACTS)}", file=sys.stderr)
+        return 4
+
+    # Locate phase dir. Phases live under .vg/phases/<NN>-<slug>/ usually,
+    # but the prefix can vary; glob any dir starting with phase number.
+    phases_root = _REPO_ROOT / ".vg" / "phases"
+    if not phases_root.exists():
+        print(f"⛔ {phases_root} does not exist", file=sys.stderr)
+        return 5
+    matches = sorted(p for p in phases_root.iterdir()
+                     if p.is_dir() and (p.name == phase or
+                                        p.name.startswith(f"{phase}-") or
+                                        p.name.startswith(f"phase-{phase}-")))
+    if not matches:
+        print(f"⛔ phase dir for phase={phase} not found under {phases_root}",
+              file=sys.stderr)
+        return 5
+    phase_dir = matches[0]
+
+    missing = [p for p in patterns if not list(phase_dir.glob(p))]
+    if missing:
+        print(f"⛔ Missing required artifacts for {command} in {phase_dir}:",
+              file=sys.stderr)
+        for m in missing:
+            print(f"   - {m}", file=sys.stderr)
+        print("   Backfill refused — re-run the original command instead "
+              "of backfilling empty work.", file=sys.stderr)
+        return 6
+
+    ts_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = {
+        "backfill": True,
+        "reason": args.reason,
+        "verified_artifacts": list(patterns),
+        "phase_dir": str(phase_dir.relative_to(_REPO_ROOT)),
+        "ts_backfilled": ts_iso,
+    }
+    db.append_event(
+        run_id=args.run_id,
+        event_type="run.completed",
+        phase=phase,
+        command=command,
+        actor="user-backfill",
+        outcome="PASS",
+        payload=payload,
+    )
+
+    # Audit trail in OVERRIDE-DEBT.md (critical severity — reviewer must see).
+    register = _REPO_ROOT / ".vg" / "OVERRIDE-DEBT.md"
+    register.parent.mkdir(parents=True, exist_ok=True)
+    debt_id = (f"BF-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%d%H%M%S')}"
+               f"-{os.getpid()}")
+    try:
+        with register.open("a", encoding="utf-8") as f:
+            f.write(
+                f"\n- id: {debt_id}\n"
+                f"  logged_at: {ts_iso}\n"
+                f"  command: vg-orchestrator-run-backfill\n"
+                f"  phase: \"{phase}\"\n"
+                f"  flag: --run-backfill\n"
+                f"  target_run_id: {args.run_id}\n"
+                f"  target_command: {command}\n"
+                f"  reason: \"{args.reason}\"\n"
+                f"  severity: critical\n"
+                f"  status: active\n"
+            )
+    except Exception as e:
+        print(f"⚠ OVERRIDE-DEBT.md write failed (audit trail incomplete): {e}",
+              file=sys.stderr)
+
+    print(f"✓ run.completed backfilled for {args.run_id[:8]} "
+          f"({command} phase={phase})")
+    print(f"  Verified artifacts: {', '.join(patterns)}")
+    print(f"  Debt entry: {debt_id} (severity=critical, "
+          f"surfaces at /vg:accept)")
+    return 0
+
+
 def cmd_query_events(args) -> int:
     events = db.query_events(
         run_id=args.run_id,
@@ -3676,6 +3832,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true",
                    help="apply fixes; default is dry-run report")
     s.set_defaults(func=cmd_run_repair)
+
+    # Issue #21: backfill run.completed for runs predating Stop-hook contract.
+    # Refuses unless run.started exists + required artifacts present + reason
+    # ≥ 10 chars; logs critical-severity OVERRIDE-DEBT entry on success.
+    s = sub.add_parser(
+        "run-backfill",
+        help=("Backfill run.completed for legacy runs (issue #21). "
+              "Refuses without artifacts or run.started; logs critical "
+              "OVERRIDE-DEBT entry on success."),
+    )
+    s.add_argument("--run-id", required=True,
+                   help="Target run_id (find via query-events --event-type=run.started)")
+    s.add_argument("--reason", required=True,
+                   help="Audit reason ≥ 10 chars (e.g. 'predates Stop-hook v2.5.2 contract')")
+    s.set_defaults(func=cmd_run_backfill)
 
     s = sub.add_parser("verify-hash-chain", help="Integrity check")
     s.add_argument("--since-id", type=int, default=0)
