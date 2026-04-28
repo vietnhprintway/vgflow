@@ -54,9 +54,24 @@ print(hashlib.sha256(open(r'${design_md}','rb').read()).hexdigest())
 scaffold_pencil_bulk() {
   local pages_json="$1" output_dir="$2" design_md="$3" evidence_dir="$4" design_md_sha="$5"
 
+  # P20 D-11 (Wave B): if VIEW-COMPONENTS.md exists from P19 D-02 vision
+  # decomposition, surface per-slug component lists into the prompt for
+  # tighter mockup generation. Tools D-02 and D-03 share this loader.
+  local view_components_path="${PHASE_DIR:-.}/VIEW-COMPONENTS.md"
+  local view_components_block=""
+  if [ -f "$view_components_path" ]; then
+    view_components_block="
+VIEW-COMPONENTS.md is present (P19 D-02 vision decomposition output).
+For each page in pages.json, look up the matching '## {slug}' section in
+${view_components_path} and treat its component list as AUTHORITATIVE
+input. The mockup MUST include every component listed (semantic names,
+correct parent/position/child_count). Generic names rejected upstream.
+"
+  fi
+
   cat <<INSTRUCT
 ================================================================================
-Pencil MCP scaffold — bulk mode
+Pencil MCP scaffold — bulk mode${view_components_block:+ (VIEW-COMPONENTS-aware)}
 
 Spawn ONE agent (Opus, vision-capable) with these MCP tools granted:
   - mcp__pencil__open_document
@@ -71,10 +86,12 @@ Agent prompt:
   You are a Pencil MCP design scaffolder. You will create .pen mockup files
   for every page in pages.json, applying DESIGN.md tokens.
 
-  Page list:    $(cat "$pages_json")
-  DESIGN.md:    $design_md
-  Output dir:   $output_dir
-  Evidence dir: $evidence_dir
+  Page list:           $(cat "$pages_json")
+  DESIGN.md:           $design_md
+  VIEW-COMPONENTS.md:  ${view_components_path:-(none — first scaffold pass)}
+  Output dir:          $output_dir
+  Evidence dir:        $evidence_dir
+${view_components_block}
 
   For each page in pages.json (process all sequentially in this single session):
 

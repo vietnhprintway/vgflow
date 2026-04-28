@@ -37,9 +37,21 @@ print(hashlib.sha256(open(r'${design_md}','rb').read()).hexdigest())
   echo "ℹ Tool C — AI HTML. ${page_count} page(s). Interactive: $interactive"
   echo "  DESIGN.md sha256: ${design_md_sha:0:12}"
 
+  # P20 D-11: VIEW-COMPONENTS.md feedback loop
+  local view_components_path="${PHASE_DIR:-.}/VIEW-COMPONENTS.md"
+  local view_components_block=""
+  if [ -f "$view_components_path" ]; then
+    view_components_block="
+
+VIEW-COMPONENTS.md present — for each page, treat the matching '## {slug}'
+section in ${view_components_path} as authoritative component list. Every
+component in the table MUST appear in the HTML output (matching JSX tag,
+className, role, or distinctive copy)."
+  fi
+
   cat <<INSTRUCT
 ================================================================================
-AI HTML scaffold — bulk mode
+AI HTML scaffold — bulk mode${view_components_block:+ (VIEW-COMPONENTS-aware)}
 
 Spawn ONE agent (Opus) with these tool grants:
   - Read (DESIGN.md, ROADMAP, optional reference fixtures)
@@ -48,10 +60,12 @@ Spawn ONE agent (Opus) with these tool grants:
 Agent prompt:
   You write a static HTML+Tailwind mockup for every page in pages.json.
 
-  Page list:    $(cat "$pages_json")
-  DESIGN.md:    $design_md
-  Output dir:   $output_dir
-  Evidence dir: $evidence_dir
+  Page list:           $(cat "$pages_json")
+  DESIGN.md:           $design_md
+  VIEW-COMPONENTS.md:  ${view_components_path:-(none — first scaffold pass)}
+  Output dir:          $output_dir
+  Evidence dir:        $evidence_dir
+${view_components_block}
 
   Per page, write file ${output_dir}/{page.slug}.html with:
 
