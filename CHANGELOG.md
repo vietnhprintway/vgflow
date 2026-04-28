@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.18.0 (2026-04-28) — Phase 20 Wave C: mobile mockup + reverse-engineer + Pencil validator
+
+Wave C closes Phase 20 entirely. 3 decisions covering mobile design tooling, migration use-case (live URL → mockups), and Pencil output sanity.
+
+- **D-13 — Sketch tool** (`scaffold-sketch.sh`): new entry `[i]` in tool selector. macOS-only manual export (`.png` from artboards). Mobile-friendly because Sketch ships built-in iOS/Android/watchOS artboard presets. Reuses `scaffold_wait_for_files` validation pattern from D-04. Decision matrix updated.
+- **D-14 — `/vg:design-reverse`**: NEW command for migration projects. Playwright crawls a live URL + route list, captures PNG per route into `design_assets.paths/{slug}.png`. Cookies support for authenticated apps; viewport + `--full-page` flags. Output drops where `/vg:design-extract` consumes via `passthrough` handler — enables Phase 19 L1-L6 gates retroactively on projects with live UI but no design source files (the RTB use case). Companion script `scripts/design-reverse.py` with PASS / PARTIAL / BLOCK verdicts.
+- **D-15 — `verify-pencil-output.py`**: defensive validator catching Pencil MCP `batch_design` syntax errors that produce 0-byte or wrong-format output silently. Heuristics: file ≥ 100 bytes; not PNG/JPG/HTML/JSON magic. Registered in `registry.yaml` as severity=block phase=scaffold. Smoke-tested 5 cases: missing / empty / PNG-format / random-200B-pass / no-entries-skip.
+
+**Phase 20 final:** 15 decisions across 3 waves (D-01..D-12 Wave A, D-08..D-11 Wave B, D-13..D-15 Wave C). 10 tools supported (added Sketch in Wave C). 1 reverse-engineer command for migration. Both scaffold (greenfield) and reverse (live UI) directions covered.
+
+**Coverage matrix:** greenfield ✅ (Wave A), tool diversity ✅ (8 Wave A + 1 Wave C), iteration loop with view-decomp ✅ (Wave B), migration ✅ (Wave C), output validation ✅ (Wave C). The only remaining gap is dogfood reliability measurement on real projects — process work, not code.
+
 ## v2.17.0 (2026-04-28) — Phase 20 Wave B: PenBoard auto + Claude design + v0 CLI + VIEW-COMPONENTS feedback
 
 Wave B closes Phase 20. Promotes 2 stub tools to full implementation, conditionally automates 1 external tool, and wires the P19→P20 feedback loop.

@@ -1,8 +1,8 @@
 ---
-name: "vg-design-scaffold"
-description: "Scaffold UI mockups for greenfield projects — multi-tool selector (Pencil MCP / PenBoard MCP / AI HTML / Claude design / Stitch / v0 / Figma / manual). Output drops into design_assets.paths/ for /vg:design-extract."
+name: "vg-design-reverse"
+description: "Reverse-engineer mockups from a live URL — Playwright crawls deployed app, captures PNG per route into design_assets.paths/. Use case: project already has live UI but no design files."
 metadata:
-  short-description: "Scaffold UI mockups for greenfield projects — multi-tool selector (Pencil MCP / PenBoard MCP / AI HTML / Claude design / Stitch / v0 / Figma / manual). Output drops into design_assets.paths/ for /vg:design-extract."
+  short-description: "Reverse-engineer mockups from a live URL — Playwright crawls deployed app, captures PNG per route into design_assets.paths/. Use case: project already has live UI but no design files."
 ---
 
 <codex_skill_adapter>
@@ -132,264 +132,126 @@ process that cannot see browser tools.
 
 ## Invocation
 
-Invoke this skill as `$vg-design-scaffold`. Treat all user text after the skill name as arguments.
+Invoke this skill as `$vg-design-reverse`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
 
 
 
 <rules>
-1. **Greenfield on-ramp** — closes the upstream gap exposed by Phase 19. Without scaffold, projects with zero mockups bypass every L1-L6 gate via Form B.
-2. **Tool selector** — user-driven via AskUserQuestion or `--tool=<name>` flag. Default recommendation: `pencil-mcp` (free + automated + binary output ideal for downstream gates).
-3. **Files converge** — every tool produces files at `${design_assets.paths[0]}/<slug>.{ext}` so existing `/vg:design-extract` consumes via standard handlers.
-4. **Bulk by default** — multi-page generation in one call; `--interactive` flag opts into per-page review pause.
-5. **Auto-regen on DESIGN.md change** — scaffold caches by DESIGN.md SHA256; mockups regenerated when tokens drift.
-6. **Idempotent** — re-running with same args + same DESIGN.md = no-op. `--refresh` forces re-scaffold.
-7. **No replacement of /vg:design-system** — orthogonal: design-system manages tokens (DESIGN.md), scaffold consumes them.
+1. **Reverse direction** — opposite of `/vg:design-scaffold`. Scaffold creates mockups for greenfield; reverse captures existing live UI as mockups.
+2. **Migration use case** — project already deployed at a URL, has working UI, but lacks Pencil/Figma/HTML source files. Reverse captures current state → enables Phase 19 L1-L6 gates retroactively.
+3. **Playwright required** — uses headless Chromium; auto-fail if `node` or `playwright` missing.
+4. **Authentication via cookies** — for protected apps, user provides cookies.json (Playwright format). VG cannot login programmatically.
+5. **Output convention** — drops PNGs at `${design_assets.paths[0]}/{slug}.png` so `/vg:design-extract` consumes via `passthrough` handler.
+6. **NOT a replacement for design files** — captured PNGs are snapshots of CURRENT UI, which may itself be drifted. Use as baseline, not gospel.
 </rules>
 
 <objective>
-Generate UI mockup files for every page in ROADMAP.md so `/vg:design-extract` has assets to normalize. Output:
-  ${design_assets.paths[0]}/<slug>.{pen|html|png|fig}    ← per tool
-  ${PHASE_DIR}/.scaffold-evidence/{slug}.json            ← per-page provenance (tool, hash, generated_at)
+Capture mockup PNGs from a live URL crawl. Output:
+  ${design_assets.paths[0]}/{slug}.png            ← per route
+  ${design_assets.paths[0]}/.reverse-evidence/{slug}.json  ← capture metadata
 </objective>
 
-<available_agent_types>
-- general-purpose — Opus for Pencil MCP (D-02) + AI HTML (D-03) generation
-</available_agent_types>
-
 <process>
-
-**Config:** Source `.claude/commands/vg/_shared/lib/design-system.sh` first to read design_assets paths + DESIGN.md location.
-
-```bash
-source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/design-system.sh" 2>/dev/null || true
-source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/scaffold-discovery.sh" 2>/dev/null || true
-```
 
 <step name="0_validate_prereqs">
 ## Step 0: Validate prerequisites
 
 ```bash
-DESIGN_ASSETS_DIR=$(vg_config_get design_assets.paths "" | head -1)
-DESIGN_ASSETS_DIR="${DESIGN_ASSETS_DIR:-designs}"
-DESIGN_MD_PATH="${PLANNING_DIR}/design/DESIGN.md"
-
-# Need at least one of: ROADMAP page list (preferred) OR current PHASE PLAN
-ROADMAP="${PLANNING_DIR}/ROADMAP.md"
-PLAN_GLOB="${PHASE_DIR}/PLAN*.md"
-
-# Check DESIGN.md presence (not blocking — scaffold can run without tokens
-# but quality drops; prompt user to run /vg:design-system first when missing)
-if [ ! -f "$DESIGN_MD_PATH" ] && [ ! -f "${PHASE_DIR}/DESIGN.md" ]; then
-  echo "⚠ Không thấy DESIGN.md (tokens). Mockups sẽ generic hơn — cân nhắc:"
-  echo "    /vg:design-system --browse   (chọn brand từ 58 variants)"
-  echo "    /vg:design-system --create   (tạo custom)"
-  AskUserQuestion: "Continue scaffold without DESIGN.md? [y/N]"
-fi
-
-mkdir -p "$DESIGN_ASSETS_DIR" "${PHASE_DIR}/.scaffold-evidence"
-```
-
-If neither ROADMAP nor PLAN exists → BLOCK: "Run /vg:roadmap or /vg:specs first to define page list."
-</step>
-
-<step name="1_extract_page_list">
-## Step 1: Extract page list
-
-Build the list of pages to scaffold:
-
-1. **Priority order:**
-   - `--pages=slug1,slug2,...` flag → use as-is
-   - PHASE_DIR PLAN tasks with `<design-ref>SLUG</design-ref>` (Form A only)
-   - ROADMAP.md `<page>` declarations
-   - Fallback: prompt user to type page list
-
-2. **For each page**, derive metadata from PLAN/ROADMAP:
-   - `slug` (kebab-case)
-   - `description` (1-line, from task body or page section)
-   - `type` (list / form / dashboard / wizard / detail / landing — auto-classify by description regex; user override via interactive prompt)
-
-Write to `${PHASE_DIR}/.tmp/scaffold-pages.json`:
-
-```json
-{"pages": [{"slug": "home-dashboard", "description": "...", "type": "dashboard"}, ...]}
-```
-</step>
-
-<step name="2_check_existing_assets">
-## Step 2: Check existing assets
-
-```bash
-EXISTING=$(find "$DESIGN_ASSETS_DIR" -maxdepth 2 -type f \
-  \( -name "*.pen" -o -name "*.html" -o -name "*.png" -o -name "*.fig" -o -name "*.penboard" \) 2>/dev/null | wc -l)
-```
-
-If $EXISTING > 0:
-- Match each existing file basename against page list slugs.
-- Pages with matching file → SKIP (already have mockup).
-- Pages without → continue to scaffold.
-- If `--refresh` flag → ignore existing, scaffold all.
-
-**Auto-regen check (Q3 = A):** for each existing mockup file, compare its scaffold-evidence entry's `design_md_sha256` field against current DESIGN.md SHA256.
-- Mismatch → mark page as "stale", scaffold again.
-- Match → skip.
-- No evidence file (manually-added mockup) → leave alone (not scaffold-managed).
-
-Display:
-```
-Pages to scaffold: <N>
-Pages skipped (exists, fresh): <M>
-Pages stale (DESIGN.md changed): <K>
-Pages new: <P>
-```
-</step>
-
-<step name="3_tool_selector">
-## Step 3: Tool selector
-
-If `--tool=<name>` flag → validate name in {pencil-mcp, penboard-mcp, ai-html, claude-design, stitch, v0, figma, manual-html, sketch} and skip prompt.
-
-Else AskUserQuestion with decision matrix:
-
-```
-Pages to scaffold: <N>. DESIGN.md: <yes|no>. Recommended: pencil-mcp (auto, free).
-
-Pick a tool:
-  [a] pencil-mcp     — Pencil MCP automated (DEFAULT). Output .pen via mcp__pencil__batch_design.
-  [b] penboard-mcp   — PenBoard MCP automated (Wave B). Multi-page workspace.
-  [c] ai-html        — Claude writes HTML+Tailwind from DESIGN.md tokens. Cheap, inspectable.
-  [d] claude-design  — gstack:design-shotgun variants → comparison board → user picks (Wave B).
-  [e] stitch         — Google Stitch (manual export). Best aesthetic, no API.
-  [f] v0             — Vercel v0 (manual export, paid). React-first.
-  [g] figma          — Figma (manual export). Industry standard for designer teams.
-  [h] manual-html    — You write HTML mockups by hand. Trivial integration.
-  [i] sketch         — Sketch.app (macOS only). Mobile-friendly artboard presets (Wave C D-13).
-  [help]             — print full decision matrix + trade-offs.
-```
-
-Save choice as `$TOOL` env var.
-
-`--interactive` flag (Q2 = C) is forwarded to tool sub-flow as `INTERACTIVE_MODE=1` env var.
-</step>
-
-<step name="4_per_tool_dispatch">
-## Step 4: Per-tool dispatch
-
-```bash
-case "$TOOL" in
-  pencil-mcp)    SCAFFOLD_LIB="scaffold-pencil.sh" ;;
-  penboard-mcp)  SCAFFOLD_LIB="scaffold-penboard.sh" ;;     # Wave B stub
-  ai-html)       SCAFFOLD_LIB="scaffold-ai-html.sh" ;;
-  claude-design) SCAFFOLD_LIB="scaffold-claude-design.sh" ;;# Wave B stub
-  stitch)        SCAFFOLD_LIB="scaffold-stitch.sh" ;;
-  v0)            SCAFFOLD_LIB="scaffold-v0.sh" ;;
-  figma)         SCAFFOLD_LIB="scaffold-figma.sh" ;;
-  manual-html)   SCAFFOLD_LIB="scaffold-manual.sh" ;;
-  sketch)        SCAFFOLD_LIB="scaffold-sketch.sh" ;;        # Wave C D-13
-  *) echo "⛔ Unknown tool: $TOOL"; exit 1 ;;
-esac
-
-source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/${SCAFFOLD_LIB}"
-scaffold_run \
-  --pages-json "${PHASE_DIR}/.tmp/scaffold-pages.json" \
-  --output-dir "${DESIGN_ASSETS_DIR}" \
-  --design-md "${DESIGN_MD_PATH}" \
-  --evidence-dir "${PHASE_DIR}/.scaffold-evidence"
-```
-
-Each `scaffold-*.sh` lib exposes `scaffold_run` with the same args. See per-tool sub-flow specs in the Phase 20 SPECS.md (D-02 through D-04).
-</step>
-
-<step name="5_validate_output">
-## Step 5: Validate output
-
-```bash
-MISSING=()
-for slug in "${PAGE_SLUGS[@]}"; do
-  found=0
-  for ext in pen html png fig penboard; do
-    if [ -f "${DESIGN_ASSETS_DIR}/${slug}.${ext}" ]; then
-      found=1
-      break
-    fi
-  done
-  [ $found -eq 0 ] && MISSING+=("$slug")
-done
-
-if [ ${#MISSING[@]} -gt 0 ]; then
-  echo "⛔ Scaffold incomplete — missing files for: ${MISSING[*]}"
-  echo "   Tool: $TOOL. Re-run /vg:design-scaffold --tool=$TOOL --pages=${MISSING[*]}"
+if ! command -v node >/dev/null 2>&1; then
+  echo "⛔ node not on PATH. Install: https://nodejs.org/"
   exit 1
 fi
-```
-
-Write per-page evidence:
-
-```json
-{
-  "slug": "home-dashboard",
-  "tool": "pencil-mcp",
-  "file": "designs/home-dashboard.pen",
-  "design_md_sha256": "<sha256 of DESIGN.md at scaffold time>",
-  "generated_at": "2026-04-28T12:34:56Z",
-  "interactive_mode": false
-}
+if ! npx playwright --version >/dev/null 2>&1; then
+  echo "⚠ Playwright npm package missing. Run: npm i -D playwright && npx playwright install chromium"
+  AskUserQuestion: "Install now? [y/N]"
+fi
 ```
 </step>
 
-<step name="6_auto_extract">
-## Step 6: Auto-fire /vg:design-extract
+<step name="1_parse_args">
+## Step 1: Parse args
+
+```
+/vg:design-reverse --base-url https://app.example.com --routes /,/sites,/users
+/vg:design-reverse --base-url https://app.example.com --routes /admin --cookies session.json
+/vg:design-reverse --base-url https://app.example.com --routes / --full-page --viewport 1920x1080
+```
+
+Required:
+- `--base-url <URL>` — origin without trailing slash
+- `--routes <comma-sep>` — paths to crawl
+
+Optional:
+- `--cookies <file>` — Playwright cookies JSON for authenticated routes
+- `--viewport WxH` (default 1440x900)
+- `--full-page` — capture full scrollable page (default: viewport only)
+- `--output-dir` — override `design_assets.paths[0]`
+</step>
+
+<step name="2_resolve_output_dir">
+```bash
+DESIGN_ASSETS_DIR=$(vg_config_get design_assets.paths "" 2>/dev/null | head -1)
+DESIGN_ASSETS_DIR="${DESIGN_ASSETS_DIR:-designs}"
+mkdir -p "$DESIGN_ASSETS_DIR/.reverse-evidence"
+```
+</step>
+
+<step name="3_capture">
+## Step 3: Run Playwright capture
+
+```bash
+${PYTHON_BIN:-python3} .claude/scripts/design-reverse.py \
+  --base-url "$BASE_URL" \
+  --routes "$ROUTES" \
+  --output-dir "$DESIGN_ASSETS_DIR" \
+  ${COOKIES:+--cookies "$COOKIES"} \
+  --viewport "$VIEWPORT" \
+  ${FULL_PAGE:+--full-page} \
+  --report "${PHASE_DIR:-.}/.tmp/reverse-report.json"
+```
+
+PARTIAL verdict (some routes failed) → continue with WARN, list failures.
+PASS → all routes captured.
+BLOCK → node/Playwright missing or invalid args.
+</step>
+
+<step name="4_auto_extract">
+## Step 4: Auto-fire /vg:design-extract
 
 ```
 SlashCommand: /vg:design-extract --auto
 ```
 
-Verify `manifest.json` updated with all expected slugs. If any missing → fail loud with diagnostic.
+Verify `manifest.json` updated with all captured slugs.
 </step>
 
-<step name="7_resume_pipeline">
-## Step 7: Resume pipeline
-
+<step name="5_resume">
 ```
-Scaffold complete.
-  Tool used:        $TOOL
-  Pages generated:  <N>
-  Pages skipped:    <M>
+Reverse capture complete.
+  Base URL:         $BASE_URL
+  Routes captured:  <N>/<TOTAL>
   Output dir:       $DESIGN_ASSETS_DIR
-  Evidence:         ${PHASE_DIR}/.scaffold-evidence/
+  Evidence:         $DESIGN_ASSETS_DIR/.reverse-evidence/
 
-Next: /vg:blueprint ${PHASE_NUMBER}  (or /vg:phase to continue full pipeline)
+Next: /vg:design-extract đã chạy. Pages giờ có Form A <design-ref> slug.
+      Phase 19 L1-L6 gates engage on next /vg:build.
 ```
-
-Mark step + emit telemetry `design_scaffold.completed`.
 </step>
 
 </process>
 
-<help_tools_matrix>
-# Decision matrix (--help-tools)
-
-| Tool | Auto | Cost/page | Output | Best for |
-|---|---|---|---|---|
-| **pencil-mcp** (DEFAULT) | ✅ | ~$0.15 Opus | `.pen` binary | Solo dev, in-pipeline, token-faithful |
-| penboard-mcp | ✅ Wave B | ~$0.20 Opus | `.penboard` workspace | Multi-page nav-aware (Wave B) |
-| **ai-html** | ✅ | ~$0.05 Opus | `.html` Tailwind | DESIGN.md + cheap; hand-editable |
-| claude-design | 🟡 Wave B | ~$0.30 (variants) | `.html` | Visual exploration, design-shotgun pattern |
-| stitch | 🔴 manual | free 350/mo | `.html` (export) | Best aesthetic; willing to manual export |
-| v0 | 🔴 manual | paid Vercel | `.html` React | React shop, has v0 sub |
-| figma | 🔴 manual | varies | `.png` (export) | Designer-team, Figma-native |
-| manual-html | trivial | $0 | `.html` | Existing hand-written mockups |
-| **sketch** | 🔴 manual | $9/mo Sketch sub | `.png` (export 2x) | Mobile-friendly (iOS/Android artboards), macOS only |
-
-</help_tools_matrix>
+<example_use_cases>
+1. **Migration project**: RTB has live admin SPA at https://rtb.app/ with no Figma. Run reverse on /admin, /sites, /campaigns → 3 baseline PNGs → enable Phase 19 gates.
+2. **Doc-as-design**: capture a competitor's site as reference for design discussion (NOT for L1-L6 ground truth — copyright concerns).
+3. **Snapshot before refactor**: capture pre-refactor state → run scaffold for new design → diff side-by-side via `/vg:accept` Section D.
+</example_use_cases>
 
 <success_criteria>
-- Page list resolved from PLAN/ROADMAP/--pages
-- Tool picked (interactive or flag)
-- Per-tool sub-flow produced files at $DESIGN_ASSETS_DIR
-- Validation passes (every requested page has a file)
-- Evidence written per page
+- node + Playwright available
+- All requested routes captured (or PARTIAL with documented failures)
+- PNG files land at design_assets.paths
+- Evidence written per slug
 - /vg:design-extract auto-fired and manifest.json populated
-- Telemetry events emitted (started + completed)
+- Telemetry events emitted
 </success_criteria>
-</process>
