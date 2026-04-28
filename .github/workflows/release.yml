@@ -48,6 +48,40 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Verify codex mirror equivalence (closes P19 process gap from #16)
+        # Phase 19 (v2.13.0–v2.15.1) modified canonical commands/vg/{accept,
+        # blueprint,build,review}.md without re-running generate-codex-skills.sh.
+        # Four release tarballs shipped stale codex-skills/*/SKILL.md mirrors;
+        # /vg:sync --verify on standard installs reported drift (#16).
+        # This gate fails the release tag at CI time if mirrors are stale —
+        # maintainer must regen + commit + retag, no silent ship.
+        run: |
+          if [ ! -f scripts/verify-codex-mirror-equivalence.py ]; then
+            echo "verify-codex-mirror-equivalence.py missing — skipping (pre-2.13.0 tag)"
+            exit 0
+          fi
+          if python scripts/verify-codex-mirror-equivalence.py; then
+            echo ""
+            echo "✓ codex mirror equivalence: zero functional drift"
+          else
+            echo ""
+            echo "⛔ Codex mirror drift detected — release tarball would ship stale SKILL.md."
+            echo ""
+            echo "  This usually means commands/vg/*.md changed without a matching"
+            echo "  regeneration of codex-skills/. Fix locally:"
+            echo ""
+            echo "    bash scripts/generate-codex-skills.sh --force"
+            echo "    git add codex-skills/"
+            echo "    git commit -m \"fix(codex-mirrors): regenerate after canonical drift\""
+            echo "    git tag -d ${{ steps.ver.outputs.tag }}                # remove stale local tag"
+            echo "    git push origin :refs/tags/${{ steps.ver.outputs.tag }}  # remove remote tag"
+            echo "    git tag -a ${{ steps.ver.outputs.tag }} -m \"...\"     # retag on clean commit"
+            echo "    git push origin ${{ steps.ver.outputs.tag }}"
+            echo ""
+            echo "  Background: see issue #16 + CHANGELOG v2.15.2."
+            exit 1
+          fi
+
       - name: Build tarball
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
