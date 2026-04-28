@@ -195,9 +195,53 @@ perf_budget:
   bundle_kb_fe_route: 250       # FE route-split bundle size (only applicable cho ui surface)
   cache_strategy: "Redis 5min TTL + tag-invalidate on mutation"
 
+# ─────────────────────────────────────────────────────────────────────
+# v2.21 enrichment — Adversarial / cheat-path coverage
+# ─────────────────────────────────────────────────────────────────────
+# Declarative threat model per goal. Required cho mutation/auth/payment
+# domains; warn-only cho read-only/UI presentation goals.
+#
+# verify-adversarial-coverage.py reads this block + emits WARN nếu thiếu
+# cho domain bắt buộc. User opt-out qua `--skip-adversarial=<reason>` →
+# OVERRIDE-DEBT critical entry → reviewer triage tại /vg:accept.
+#
+# Threat taxonomy (v1):
+#   auth_bypass        — other-tenant ID, expired session, role downgrade
+#   injection          — SQL / XSS / SSTI / cmd-injection payloads
+#   race               — concurrent submit, double-spend, TOCTOU
+#   duplicate_submit   — replay protection, idempotency-key
+#   boundary_overflow  — int overflow, length limit, file size
+#   role_escalation    — privilege jump, IDOR
+#   csrf_replay        — cross-site request without token
+
+adversarial_scope:
+  threats: [auth_bypass, injection, duplicate_submit]
+  per_threat:
+    auth_bypass:
+      paths: ["other-tenant-id", "different-role", "expired-session"]
+      assertions:
+        - "status: 403 OR 404"
+        - "no PII leak in error body"
+    injection:
+      payloads: ["${SQLI_PAYLOAD}", "${XSS_PAYLOAD}", "${SSTI_PAYLOAD}"]
+      assertions:
+        - "no payload execution (response echo escaped)"
+        - "no DB error 500 with SQL fragment in body"
+    duplicate_submit:
+      method: "replay POST within 100ms"
+      assertions:
+        - "second response: 409 OR 200-with-existing-id (idempotent)"
+        - "exactly 1 row created (verify via DB)"
+  # Empty `threats: []` is an EXPLICIT decision — AI must include
+  # comment why the goal is low-risk (e.g., "read-only GET, no PII").
+
 # Evidence fields (populated by /vg:test, /vg:review)
 status: NOT_SCANNED | READY | BLOCKED | UNREACHABLE | FAILED | DEFERRED | INFRA_PENDING | MANUAL
 evidence_file: apps/web/e2e/xxx.spec.ts:42 | apps/api/test/xxx.test.ts
+adversarial_evidence:                            # populated by /vg:test
+  - threat: auth_bypass
+    file: apps/web/e2e/G-01.adversarial.auth_bypass.spec.ts
+    status: PASS
 ---
 
 ## Prose description (optional)

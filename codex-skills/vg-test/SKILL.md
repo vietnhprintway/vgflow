@@ -2140,6 +2140,45 @@ PY
     fi
   fi
 fi
+
+# ──── v2.21.0 — Adversarial coverage gate (Hook 3) ────
+# Runs after codegen verifies generated specs. WARN-only by default;
+# promote BLOCK via vg.config.md → adversarial_coverage.severity = "block".
+# Override: --skip-adversarial='<reason>' logs critical OVERRIDE-DEBT.
+echo ""
+echo "→ Adversarial coverage gate (v2.21.0)"
+ADV_SEVERITY=$(vg_config_get "adversarial_coverage.severity" "warn" 2>/dev/null || echo "warn")
+SKIP_ADV_REASON=""
+if [[ "$ARGUMENTS" =~ --skip-adversarial=([^[:space:]]+) ]]; then
+  SKIP_ADV_REASON="${BASH_REMATCH[1]}"
+fi
+
+ADV_CMD=( "${PYTHON_BIN:-python3}" \
+  ".claude/scripts/validators/verify-adversarial-coverage.py" \
+  "--phase-dir" "${PHASE_DIR}" \
+  "--severity" "${ADV_SEVERITY}" )
+[ -n "$SKIP_ADV_REASON" ] && ADV_CMD+=( "--skip-adversarial=$SKIP_ADV_REASON" )
+
+"${ADV_CMD[@]}"
+ADV_RC=$?
+
+if [ "$ADV_RC" != "0" ]; then
+  if type -t emit_telemetry_v2 >/dev/null 2>&1; then
+    emit_telemetry_v2 "test_adversarial_coverage_gap" "${PHASE_NUMBER}" \
+      "test.5d-adversarial" "adversarial_coverage" "FAIL" \
+      "{\"phase\":\"${PHASE_NUMBER}\",\"severity\":\"${ADV_SEVERITY}\"}" \
+      >/dev/null 2>&1 || true
+  fi
+  if [ "$ADV_SEVERITY" = "block" ]; then
+    echo ""
+    echo "⛔ Adversarial coverage gap blocks /vg:test (severity=block)."
+    echo "   Resolution paths printed above. Override:"
+    echo "     /vg:test ${PHASE_NUMBER} --skip-adversarial='<audit-reason>'"
+    exit 1
+  fi
+  # WARN — surface but don't block
+  echo "⚠ Adversarial coverage WARN — accept will surface this entry."
+fi
 ```
 </step>
 

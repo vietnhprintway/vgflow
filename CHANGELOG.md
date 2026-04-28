@@ -1,5 +1,54 @@
 # Changelog
 
+## v2.21.0 (2026-04-28) — Adversarial coverage Hook 1+3 (declarative threat model)
+
+User asked: wire a step that writes tests for cheat / edge / error / lách-goals cases? Plan-mode pushback: NOT a separate step — it's a **cross-cutting concern** that belongs declaratively at goal definition (blueprint) and enforcement-wise at /vg:test. Step 2 of `.claude/plans/cheeky-mapping-engelbart.md`.
+
+v2.21.0 ships **Hook 1 (schema)** + **Hook 3 (validator + test wiring)** lean. Hook 2 (codegen) deferred to v2.22+ once dogfood data shows which threat-types matter most per project domain.
+
+### New
+- **Hook 1 — `adversarial_scope` schema** in `commands/vg/_shared/templates/TEST-GOAL-enriched-template.md`. Per-goal threat declaration:
+  ```yaml
+  adversarial_scope:
+    threats: [auth_bypass, injection, duplicate_submit]
+    per_threat:
+      auth_bypass:
+        paths: ["other-tenant-id", "different-role", "expired-session"]
+        assertions: ["status: 403 OR 404", "no PII leak in error body"]
+      injection:
+        payloads: ["${SQLI_PAYLOAD}", "${XSS_PAYLOAD}"]
+        assertions: ["no payload execution"]
+  ```
+  Empty `threats: []` is an explicit decision, not a forgotten field — AI should comment why the goal is low-risk. Threat taxonomy v1: `auth_bypass`, `injection`, `race`, `duplicate_submit`, `boundary_overflow`, `role_escalation`, `csrf_replay`. New `adversarial_evidence` field at goal-bottom for /vg:test population.
+
+- **Hook 3 — `verify-adversarial-coverage.py`** (`scripts/validators/`):
+  - Rule 1: goal has `security_checks` block but no `adversarial_scope` → WARN (declare or set explicit `threats: []`)
+  - Rule 2: `auth_model != public` AND `threats` missing both `auth_bypass`/`role_escalation` → WARN
+  - Rule 3: `pii_fields` non-empty AND `threats` missing `injection` → WARN
+  - Severity = warn (v1 dogfood-friendly). Promote to block via `vg.config.md → adversarial_coverage.severity = "block"`.
+  - Override path: `--skip-adversarial=<reason>` (≥10 chars expected) — caller logs critical OVERRIDE-DEBT entry.
+  - Smoke-tested 4 fixture goals: G-01 (security + adversarial both present, valid) → PASS; G-02 (security but no adversarial) → WARN missing-block; G-03 (no security_checks) → exempt; G-04 (PII without injection coverage) → WARN injection required.
+
+- Registry entry `adversarial-coverage` (`scripts/validators/registry.yaml`): severity=warn, phases=[test, accept], domain=security, runtime=1500ms.
+
+### Modified
+- **`commands/vg/test.md` step 5d** — appended adversarial gate after the codegen→r7 console block. Reads `vg.config.md → adversarial_coverage.severity` (default warn). On WARN: prints findings, emits `test_adversarial_coverage_gap` telemetry, continues. On BLOCK + gap: exits 1 with override hint. `--skip-adversarial='<reason>'` flag forwarded to validator.
+
+### Deferred to v2.22+ (Hook 2 — codegen)
+- `commands/vg/_shared/templates/ADVERSARIAL-PAYLOAD-LIBRARY.md` (SQLI/XSS/SSTI/path-traversal/cmd-injection ready-to-use payloads)
+- `commands/vg/_shared/templates/adversarial-spec.tmpl` (Playwright spec template per threat type)
+- `scripts/vg_adversarial_codegen.py` engine (reads `adversarial_scope`, emits `<goal-id>.adversarial.<threat>.spec.ts`)
+- `commands/vg/blueprint.md` Round 4 prompt extension nudging AI to populate `adversarial_scope`
+- `commands/vg/accept.md` aggregator surfacing failed adversarial specs
+
+### Why declarative-first
+Adversarial coverage starts with intent ("what threats matter?"), not implementation ("here's a SQL payload"). Shipping the schema + WARN gate first lets phases declare threats during normal blueprint flow. Codegen ships next once we see real declarations to template against. This avoids generating spec scaffolding that doesn't match the 80% threat-shape across active projects.
+
+### Pipeline impact
+- `/vg:blueprint` — no behavior change (template available; AI may now emit `adversarial_scope` voluntarily)
+- `/vg:test` step 5d — new WARN gate, default non-blocking. Override flag available
+- `/vg:accept` — no aggregator yet (deferred); existing override-debt critical surfacing handles `--skip-adversarial` entries
+
 ## v2.20.0 (2026-04-28) — `/vg:polish` optional code-cleanup command
 
 User asked: should code-clean / optimize be wired into the pipeline as a step after build / review / test / fix? Plan-mode pushback: NO, not as a gate. Reasons in `.claude/plans/cheeky-mapping-engelbart.md`:

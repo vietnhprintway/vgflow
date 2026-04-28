@@ -887,3 +887,13 @@ validators:
     runtime_target_ms: 500
     added_in: v2.18.0
     description: 'P20 D-15. Defensive sanity check on .pen files produced by /vg:design-scaffold --tool=pencil-mcp. Catches Pencil MCP batch_design syntax errors that silently produce 0-byte / wrong-format output. Heuristics: size >= 100 bytes; not PNG/JPG/HTML/JSON magic. NO-OPS when no pencil-mcp evidence entries.'
+
+  # ──── v2.21.0 — Adversarial coverage Hook 3 ────
+  - id: adversarial-coverage
+    path: .claude/scripts/validators/verify-adversarial-coverage.py
+    severity: warn
+    phases_active: [test, accept]
+    domain: security
+    runtime_target_ms: 1500
+    added_in: v2.21.0
+    description: 'v2.21 Hook 3. Enforces adversarial_scope coverage on security-enriched goals. Rule 1: security_checks present + adversarial_scope missing → WARN. Rule 2: auth_model != public + threats missing auth_bypass/role_escalation → WARN. Rule 3: pii_fields non-empty + threats missing injection → WARN. Severity warn for v1 dogfood; promote block via vg.config.md adversarial_coverage.severity. Override: --skip-adversarial=<reason> logs critical OVERRIDE-DEBT.'
