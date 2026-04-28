@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.26.0 (2026-04-28) — hardened gsd-executor rejection in build.md (root cause traced)
+
+User reported `gsd-executor(Wave 6 Task 16 — Replica set verify)` STILL appearing in wave dispatch despite v2.25.0's text-only fix. Investigation traced the actual root cause this time.
+
+### Root cause
+
+`gsd-executor` is a real agent registered globally at `~/.claude/agents/gsd-executor.md`. It ships with the GSD workflow, has `name: gsd-executor` and description "Executes GSD plans with atomic commits, deviation handling, checkpoint protocols, and state management. Spawned by execute-phase orchestrator or execute-plan command."
+
+Claude Code's agent picker scans available agents by description. When VG's `/vg:build` skill body says "Spawn executor agent (one per plan task)" + dispatches with task lists, GSD's executor description pattern-matches strongly: "execute plan", "atomic commits", "checkpoint" — all phrases that appear in VG's build.md prose. The picker has historically preferred `gsd-executor` over `general-purpose` for these prompts.
+
+V2.25.0's text fix said "NEVER spawn gsd-executor" but didn't explain WHY GSD wins by default, didn't mention the rule set differences, and didn't make the runtime check explicit. The AI dispatching waves saw a soft "should not" and continued routing through GSD when the picker scored it higher.
+
+### Fix in this release
+
+`commands/vg/build.md` step 7 (executor spawn) — replaced the soft "MANDATORY" block with a **HARD RULE — ZERO EXCEPTIONS** block that:
+
+1. Lists the **specific** agent names to reject: `gsd-executor`, `gsd-execute-phase`, any `gsd-*` (except `gsd-debugger` used in step 12).
+2. Explains **why the picker wants GSD**: agent ships globally at `~/.claude/agents/gsd-executor.md`, description matches plan-execution prompts.
+3. Lists the **concrete rule-set differences** so the AI sees the cost:
+   - VG forbids `--no-verify`; GSD allows it in parallel mode
+   - VG requires `Per CONTEXT.md D-XX` body citation; GSD does not
+   - VG L1-L6 design fidelity gates require structured evidence; GSD has none
+   - VG enforces task context capsule with vision-decomposition; GSD doesn't load it
+4. Names the **failure mode**: spawn GSD → GSD rule set wins → VG gates silently skip → downstream `/vg:review` + `/vg:test` fail with phantom artifacts.
+5. Provides a **runtime self-check**: wave status line MUST read `general-purpose(Wave N Task M)`. If `gsd-executor(...)` appears, abort the spawn and re-spawn explicitly.
+
+This is informational reinforcement — Claude Code does not expose a programmatic "force agent type" hook from skill body. The strongest defense is making the rule unambiguous + explaining the picker's failure mode + giving a runtime check the AI must perform.
+
+### User action
+
+After `/vg:update` to v2.26.0, the next `/vg:build` should dispatch `general-purpose(...)` consistently. If `gsd-executor(...)` still appears:
+
+1. Confirm install version: `cat .claude/VGFLOW-VERSION` should be `2.26.0`. If not, `/vg:update` didn't apply (see #30, fixed v2.24.0 — re-update will work).
+2. Check project CLAUDE.md for stale "gsd-executor spawned by /vg:build" prose — delete that section. Authority is build.md inline, not CLAUDE.md.
+3. Reload Claude Code session — agent picker results cache per session.
+4. If still misbehaving on v2.26.0+ with clean CLAUDE.md and fresh session: open a new issue with `claude --version` output + the dispatch line + a snippet of build.md step 7 from your install (to confirm the fix landed).
+
+### Closed
+N/A — user-reported follow-up to v2.25.0 doc fix; no separate issue filed.
+
 ## v2.25.0 (2026-04-28) — hooks python3 detection + gsd-executor doc fix
 
 Closes #33 (hooks call `python` instead of `python3`) + clarifies executor agent type so AI doesn't pick `gsd-executor` when project's CLAUDE.md inherits a stale doc fragment.

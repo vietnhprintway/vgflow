@@ -1707,14 +1707,37 @@ echo "✓ Full executor prompt persisted -> $PROMPT_FULL_PERSIST"
 
 **Spawn executor agent (one per plan task):**
 
-**MANDATORY:** subagent_type MUST be `general-purpose`. **NEVER spawn
-`gsd-executor`.** GSD's executor enforces a different (looser) rule set
-including `--no-verify` parallel mode that VG explicitly forbids. If
-the project's CLAUDE.md mentions "gsd-executor spawned by /vg:build",
-that is a stale doc from old vgflow versions — IGNORE it; spawn
-general-purpose with the VG_EXECUTOR_RULES block below. The wave
-status line in your output will read `general-purpose(Wave N Task M)`,
-not `gsd-executor(...)`.
+⛔ **HARD RULE — ZERO EXCEPTIONS:**
+- subagent_type **MUST** be `general-purpose`
+- **NEVER** spawn `gsd-executor`, `gsd-execute-phase`, or any agent whose
+  name starts with `gsd-` (other than `gsd-debugger`, used elsewhere in
+  step 12 only).
+
+**Why this rule exists:**
+
+`gsd-executor` IS a real agent registered globally at
+`~/.claude/agents/gsd-executor.md` (it ships with the GSD workflow,
+which is unrelated to VG). Its description reads "Executes GSD plans
+with atomic commits, deviation handling, checkpoint protocols". When
+the orchestrator (this skill) dispatches plan tasks, that description
+pattern-matches your task — Claude Code's agent picker has historically
+preferred `gsd-executor` over `general-purpose` for plan-execution
+prompts. **You must override that picker.**
+
+VG's executor rules differ from GSD's:
+- VG forbids `--no-verify` (commit-msg hook MUST run); GSD allows it in parallel mode
+- VG requires `Per CONTEXT.md D-XX` body citation; GSD does not
+- VG L1-L6 design fidelity gates require structured evidence; GSD has none
+- VG enforces task context capsule with vision-decomposition; GSD doesn't load it
+
+If you spawn `gsd-executor`, the GSD rule set wins, VG gates silently
+skip, and downstream `/vg:review` + `/vg:test` fail with "phantom"
+artifacts that look correct but were authored under wrong contract.
+
+**Concrete check before every spawn:**
+- Wave status line in your output **must read** `general-purpose(Wave N Task M)`.
+- If you see `gsd-executor(...)` or `gsd-execute-phase(...)` — STOP, abort the spawn, re-spawn with `subagent_type="general-purpose"` explicit.
+- If your project's CLAUDE.md contains stale prose like "gsd-executor spawned by /vg:build", IGNORE it. Authority is THIS skill body and inline `<vg_executor_rules>` injected per task.
 
 ```
 Agent(subagent_type="general-purpose", model="${MODEL_EXECUTOR}"):
