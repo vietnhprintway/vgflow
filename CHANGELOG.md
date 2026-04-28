@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.15.3 (2026-04-28) — CI hard-gate on codex mirror drift (closes #16 process gap)
+
+Patch release. Closes the process gap that allowed v2.15.0–v2.15.1 to ship stale codex mirrors. No code behaviour change.
+
+- `.github/workflows/release.yml` now runs `verify-codex-mirror-equivalence.py` between Setup Python and Build tarball steps. If any of 61 mirror pairs is functionally non-equivalent to canonical after adapter strip, the release fails with a clear remediation sequence (regen + commit + delete-and-retag).
+- Pre-2.13.0 tags get a graceful skip (verifier file absent in early tags).
+- Effect: any future canonical change (`commands/vg/*.md`) without matching `generate-codex-skills.sh --force` will block tagging at CI time. No silent shipped drift possible.
+
+This is the third option from the recommendation set in CHANGELOG v2.15.2 — chosen over post-commit hook (#2) and pre-tag git hook (#3) because it cannot be bypassed by skipping local hooks.
+
 ## v2.15.2 (2026-04-28) — Codex mirror regen (fixes #16)
 
 Patch release closing #16. v2.15.1 release tarball shipped stale `codex-skills/*/SKILL.md` mirrors because Phase 19 commits (v2.13.0–v2.15.0) modified canonical `commands/vg/{accept,blueprint,build,review}.md` without re-running `scripts/generate-codex-skills.sh`. `/vg:sync --verify` after standard-install upgrade reported 5 functional drifts.
