@@ -264,6 +264,13 @@ planner:
   fine_grained_components:
     enabled: false
 
+# === Design discovery pre-flight (P20 D-12) ===
+# /vg:blueprint step 0_design_discovery: detect FE work + no mockups,
+# AskUserQuestion routes to /vg:design-scaffold. Default ON for new installs;
+# flip false to opt-out. Override per-run via --skip-design-discovery.
+design_discovery:
+  enabled: true
+
 # === Commit-msg design citation gate (P19 D-08) ===
 # Enforces PR #15 L-002 rule at the commit boundary: FE files require
 # "Per design/{slug}.png", "Design: no-asset (reason)", or "Design: refactor-only"

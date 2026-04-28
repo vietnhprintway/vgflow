@@ -344,6 +344,10 @@ planner:
   fine_grained_components:
     enabled: false
 
+# P20 D-12 — blueprint design discovery pre-flight. Default ON.
+design_discovery:
+  enabled: true
+
 # P19 D-02 — view-decomposition: vision-Read PNG → per-slug component list.
 # OFF by default; ~$0.05-0.10/slug Opus vision (cached by PNG mtime).
 design_assets_view_decomposition:
