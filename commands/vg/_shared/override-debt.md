@@ -255,7 +255,7 @@ p = Path(register)
 text = p.read_text(encoding='utf-8')
 lines = text.splitlines()
 
-is_yaml_id = bool(re.match(r'^OD-\d+$', target_id))
+is_yaml_id = bool(re.match(r'^(OD-\d+|BF-\d+-\d+)$', target_id))
 
 if is_yaml_id:
   # YAML block format. Find `- id: OD-NNN`, update its status sub-key.

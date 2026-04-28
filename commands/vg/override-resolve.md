@@ -40,18 +40,20 @@ export VG_CURRENT_COMMAND="vg:override-resolve"
 telemetry_init 2>/dev/null || true
 
 ARGS="$ARGUMENTS"
-# Issue #19: orchestrator CLI writes register entries with `OD-NNN` IDs,
-# legacy table-format entries use `DEBT-YYYYMMDDHHMMSS-PID`. Slash command
-# accepts both. The downstream override_resolve_by_id helper detects format
-# from the ID prefix and mutates the right rows.
-DEBT_ID=$(echo "$ARGS" | grep -oE '(DEBT-[0-9]+-[0-9]+|OD-[0-9]+)' | head -n1)
+# Issue #19/#21: register holds three ID flavors that all need resolution:
+#   DEBT-YYYYMMDDHHMMSS-PID  — legacy markdown-table format
+#   OD-NNN                    — orchestrator CLI YAML format
+#   BF-YYYYMMDDHHMMSS-PID    — run-backfill YAML format (issue #21)
+# Slash command accepts all three. The downstream override_resolve_by_id
+# helper detects format from the ID prefix and mutates the right rows.
+DEBT_ID=$(echo "$ARGS" | grep -oE '(DEBT-[0-9]+-[0-9]+|OD-[0-9]+|BF-[0-9]+-[0-9]+)' | head -n1)
 REASON=$(echo "$ARGS" | grep -oE -- "--reason='[^']+'" | sed "s/--reason='//; s/'$//")
 WONT_FIX=false
 [[ "$ARGS" =~ --wont-fix ]] && WONT_FIX=true
 
 # Validate inputs
 if [ -z "$DEBT_ID" ]; then
-  echo "⛔ Thiếu DEBT-ID. Usage: /vg:override-resolve <DEBT-YYYYMMDDHHMMSS-PID|OD-NNN> --reason='...' [--wont-fix]"
+  echo "⛔ Thiếu DEBT-ID. Usage: /vg:override-resolve <DEBT-...|OD-NNN|BF-...> --reason='...' [--wont-fix]"
   exit 1
 fi
 if [ -z "$REASON" ]; then
