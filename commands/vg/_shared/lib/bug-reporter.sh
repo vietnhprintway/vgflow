@@ -188,40 +188,51 @@ bug_reporter_disabled_check() {
 # Redact sensitive info from input text before upload.
 # Rules: absolute paths → {project_path}/, project name → <project-name>,
 # phase dir specifics → phase-{id}, git user email → omitted.
+#
+# Issue #22: original implementation used `sed 's|\\|/|g'` which was
+# malformed (bash double-quote ate one backslash → sed got `s|\|/|g` →
+# matched `|` literal, not `\`). Bash native `${x//\\//}` also fails on
+# MSYS because glob pattern matcher drops backslashes. Using Python
+# subprocess for the whole redact path: cross-platform, robust, and the
+# file already uses Python for project_name + signature hashing.
 bug_reporter_redact() {
   local input="$1"
   local repo_root="${REPO_ROOT:-$(pwd)}"
-  local project_name
-  project_name=$(${PYTHON_BIN:-python3} -c "
-import re, sys
+  REPO_ROOT_FOR_REDACT="$repo_root" \
+  ${PYTHON_BIN:-python3} -c '
+import os, re, sys
+text = sys.stdin.read()
+repo_root = os.environ.get("REPO_ROOT_FOR_REDACT", "")
+
+# Project name from config (best-effort)
+project_name = ""
 try:
-    cfg = open('.claude/vg.config.md', encoding='utf-8').read()
-    m = re.search(r'^project_name:\s*\"([^\"]+)\"', cfg, re.M)
-    if m: print(m.group(1))
+    cfg = open(".claude/vg.config.md", encoding="utf-8").read()
+    m = re.search(r"^project_name:\s*\"([^\"]+)\"", cfg, re.M)
+    if m:
+        project_name = m.group(1)
 except Exception:
     pass
-" 2>/dev/null)
 
-  local result="$input"
+# 1. Redact repo_root in BOTH backslash and forward-slash forms.
+if repo_root:
+    text = text.replace(repo_root, "{project_path}")
+    fwd = repo_root.replace("\\", "/")
+    if fwd != repo_root:
+        text = text.replace(fwd, "{project_path}")
 
-  # Redact absolute paths
-  if [ -n "$repo_root" ]; then
-    result="${result//${repo_root}/\{project_path\}}"
-    result="${result//$(echo "$repo_root" | sed 's|\\|/|g')/\{project_path\}}"
-  fi
+# 2. Redact project name (case-sensitive substring).
+if project_name:
+    text = text.replace(project_name, "<project-name>")
 
-  # Redact project name
-  if [ -n "$project_name" ]; then
-    result="${result//${project_name}/<project-name>}"
-  fi
+# 3. Redact phase dir patterns (e.g. "07.12-conversion-tracking-pixel" → "phase-{id}").
+text = re.sub(r"[0-9]+(?:\.[0-9]+)*-[a-z][a-z0-9-]*", "phase-{id}", text)
 
-  # Redact phase dir patterns (e.g., "07.12-conversion-tracking-pixel" → "phase-{id}")
-  result=$(echo "$result" | sed -E 's|[0-9]+(\.[0-9]+)*-[a-z][a-z0-9-]*|phase-{id}|g')
+# 4. Redact git emails.
+text = re.sub(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "<email>", text)
 
-  # Redact git email
-  result=$(echo "$result" | sed -E 's|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|<email>|g')
-
-  echo "$result"
+sys.stdout.write(text)
+' <<< "$input"
 }
 
 # Queue event to local JSONL (append)
@@ -445,9 +456,17 @@ print(f\"\"\"**Auto-reported via vg bug-reporter** (v{ev.get('version','?')})
       return 0
     fi
 
+    # Build assignee args conditionally — issue #22: external submitters
+    # don't have write perm on vietdev99/vgflow, so --assignee=vietdev99
+    # always fails for them with `ReplaceActorsForAssignable` permission
+    # error. Try with assignee first; on perm-related failure, retry
+    # without. Drop --assignee entirely if `assignee` is empty.
+    local assign_args=()
+    [ -n "$assignee" ] && assign_args=(--assignee "$assignee")
+
     # Try issue create. If fails due to missing labels (404), auto-create + retry.
     local create_err
-    create_err=$(gh issue create --repo "$repo" --title "$title" --body "$body" --label "$labels" --assignee "$assignee" 2>&1 >/dev/null)
+    create_err=$(gh issue create --repo "$repo" --title "$title" --body "$body" --label "$labels" "${assign_args[@]}" 2>&1 >/dev/null)
     if [ $? -eq 0 ]; then
       bug_reporter_mark_sent "$sig"
       return 0
@@ -456,7 +475,17 @@ print(f\"\"\"**Auto-reported via vg bug-reporter** (v{ev.get('version','?')})
     # Auto-create missing labels (one-time per session) then retry once
     if echo "$create_err" | grep -q "label.*not found"; then
       bug_reporter_ensure_labels "$repo" "$labels" >/dev/null 2>&1
-      if gh issue create --repo "$repo" --title "$title" --body "$body" --label "$labels" --assignee "$assignee" >/dev/null 2>&1; then
+      if gh issue create --repo "$repo" --title "$title" --body "$body" --label "$labels" "${assign_args[@]}" >/dev/null 2>&1; then
+        bug_reporter_mark_sent "$sig"
+        return 0
+      fi
+    fi
+
+    # Permission error on assignment (issue #22) — retry without --assignee.
+    # External submitters can still report; only assignment is sacrificed.
+    if [ ${#assign_args[@]} -gt 0 ] && \
+       echo "$create_err" | grep -qE "ReplaceActorsForAssignable|does not have.*permission|Resource not accessible"; then
+      if gh issue create --repo "$repo" --title "$title" --body "$body" --label "$labels" >/dev/null 2>&1; then
         bug_reporter_mark_sent "$sig"
         return 0
       fi
