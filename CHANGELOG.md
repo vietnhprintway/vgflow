@@ -1,5 +1,99 @@
 # Changelog
 
+## v2.38.0 (2026-04-30) — Flow compliance auditor (per-step verifier)
+
+User feedback: with override flags like `--skip-discovery`, `--evaluate-only`, `--retry-failed`, AI can silently bypass required steps in any flow. The verdict gate (v2.35) catches missing artifact content, but it doesn't catch "AI ran a degraded path that produces *some* artifacts but skipped critical steps".
+
+This release adds an end-of-flow auditor: after every `/vg:blueprint`, `/vg:build`, `/vg:review`, `/vg:test`, `/vg:accept`, verify that the AI executed all required evidence-producing steps for the phase profile.
+
+### How it works (evidence-based, not marker-based)
+
+VG's existing `.step-markers/{step}.done` mechanism has inconsistent naming across commands. v2.38 uses **artifact evidence** instead — file presence proves a step ran:
+
+| Step semantically | Evidence file pattern |
+|---|---|
+| `phase1_code_scan` | (no required evidence — internal state) |
+| `phase2_browser_discovery` | `nav-discovery.json` + `scan-*.json` |
+| `phase2c_enrich` | `TEST-GOALS-DISCOVERED.md` (optional v2.34) |
+| `phase2d_crud_dispatch` | `runs/INDEX.json` (optional v2.35) |
+| `phase2e_findings` | `REVIEW-FINDINGS.json` (optional v2.35) |
+| `phase4_goal_comparison` | `GOAL-COVERAGE-MATRIX.md` |
+| `build_executor` | `SUMMARY.md` |
+| `test_codegen` | `SANDBOX-TEST.md`, `GENERATED_TESTS_DIR/*.spec.ts` |
+| `accept_uat` | `UAT.md` |
+
+Each (command × phase profile) pair declares `evidence_required` (must exist) and `evidence_optional` (don't fail if missing) in `commands/vg/_shared/templates/FLOW-COMPLIANCE.yaml`.
+
+### Profile-aware
+
+Phase profile detected from `SPECS.md` frontmatter (`phase_profile: feature|infra|hotfix|bugfix|migration|docs|feature-legacy`) or `vg.config.md → default_profile`.
+
+Different profiles → different required evidence:
+
+```yaml
+review:
+  feature:
+    evidence_required:
+      - nav-discovery.json
+      - scan-*.json
+      - GOAL-COVERAGE-MATRIX.md
+  feature-legacy:
+    evidence_required:
+      - GOAL-COVERAGE-MATRIX.md     # no browser scan required
+  infra:
+    evidence_required:
+      - SUMMARY.md                   # phaseP_infra_smoke writes here
+  docs:
+    evidence_required:
+      - SUMMARY.md                   # phaseP_link_check writes here
+```
+
+### Override path (consistent with rest of pipeline)
+
+Flag `--skip-compliance="<reason>"` logs OVERRIDE-DEBT critical entry, allows flow to proceed. Reviewer must triage at next `/vg:accept`.
+
+### Aggregated at accept
+
+`/vg:accept` runs `verify-flow-compliance.py --command accept` which:
+1. Audits accept's own evidence (`UAT.md`)
+2. Aggregates `.flow-compliance-{blueprint,build,review,test}.yaml` from prior flows
+3. Reports any flow that ran non-compliant without override
+4. BLOCK if cross-flow compliance failed (or WARN per config)
+
+This is the cross-flow gate: bắt patterns where AI bypassed required steps anywhere in pipeline, surfaced at accept time.
+
+### Severity ramp
+
+v2.38 ships with `severity: warn` default for dogfood. Promote to `block` via `vg.config.md → flow_compliance.severity: "block"` after observing real-world false-positive rate.
+
+### Files
+
+- **NEW** `commands/vg/_shared/templates/FLOW-COMPLIANCE.yaml` — profile × command × evidence matrix
+- **NEW** `scripts/verify-flow-compliance.py` — auditor script
+- **MODIFIED** `commands/vg/build.md` — post-flow compliance check before run-complete
+- **MODIFIED** `commands/vg/review.md` — same
+- **MODIFIED** `commands/vg/test.md` — same
+- **MODIFIED** `commands/vg/accept.md` — aggregate cross-flow check before mark-step accept
+- **MODIFIED** `vg.config.template.md` — `flow_compliance: { enabled, severity, template_path }` block
+
+### Smoke verified
+
+- Phase missing required evidence → exit 1 with concrete missing list
+- Same with `--skip-compliance="<reason>"` → exit 0 with WARN logged
+- Phase with all required → exit 0 COMPLIANT
+
+### Sequence — arc + post-arc complete
+
+- v2.34 — review→test back-flow (#52)
+- v2.35 — CRUD round-trip + scanner invariants (#50, #51)
+- v2.36 — TEST-GOALS expansion + 2 kits (#49)
+- v2.37 — auto-fix loop + code-only SAST + inter-worker broker
+- **v2.38 (this)** — flow compliance auditor (post-arc gap closer)
+
+This closes the last category of "AI bypass step" risk. The remaining 20% gap to Strix parity (specialized vuln skills, external recon tools, OAST) is opt-in expansion territory, not architectural.
+
+---
+
 ## v2.37.0 (2026-04-30) — Auto-fix loop + code-only SAST + inter-worker broker
 
 Final piece of the 4-release "review hời hợt" remediation arc. Closes the remaining gaps from the v2.35 Codex review:

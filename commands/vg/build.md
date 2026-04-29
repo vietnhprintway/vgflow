@@ -3954,6 +3954,31 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "12_run_complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/12_run_complete.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 12_run_complete 2>/dev/null || true
 
+# v2.38.0 — Flow compliance audit (closes "AI bypass step via override" loophole)
+# Severity warn first release for dogfood; promote to block via vg.config.md.
+if [[ ! "$ARGUMENTS" =~ --skip-compliance ]]; then
+  COMPLIANCE_REASON=""
+  COMPLIANCE_SEVERITY=$(vg_config_get "flow_compliance.severity" "warn" 2>/dev/null || echo "warn")
+else
+  COMPLIANCE_REASON=$(echo "$ARGUMENTS" | grep -oE -- '--skip-compliance="[^"]*"' | sed 's/--skip-compliance="//; s/"$//')
+  COMPLIANCE_SEVERITY="warn"
+fi
+
+COMPLIANCE_ARGS=( "--phase-dir" "$PHASE_DIR" "--command" "build" "--severity" "$COMPLIANCE_SEVERITY" )
+[ -n "$COMPLIANCE_REASON" ] && COMPLIANCE_ARGS+=( "--skip-compliance=$COMPLIANCE_REASON" )
+
+${PYTHON_BIN:-python3} .claude/scripts/verify-flow-compliance.py "${COMPLIANCE_ARGS[@]}"
+COMPLIANCE_RC=$?
+if [ "$COMPLIANCE_RC" -ne 0 ]; then
+  emit_telemetry_v2 "build_flow_compliance_failed" "${PHASE_NUMBER}" \
+    "build.compliance" "flow_compliance" "$COMPLIANCE_SEVERITY" \
+    "{\"command\":\"build\"}" 2>/dev/null || true
+  if [ "$COMPLIANCE_SEVERITY" = "block" ]; then
+    echo "⛔ Build flow compliance failed. Re-run with proper artifacts OR --skip-compliance=\"<reason>\"."
+    exit 1
+  fi
+fi
+
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
 RUN_RC=$?
 if [ $RUN_RC -ne 0 ]; then

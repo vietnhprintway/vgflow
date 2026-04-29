@@ -3696,6 +3696,24 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test complete 2>/dev/null || true
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 0_parse_and_validate 2>/dev/null || true
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "test.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null
+
+# v2.38.0 — Flow compliance audit
+if [[ "$ARGUMENTS" =~ --skip-compliance=\"([^\"]*)\" ]]; then
+  COMP_REASON="${BASH_REMATCH[1]}"
+else
+  COMP_REASON=""
+fi
+COMP_SEV=$(vg_config_get "flow_compliance.severity" "warn" 2>/dev/null || echo "warn")
+COMP_ARGS=( "--phase-dir" "$PHASE_DIR" "--command" "test" "--severity" "$COMP_SEV" )
+[ -n "$COMP_REASON" ] && COMP_ARGS+=( "--skip-compliance=$COMP_REASON" )
+
+${PYTHON_BIN:-python3} .claude/scripts/verify-flow-compliance.py "${COMP_ARGS[@]}"
+COMP_RC=$?
+if [ "$COMP_RC" -ne 0 ] && [ "$COMP_SEV" = "block" ]; then
+  echo "⛔ Test flow compliance failed. See .flow-compliance-test.yaml or pass --skip-compliance=\"<reason>\"."
+  exit 1
+fi
+
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
 RUN_RC=$?
 if [ $RUN_RC -ne 0 ]; then

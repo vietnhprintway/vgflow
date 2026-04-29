@@ -381,6 +381,23 @@ routing:
 #   MODERATE  → spawn Sonnet subagent (isolated, cheaper, bounded)
 #   MAJOR     → escalate to user (requires human judgment)
 # Severity classified by: fix_scope (files), blast_radius (callers), contract changes.
+# ─── F12 Flow Compliance Audit (v2.38.0+) ─────────────────────────────
+# End-of-flow auditor verifies that every command (blueprint/build/review/
+# test/accept) executed all required steps for the phase profile. Closes
+# the loophole where override flags (--skip-discovery, --evaluate-only,
+# etc.) silently bypass critical steps without post-hoc audit.
+#
+# Severity:
+#   warn  — log non-compliance, do not block (default v2.38 dogfood)
+#   block — fail flow if non-compliant unless --skip-compliance=<reason>
+#
+# Override: --skip-compliance="<reason>" logs OVERRIDE-DEBT entry.
+# Aggregated at /vg:accept across blueprint/build/review/test flows.
+flow_compliance:
+  enabled: true
+  severity: "warn"                  # warn | block — promote to block after dogfood
+  template_path: ".claude/commands/vg/_shared/templates/FLOW-COMPLIANCE.yaml"
+
 review:
   # ─── Scanner spawn mode (v1.9.4 R3.3 — mobile sequential gate) ──────
   # Controls how Phase 2b-2 spawns Haiku scanner agents:

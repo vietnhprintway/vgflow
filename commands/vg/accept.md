@@ -1961,6 +1961,27 @@ if [ "${SCHEMA_RC}" != "0" ]; then
   exit 2
 fi
 
+# v2.38.0 — Flow compliance aggregate audit (blueprint+build+review+test+accept itself)
+# This is the cross-flow gate: bắt patterns where AI bypassed required steps in earlier flows.
+if [[ "$ARGUMENTS" =~ --skip-compliance=\"([^\"]*)\" ]]; then
+  COMP_REASON="${BASH_REMATCH[1]}"
+else
+  COMP_REASON=""
+fi
+COMP_SEV=$(vg_config_get "flow_compliance.severity" "warn" 2>/dev/null || echo "warn")
+COMP_ACCEPT_ARGS=( "--phase-dir" "$PHASE_DIR" "--command" "accept" "--severity" "$COMP_SEV" )
+[ -n "$COMP_REASON" ] && COMP_ACCEPT_ARGS+=( "--skip-compliance=$COMP_REASON" )
+
+${PYTHON_BIN:-python3} .claude/scripts/verify-flow-compliance.py "${COMP_ACCEPT_ARGS[@]}"
+COMP_RC=$?
+if [ "$COMP_RC" -ne 0 ] && [ "$COMP_SEV" = "block" ]; then
+  echo ""
+  echo "⛔ Cross-flow compliance failed at accept gate."
+  echo "   See .flow-compliance-accept.yaml — non-compliant flows logged."
+  echo "   Override: --skip-compliance=\"<reason>\" (logged to OVERRIDE-DEBT)"
+  exit 1
+fi
+
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "accept" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/accept.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept accept 2>/dev/null || true
 # v1.15.2 — fulfill runtime_contract markers declared in frontmatter

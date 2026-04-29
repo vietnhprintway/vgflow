@@ -5228,6 +5228,24 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0_parse_and_validate 2>/dev/null || true
 READY_COUNT=$(grep -c "READY" "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>/dev/null || echo 0)
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"goals_ready\":${READY_COUNT}}" >/dev/null
+
+# v2.38.0 — Flow compliance audit
+if [[ "$ARGUMENTS" =~ --skip-compliance=\"([^\"]*)\" ]]; then
+  COMP_REASON="${BASH_REMATCH[1]}"
+else
+  COMP_REASON=""
+fi
+COMP_SEV=$(vg_config_get "flow_compliance.severity" "warn" 2>/dev/null || echo "warn")
+COMP_ARGS=( "--phase-dir" "$PHASE_DIR" "--command" "review" "--severity" "$COMP_SEV" )
+[ -n "$COMP_REASON" ] && COMP_ARGS+=( "--skip-compliance=$COMP_REASON" )
+
+${PYTHON_BIN:-python3} .claude/scripts/verify-flow-compliance.py "${COMP_ARGS[@]}"
+COMP_RC=$?
+if [ "$COMP_RC" -ne 0 ] && [ "$COMP_SEV" = "block" ]; then
+  echo "⛔ Review flow compliance failed. See .flow-compliance-review.yaml or pass --skip-compliance=\"<reason>\"."
+  exit 1
+fi
+
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
 RUN_RC=$?
 if [ $RUN_RC -ne 0 ]; then
