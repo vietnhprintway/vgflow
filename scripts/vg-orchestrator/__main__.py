@@ -2803,6 +2803,10 @@ COMMAND_VALIDATORS = {
                   # v2.5 Phase B.2 (2026-04-23): perf_budget check at review.
                   "verify-goal-perf",
                   "verify-crud-surface-contract",
+                  # v2.32.1: block shallow CRUD review evidence. A mutation
+                  # goal cannot be READY if RUNTIME-MAP only observed a list
+                  # page without POST/PUT/PATCH/DELETE + persistence proof.
+                  "verify-runtime-map-crud-depth",
                   # v2.5 Phase B.3 (2026-04-23): project-wide security baseline.
                   "verify-security-baseline",
                   # Harness v2.6 (2026-04-25): test spec selectors must
@@ -2845,6 +2849,9 @@ COMMAND_VALIDATORS = {
                 # pattern — review fixes, test re-verifies before UAT.
                 "verify-goal-perf",
                 "verify-crud-surface-contract",
+                # Defense-in-depth for old RUNTIME-MAP/GOAL-COVERAGE artifacts:
+                # test must not replay a list-only sequence for a CRUD goal.
+                "verify-runtime-map-crud-depth",
                 "verify-security-baseline",
                 # v2.5 Phase B.5 (2026-04-23): DAST report severity routing.
                 # Report path via env or default PHASE_DIR/dast-report.json.
@@ -3084,6 +3091,7 @@ UNQUARANTINABLE = {
     # AI can't slip ship a phase that never wrote a paging goal.
     "verify-test-goals-platform-essentials",
     "verify-crud-surface-contract",
+    "verify-runtime-map-crud-depth",
     # Phase 7.14.3 retro (2026-04-25): user-facing prose must read as a
     # story (preamble → details → close), not bullet/schema dumps.
     # Validator scores text on sentence ratio, examples, EN-term gloss.

@@ -32,3 +32,20 @@ def test_validator_registered_and_unquarantinable() -> None:
     assert '"vg:accept"' in orchestrator
     assert "crud-surface-contract" in registry
     assert "phases_active: [blueprint, build, review, test, accept]" in registry
+
+
+def test_runtime_map_crud_depth_blocks_shallow_review_and_test() -> None:
+    orchestrator = _read("scripts/vg-orchestrator/__main__.py")
+    registry = _read("scripts/validators/registry.yaml")
+    matrix_merger = _read("commands/vg/_shared/lib/matrix-merger.sh")
+    test_command = _read("commands/vg/test.md")
+
+    assert "verify-runtime-map-crud-depth.py" in _read("commands/vg/review.md")
+    assert "verify-runtime-map-crud-depth.py" in test_command
+    assert "--allow-structural-fallback" in test_command
+    assert "STRUCTURAL_FROM_CRUD_SURFACES" in test_command
+    assert "verify-runtime-map-crud-depth" in orchestrator
+    assert "runtime-map-crud-depth" in registry
+    assert "phases_active: [review, test]" in registry
+    assert "shallow CRUD evidence" in matrix_merger
+    assert "_has_mutation_step" in matrix_merger

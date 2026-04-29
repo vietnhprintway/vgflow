@@ -208,6 +208,23 @@ if [ -n "$INTERMEDIATE" ]; then
   echo "  (READY | BLOCKED | UNREACHABLE | INFRA_PENDING)"
   exit 1
 fi
+
+# CRUD depth gate: old or shallow RUNTIME-MAP files can mark a mutation goal
+# READY after only opening a list page. Block before replay/codegen so /vg:test
+# cannot turn list-only evidence into a false pass.
+CRUD_DEPTH_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-runtime-map-crud-depth.py"
+if [ -f "$CRUD_DEPTH_VAL" ]; then
+  mkdir -p "${PHASE_DIR}/.tmp"
+  "${PYTHON_BIN:-python3}" "$CRUD_DEPTH_VAL" --phase "${PHASE_NUMBER}" --allow-structural-fallback \
+    > "${PHASE_DIR}/.tmp/runtime-map-crud-depth-test.json" 2>&1
+  CRUD_DEPTH_RC=$?
+  if [ "$CRUD_DEPTH_RC" != "0" ]; then
+    echo "⛔ Runtime map CRUD depth gate failed — see ${PHASE_DIR}/.tmp/runtime-map-crud-depth-test.json"
+    echo "   /vg:test will not replay a list-only sequence for create/update/delete goals."
+    echo "   Re-run /vg:review ${PHASE_NUMBER} so mutation + persistence evidence is recorded."
+    exit 1
+  fi
+fi
 ```
 
 **Per-goal runtime rule (enforced trong step 5c_goal_verification):**
@@ -1642,6 +1659,34 @@ they use the `<goal>-<control>-{filter|pagination}-<group>` slug pattern
 established by `enumerateFilterFiles` / `enumeratePaginationFiles`. The
 manual codegen path emits `<phase>-goal-<group>.spec.ts` instead.
 
+**v2.32.1 CRUD structural fallback (fixes #47/#48 false pass):**
+
+If a `READY` UI goal has no `RUNTIME-MAP.json.goal_sequences[G-XX]` but
+`CRUD-SURFACES.md` contains a matching resource, codegen MUST generate a
+non-skipped structural Playwright spec from the CRUD contract. This is the
+only allowed fallback for legacy/static review artifacts; never emit
+`test.skip()` for this case.
+
+Fallback rules:
+- Applies only to non-mutation goals. Any goal with meaningful
+  `Mutation evidence` still requires a real per-goal runtime sequence with
+  POST/PUT/PATCH/DELETE + persistence proof.
+- Match the resource by `goal.frontmatter.surface_resource`, goal title/body,
+  route, or resource name in `CRUD-SURFACES.md`.
+- Navigate to `platforms.web.list.route` (or the goal `Start view` if more
+  specific).
+- Assert all declared list contract elements: heading, filters/search/sort,
+  pagination controls, table columns, row actions, empty/error/loading states
+  when declared.
+- Assert form contract elements without submitting: fields, required
+  validation affordances, duplicate-submit guard, and error summary.
+- Assert delete contract elements without destructive submit unless a runtime
+  sequence exists: confirm dialog/sheet text and destructive affordance.
+- Header must include `// STRUCTURAL_FROM_CRUD_SURFACES: true` and
+  `// Source: CRUD-SURFACES.md + TEST-GOALS.md`.
+- If no CRUD resource matches, BLOCK codegen with a clear message; do not
+  generate a skeleton.
+
 **Pre-codegen Gate — Dynamic ID scan (HARD BLOCK — tightened 2026-04-17):**
 
 Before generating tests, scan RUNTIME-MAP.json goal_sequences for dynamic ID selectors. Dynamic IDs cause flaky tests that rot on next data reset.
@@ -1732,6 +1777,7 @@ PY
 | Status | Action |
 |---|---|
 | `READY` | Sinh full spec happy path (logic existing bên dưới). |
+| `READY` + missing `goal_sequences[G-XX]` + CRUD match | Sinh structural spec from `CRUD-SURFACES.md`; never `.skip()`. Mutation goals excluded and blocked by CRUD depth gate. |
 | `MANUAL` | Sinh **skeleton** với `test.skip(...)` + comment "manual verify in UAT + verification_strategy: {strategy}". Có placeholder để user fill sau. |
 | `DEFERRED` | **Skip entirely** — không tạo file .spec.ts (phase target chưa deploy). Log `[skip-deferred] {gid} depends_on_phase: {X}`. |
 | `INFRA_PENDING` | Sinh skeleton `.skip()` với comment "requires infra {deps} — re-run --sandbox". |
@@ -1796,18 +1842,22 @@ fi
 3. **Assertions from TEST-GOALS** — each `test()` block maps to a success criterion. Never invent assertions beyond what TEST-GOALS specifies.
 4. **Steps from goal_sequences** — each `do` step becomes a Playwright action, each `assert` step becomes an `expect()`. Nearly 1:1 mapping.
 5. **Web-first assertions** — use `expect(locator).toHaveText()`, `expect(locator).toBeVisible()` with auto-retry. Never use single-shot checks.
-6. **Mutation 3-layer verify (tightened 2026-04-17)** — for every mutation step (POST/PUT/PATCH/DELETE), generated test MUST assert THREE layers:
+6. **Mutation 4-layer verify (tightened v2.32.1)** — for every mutation step (POST/PUT/PATCH/DELETE), generated test MUST assert FOUR layers:
    ```
    // Layer 1: Toast text
    await expect(page.getByRole('status')).toContainText(step.expected_toast);
    // Layer 2: API 2xx (not just called)
    const res = await page.waitForResponse(r => r.url().includes(step.endpoint));
    expect(res.status()).toBeLessThan(400);
-   // Layer 3: No console errors since mutation
+   // Layer 3: Persistence after refresh/re-read
+   await page.reload();
+   await expect(page.getByText(step.persisted_text)).toBeVisible();
+   // Layer 4: No console errors since mutation
    const errs = await page.evaluate(() => window.__consoleErrors || []);
    expect(errs.length).toBe(0);
    ```
-   Codegen that skips any layer = rejected at 5d-binding gate.
+   Codegen that skips any layer = rejected by `mutation-layers`,
+   `verify-runtime-map-crud-depth`, or the 5d console gate.
 
 **Generated test structure (from goal_sequences — nearly 1:1):**
 ```

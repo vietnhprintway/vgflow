@@ -737,6 +737,15 @@ validators:
     added_in: v2.12.0
     description: Platform-aware CRUD resource contract gate. CRUD-SURFACES.md must define list/form/delete/API behavior plus security, abuse, performance, and platform overlays before build/review/test/accept can rely on it.
 
+  - id: runtime-map-crud-depth
+    path: .claude/scripts/validators/verify-runtime-map-crud-depth.py
+    severity: block
+    phases_active: [review, test]
+    domain: test
+    runtime_target_ms: 2000
+    added_in: v2.32.1
+    description: Blocks shallow list-only RUNTIME-MAP goal_sequences for UI CRUD/mutation goals. Mutation goals require observed POST/PUT/PATCH/DELETE plus persistence proof before review/test can pass.
+
   - id: test-goals-platform-essentials
     path: .claude/scripts/validators/verify-test-goals-platform-essentials.py
     severity: block

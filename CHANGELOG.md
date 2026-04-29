@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.32.1 (2026-04-30) — CRUD-depth review/test hardening (#47, #48)
+
+Patch release for the review/test false-pass class where a CRUD-heavy phase
+could define many goals but downstream evidence only showed a list page or
+group-level static scan.
+
+### Fix
+
+- **Review matrix merger** now downgrades mutation goals from READY to BLOCKED
+  when `RUNTIME-MAP.goal_sequences[G-XX]` lacks a successful
+  POST/PUT/PATCH/DELETE observation or lacks persistence proof.
+- **New validator** `verify-runtime-map-crud-depth.py` is wired into
+  `/vg:review` and `/vg:test`, registered as unquarantinable, and catches:
+  list-only mutation evidence, mutation without persistence probe, and
+  CRUD UI goals backed by `CRUD-SURFACES.md` that only have group-level
+  `goal_sequences` instead of per-goal `G-XX` entries.
+- **/vg:test structural fallback** now handles legacy READY artifacts that
+  lack a per-goal sequence: non-mutation CRUD goals must generate a
+  non-skipped `STRUCTURAL_FROM_CRUD_SURFACES` Playwright spec from
+  `CRUD-SURFACES.md`; mutation goals still hard-block until review records
+  real runtime mutation + persistence evidence.
+- **Mutation codegen contract** is tightened from 3 layers to 4 layers:
+  toast, API 2xx, persistence after refresh/re-read, and no console errors.
+- **Codex + Claude mirrors** regenerated/synced so both runtimes enforce the
+  same review/test rules.
+
+### Verification
+
+- `python -m pytest scripts/tests/test_runtime_map_crud_depth.py scripts/tests/test_crud_surface_workflow_wiring.py scripts/tests/test_mutation_layers.py`
+  → 20 passed.
+- `python scripts/ci/validator_smoke.py` → all validators compile and emit
+  schema-compatible JSON for smokeable validators.
+- `python scripts/verify-codex-mirror-equivalence.py` → 64 mirror pairs OK.
+
+---
+
 ## v2.32.0 (2026-04-29) — Strix scan advisory plugin (end-of-milestone)
 
 User asked: học được gì từ usestrix/strix về autopentest? Decision: Strix's domain (Docker sandbox + LLM-powered ReAct loop + actual exploit execution) is intentionally **outside** VG's dependency surface. VG aggregates threat-model declarations and curates an advisory recommending the user run Strix — same pattern as Step 5 (`SECURITY-PENTEST-CHECKLIST.md` for human pentesters).

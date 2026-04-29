@@ -4254,6 +4254,23 @@ else
   echo "⚠ matrix-merger.sh missing — falling back to manual matrix write (legacy path)"
   # Legacy path: orchestrator writes matrix directly using template below
 fi
+
+# Defense-in-depth: matrix-merger now downgrades shallow mutation sequences, but
+# keep an explicit validator so legacy/hand-written RUNTIME-MAP files cannot
+# mark create/update/delete goals READY from list-only evidence.
+CRUD_DEPTH_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-runtime-map-crud-depth.py"
+if [ -f "$CRUD_DEPTH_VAL" ]; then
+  mkdir -p "${PHASE_DIR}/.tmp"
+  "${PYTHON_BIN:-python3}" "$CRUD_DEPTH_VAL" --phase "${PHASE_NUMBER}" \
+    > "${PHASE_DIR}/.tmp/runtime-map-crud-depth-review.json" 2>&1
+  CRUD_DEPTH_RC=$?
+  if [ "$CRUD_DEPTH_RC" != "0" ]; then
+    echo "⛔ Runtime map CRUD depth gate failed — see ${PHASE_DIR}/.tmp/runtime-map-crud-depth-review.json"
+    echo "   Mutation goals require observed POST/PUT/PATCH/DELETE + persistence proof."
+    echo "   Re-run /vg:review ${PHASE_NUMBER} with deeper CRUD interaction before /vg:test."
+    exit 1
+  fi
+fi
 ```
 
 **Generated matrix format (canonical, from matrix-merger):**

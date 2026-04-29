@@ -107,6 +107,65 @@ if Path(runtime_map_path).exists():
     except Exception as e:
         print(f'⚠ RUNTIME-MAP read error: {e}', file=sys.stderr)
 
+MUTATION_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+EMPTY_FIELD_VALUES = {'', 'none', 'n/a', 'na', 'null', '-', '[]', '{}'}
+
+def _meaningful(value):
+    compact = re.sub(r'\s+', ' ', str(value or '').strip()).lower()
+    return compact not in EMPTY_FIELD_VALUES and not compact.startswith(('none:', 'n/a:', 'na:'))
+
+def _walk(value):
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk(child)
+
+def _network_entries(seq):
+    entries = []
+    for node in _walk(seq or {}):
+        if not isinstance(node, dict):
+            continue
+        network = node.get('network')
+        if isinstance(network, list):
+            entries.extend(x for x in network if isinstance(x, dict))
+        elif isinstance(network, dict):
+            entries.append(network)
+    return entries
+
+def _status_ok(value):
+    try:
+        code = int(value)
+    except (TypeError, ValueError):
+        return False
+    return 200 <= code < 400
+
+def _has_mutation_step(seq):
+    for entry in _network_entries(seq):
+        method = str(entry.get('method') or entry.get('verb') or '').upper()
+        if method in MUTATION_METHODS and _status_ok(entry.get('status', entry.get('status_code'))):
+            return True
+    return False
+
+def _has_persistence_proof(seq):
+    for node in _walk(seq or {}):
+        if not isinstance(node, dict):
+            continue
+        probe = node.get('persistence_probe')
+        if isinstance(probe, dict):
+            if probe.get('persisted') is True:
+                return True
+            if probe.get('skipped') and str(probe.get('reason') or probe.get('skipped')).strip():
+                return True
+        if node.get('persisted') is True and (
+            'persistence' in str(node.get('type', '')).lower()
+            or 'reload' in json.dumps(node, ensure_ascii=False).lower()
+        ):
+            return True
+    return False
+
 # ─── Load surface probe results ───────────────────────────────────
 probe_results = {}
 if Path(probe_path).exists():
@@ -139,35 +198,23 @@ for g in goals:
             g['status'] = 'NOT_SCANNED'
             g['evidence'] = 'browser phase did not record goal_sequence'
 
-        # ─── Layer 4 gate — mutation goals require persistence probe ───
+        # Layer 4 gate: mutation goals require real runtime mutation evidence.
         # If goal has **Mutation evidence:** non-empty AND status was READY
-        # via browser seq, verify that seq.forms[] contains at least one
-        # submit_result with persistence_probe.persisted=true. Missing
-        # persistence probe = ghost save risk = downgrade READY → BLOCKED.
-        if g['status'] == 'READY' and g.get('mutation_evidence'):
-            forms = (seq or {}).get('forms', []) or []
-            # Also check if steps[] has any POST/PUT/PATCH/DELETE observation
-            has_mutation_step = any(
-                (s.get('observe', {}).get('network') or [])
-                and any(n.get('method','').upper() in ('POST','PUT','PATCH','DELETE')
-                        and 200 <= n.get('status', 0) < 300
-                        for n in s['observe']['network'])
-                for s in seq.get('steps', []) if isinstance(s, dict)
-            )
-            # Persistence-verified = at least 1 form with persistence_probe.persisted=true
-            persisted_forms = [
-                f for f in forms
-                if isinstance(f, dict) and (f.get('persistence_probe') or {}).get('persisted') is True
-            ]
-            # Allowed skips: form.persistence_probe.skipped has a documented reason
-            documented_skips = [
-                f for f in forms
-                if isinstance(f, dict) and (f.get('persistence_probe') or {}).get('skipped')
-            ]
-            if has_mutation_step and not persisted_forms and not documented_skips:
+        # via browser seq, verify that the sequence observed a successful
+        # POST/PUT/PATCH/DELETE and that persistence was checked. A list-page
+        # assertion or "row visible" snapshot is not CRUD evidence.
+        if g['status'] == 'READY' and _meaningful(g.get('mutation_evidence')):
+            if not _has_mutation_step(seq):
                 g['status'] = 'BLOCKED'
                 g['evidence'] = (
-                    f"ghost-save risk: {len(forms)} form(s) submitted but no persistence_probe.persisted=true; "
+                    "shallow CRUD evidence: goal_sequence passed without a successful "
+                    "POST/PUT/PATCH/DELETE observation; list-only review cannot satisfy "
+                    "Mutation evidence"
+                )
+            elif not _has_persistence_proof(seq):
+                g['status'] = 'BLOCKED'
+                g['evidence'] = (
+                    "ghost-save risk: mutation observed but no persistence_probe.persisted=true; "
                     "Layer 4 verify (refresh + re-read + diff) missing"
                 )
         continue
