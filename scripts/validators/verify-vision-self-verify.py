@@ -36,6 +36,9 @@ import sys
 import textwrap
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from design_ref_resolver import first_screenshot, resolve_design_assets  # noqa: E402
+
 CORE_COMPONENTS = {"sidebar", "topbar", "header", "maincontent", "appshell", "navigation"}
 FE_PATH_PATTERN = (".tsx", ".jsx", ".vue", ".svelte")
 
@@ -157,15 +160,21 @@ def main() -> int:
     args = ap.parse_args()
 
     phase_dir = Path(args.phase_dir)
+    repo_root = Path.cwd().resolve()
     design_dir = Path(args.design_dir)
     if not design_dir.is_absolute():
-        design_dir = (Path.cwd() / design_dir).resolve()
+        design_dir = (repo_root / design_dir).resolve()
 
-    png_path = design_dir / "screenshots" / f"{args.slug}.default.png"
-    if not png_path.exists():
-        legacy = design_dir / "screenshots" / f"{args.slug}.png"
-        if legacy.exists():
-            png_path = legacy
+    png_path = first_screenshot(
+        resolve_design_assets(
+            args.slug,
+            repo_root=repo_root,
+            phase_dir=phase_dir,
+            explicit_design_dir=design_dir,
+        )
+    )
+    if png_path is None:
+        png_path = design_dir / "screenshots" / f"{args.slug}.default.png"
 
     result: dict = {
         "phase": str(phase_dir.name),

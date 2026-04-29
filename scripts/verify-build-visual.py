@@ -44,6 +44,9 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from design_ref_resolver import first_screenshot, resolve_design_assets  # noqa: E402
+
 
 def server_up(url: str, timeout: float = 3.0) -> bool:
     parsed = urlparse(url)
@@ -151,14 +154,20 @@ def main() -> int:
         return 2
 
     phase_dir = Path(args.phase_dir)
+    repo_root = Path.cwd().resolve()
     design_dir = Path(args.design_dir)
     if not design_dir.is_absolute():
-        design_dir = (Path.cwd() / design_dir).resolve()
-    baseline = design_dir / "screenshots" / f"{args.slug}.default.png"
-    if not baseline.exists():
-        legacy = design_dir / "screenshots" / f"{args.slug}.png"
-        if legacy.exists():
-            baseline = legacy
+        design_dir = (repo_root / design_dir).resolve()
+    baseline = first_screenshot(
+        resolve_design_assets(
+            args.slug,
+            repo_root=repo_root,
+            phase_dir=phase_dir,
+            explicit_design_dir=design_dir,
+        )
+    )
+    if baseline is None:
+        baseline = design_dir / "screenshots" / f"{args.slug}.default.png"
 
     result: dict = {
         "task": args.task_num,

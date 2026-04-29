@@ -172,87 +172,73 @@ Sub-steps:
 Before any planning work, verify FE phases have mockup ground truth.
 Without mockups, the entire L1-L6 stack from Phase 19 SKIPs via Form B
 and the executor ships AI-imagined UI (the L-002 anti-pattern this
-whole stack was built to prevent). Catch the gap here, ask the user
-where the design lives, route to scaffold if greenfield.
+whole stack was built to prevent).
+
+Blueprint owns this. It must not rely on the operator remembering a
+separate `/vg:design-scaffold` command. If the phase has UI:
+
+1. Detect existing mockups from phase `design/`, legacy phase `designs/`,
+   `design_assets.paths`, and common repo mockup dirs.
+2. Import existing raw mockups into `${PHASE_DIR}/design/`.
+3. If still no mockups, automatically run `/vg:design-scaffold`.
+4. Once raw mockups exist, automatically run `/vg:design-extract --auto`
+   so PLAN generation can bind `<design-ref>` to real slugs.
 
 ```bash
-source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/scaffold-discovery.sh" 2>/dev/null || true
-
-DESIGN_ASSETS_DIR=$(vg_config_get design_assets.paths "" | head -1)
-DESIGN_ASSETS_DIR="${DESIGN_ASSETS_DIR:-designs}"
-
-# Skip if disabled by config (default ON for new installs; flip false to opt-out)
 DESIGN_DISCOVERY_ENABLED=$(vg_config_get design_discovery.enabled true 2>/dev/null || echo true)
 if [ "$DESIGN_DISCOVERY_ENABLED" != "true" ]; then
   echo "ℹ design_discovery.enabled=false — skipping P20 D-12 pre-flight"
 elif [[ "$ARGUMENTS" =~ --skip-design-discovery ]]; then
   echo "⚠ --skip-design-discovery set — Form B 'no-asset:greenfield-explicit-skip' will trigger /vg:accept critical block"
-elif type -t scaffold_should_block_blueprint >/dev/null 2>&1 \
-     && scaffold_should_block_blueprint "$PHASE_DIR" "$DESIGN_ASSETS_DIR"; then
-  echo ""
-  echo "⛔ Phase ${PHASE_NUMBER} có UI work nhưng chưa thấy mockup nào ở ${DESIGN_ASSETS_DIR}/"
-  echo ""
-  echo "  Phase 19 các gate L1-L6 (design fidelity) sẽ SKIP toàn bộ → executor"
-  echo "  có thể ship UI tự bịa. Cần resolve trước khi plan."
-  echo ""
-  echo "  Giao diện ở đâu?"
+else
+  mkdir -p "${PHASE_DIR}/.tmp"
+  BLUEPRINT_DESIGN_PREFLIGHT_JSON="${PHASE_DIR}/.tmp/blueprint-design-preflight.json"
+  "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
+    --phase-dir "${PHASE_DIR}" \
+    --repo-root "${REPO_ROOT}" \
+    --config "${REPO_ROOT}/.claude/vg.config.md" \
+    --apply \
+    --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" >/dev/null
+
+  HAS_UI=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('has_ui') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+  IMPORTED_COUNT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('imported_count',0))" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+  NEEDS_SCAFFOLD=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_scaffold') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+  NEEDS_EXTRACT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_extract') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+  PHASE_DESIGN_DIR=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('phase_design_dir',''))" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+
+  if [ "$HAS_UI" = "1" ]; then
+    echo "▸ Blueprint design preflight: UI phase detected. Report: $BLUEPRINT_DESIGN_PREFLIGHT_JSON"
+    if [ "${IMPORTED_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+      echo "✓ Imported ${IMPORTED_COUNT} existing mockup file(s) into ${PHASE_DESIGN_DIR}"
+    fi
+
+    if [ "$NEEDS_SCAFFOLD" = "1" ]; then
+      echo "▸ No design mockups found for UI phase — auto-running /vg:design-scaffold --tool=pencil-mcp"
+      SlashCommand: /vg:design-scaffold --tool=pencil-mcp
+      "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
+        --phase-dir "${PHASE_DIR}" \
+        --repo-root "${REPO_ROOT}" \
+        --config "${REPO_ROOT}/.claude/vg.config.md" \
+        --apply \
+        --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" >/dev/null
+      NEEDS_SCAFFOLD=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_scaffold') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+      NEEDS_EXTRACT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_extract') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+      [ "$NEEDS_SCAFFOLD" = "1" ] && { echo "⛔ /vg:design-scaffold did not produce phase design assets. See $BLUEPRINT_DESIGN_PREFLIGHT_JSON"; exit 1; }
+    fi
+
+    if [ "$NEEDS_EXTRACT" = "1" ]; then
+      echo "▸ Phase design assets need normalization — auto-running /vg:design-extract --auto"
+      SlashCommand: /vg:design-extract --auto
+      if [ ! -f "${PHASE_DIR}/design/manifest.json" ]; then
+        echo "⛔ /vg:design-extract did not produce ${PHASE_DIR}/design/manifest.json"
+        echo "   Blueprint cannot plan UI build tasks without design-ref slugs."
+        exit 1
+      fi
+    fi
+  else
+    echo "ℹ Blueprint design preflight: no UI signal in phase artifacts — design scaffold not required."
+  fi
 fi
-```
-
-```
-AskUserQuestion: "Chọn 1 phương án — phải resolve trước khi blueprint chạy:
-
-  [a] Đã có file ở đâu đó — tôi sẽ cho path (file, folder, Figma URL)
-  [b] Đang dùng tool external (Stitch / Figma / v0...) — chỉ chưa import
-  [c] Chưa có gì cả → /vg:design-scaffold (greenfield, AI tự gen)
-  [d] Skip — phase này không có visual mockup (Form B critical, sẽ block /vg:accept)
-  [skip] Override pre-flight này một lần — tôi tự xử lý sau"
-```
-
-```bash
-case "$DESIGN_DISCOVERY_CHOICE" in
-  a)
-    AskUserQuestion: "Path tới file/folder chứa mockup (tuyệt đối hoặc relative repo root):"
-    USER_PATH="$ANSWER"
-    if [ -e "$USER_PATH" ]; then
-      mkdir -p "$DESIGN_ASSETS_DIR"
-      cp -r "$USER_PATH" "$DESIGN_ASSETS_DIR/" 2>&1 || cp "$USER_PATH" "$DESIGN_ASSETS_DIR/"
-      echo "✓ Mockup imported. Re-checking discovery..."
-      scaffold_should_block_blueprint "$PHASE_DIR" "$DESIGN_ASSETS_DIR" \
-        && { echo "⛔ Vẫn không thấy mockup ở $DESIGN_ASSETS_DIR — kiểm tra path"; exit 1; }
-    else
-      echo "⛔ Path không tồn tại: $USER_PATH"
-      exit 1
-    fi
-    ;;
-  b)
-    echo "Chuyển sang /vg:design-scaffold để chọn external tool flow:"
-    SlashCommand: /vg:design-scaffold
-    # After scaffold completes, re-check
-    scaffold_should_block_blueprint "$PHASE_DIR" "$DESIGN_ASSETS_DIR" \
-      && { echo "⛔ Scaffold không produce mockup ở $DESIGN_ASSETS_DIR"; exit 1; }
-    ;;
-  c)
-    echo "Greenfield case — spawning /vg:design-scaffold (default tool: pencil-mcp)..."
-    SlashCommand: /vg:design-scaffold
-    scaffold_should_block_blueprint "$PHASE_DIR" "$DESIGN_ASSETS_DIR" \
-      && { echo "⛔ Scaffold không hoàn tất"; exit 1; }
-    ;;
-  d)
-    echo "⚠ User chọn skip explicit. Logging Form B critical-severity cho mọi FE task."
-    if type -t log_override_debt >/dev/null 2>&1; then
-      log_override_debt "design-greenfield-explicit-skip" "phase=${PHASE_NUMBER}" "critical"
-    fi
-    if type -t emit_telemetry_v2 >/dev/null 2>&1; then
-      emit_telemetry_v2 "blueprint_design_discovery" "${PHASE_NUMBER}" "blueprint.0" \
-        "design_discovery" "OVERRIDE" "{\"choice\":\"explicit-skip\"}"
-    fi
-    echo "  → /vg:accept sẽ BLOCK on greenfield-* critical debt (P20 D-06). Resolve qua /vg:design-scaffold sau, hoặc /vg:override-resolve với rationale."
-    ;;
-  skip)
-    echo "⚠ Pre-flight bỏ qua một lần — bạn tự đảm bảo mockup landed trước /vg:build"
-    ;;
-esac
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "0_design_discovery" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/0_design_discovery.done"
@@ -547,6 +533,8 @@ if [ -n "$DESIGN_PATHS" ]; then
     DESIGN_OUT="$DESIGN_PHASE_DIR"
   fi
   DESIGN_MANIFEST="${DESIGN_OUT}/manifest.json"
+  DESIGN_OUTPUT_DIR="$DESIGN_OUT"
+  export DESIGN_OUTPUT_DIR DESIGN_MANIFEST
 
   # Stale check: any source asset newer than manifest?
   NEEDS_EXTRACT=false
@@ -566,15 +554,8 @@ if [ -n "$DESIGN_PATHS" ]; then
   fi
 
   if [ "$NEEDS_EXTRACT" = true ]; then
-    echo "Design assets detected, manifest $REASON. Auto-running /vg:design-extract..."
-    # --auto flag inherits; manual run lets user approve
-    if [[ "$ARGUMENTS" =~ --auto ]]; then
-      SlashCommand: /vg:design-extract --auto
-    else
-      AskUserQuestion: "Extract design assets now? (Required for <design-ref> linkage)"
-        Options: [Yes (recommended), Skip — build without design]
-      # If Yes → SlashCommand: /vg:design-extract
-    fi
+    echo "Design assets detected, manifest $REASON. Auto-running /vg:design-extract --auto..."
+    SlashCommand: /vg:design-extract --auto
   fi
 fi
 ```

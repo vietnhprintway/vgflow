@@ -40,6 +40,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from design_ref_resolver import (  # noqa: E402
+    extract_design_ref_entries,
+    resolve_design_assets,
+)
+
 
 def parse_config(config_path: Path) -> dict:
     """Parse vg.config.md YAML-like frontmatter into flat dict."""
@@ -879,52 +885,45 @@ def main():
     design_image_paths: list[str] = []
     design_image_required = False
     design_ref_entries: list[dict] = []
-    design_refs_raw = re.findall(r"<design-ref>([^<]+)</design-ref>", task_context)
-    if design_refs_raw:
-        design_dir_rel = config.get("design_assets.output_dir", ".vg/design-normalized")
-        design_dir_abs = (repo_root / design_dir_rel).resolve()
-        screenshots_dir = design_dir_abs / "screenshots"
-        refs_dir = design_dir_abs / "refs"
-
-        slug_re = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
+    parsed_design_refs = extract_design_ref_entries(task_context)
+    if parsed_design_refs:
         slug_entries: list[dict] = []
         descriptive_entries: list[str] = []
-        for raw in design_refs_raw:
-            for token in re.split(r"[,\s]+", raw.strip()):
-                token = token.strip()
-                if not token:
-                    continue
-                if slug_re.match(token):
-                    entry: dict = {"slug": token, "screenshots": [], "structural": None, "interactions": None}
-                    default_png = screenshots_dir / f"{token}.default.png"
-                    if default_png.exists():
-                        entry["screenshots"].append(str(default_png))
-                    elif (legacy_png := screenshots_dir / f"{token}.png").exists():
-                        entry["screenshots"].append(str(legacy_png))
-                    if screenshots_dir.exists():
-                        for variant in sorted(screenshots_dir.glob(f"{token}.*.png")):
-                            sp = str(variant)
-                            if sp not in entry["screenshots"]:
-                                entry["screenshots"].append(sp)
-                    for ext in ("structural.html", "structural.json", "structural.xml"):
-                        cand = refs_dir / f"{token}.{ext}"
-                        if cand.exists():
-                            entry["structural"] = str(cand)
-                            break
-                    inter = refs_dir / f"{token}.interactions.md"
-                    if inter.exists():
-                        entry["interactions"] = str(inter)
-                    if not entry["screenshots"]:
-                        entry["screenshot_missing"] = str(default_png)
-                    slug_entries.append(entry)
-                    design_image_required = True
-                    design_image_paths.extend(entry["screenshots"])
-                else:
-                    descriptive_entries.append(token)
+        no_asset_entries: list[str] = []
+        for ref in parsed_design_refs:
+            if ref.kind == "slug":
+                assets = resolve_design_assets(
+                    ref.value,
+                    repo_root=repo_root,
+                    phase_dir=phase_dir,
+                    config=config,
+                )
+                entry: dict = {
+                    "slug": ref.value,
+                    "screenshots": [str(p) for p in assets.screenshots],
+                    "structural": str(assets.structural) if assets.structural else None,
+                    "interactions": str(assets.interactions) if assets.interactions else None,
+                    "tier": assets.tier,
+                    "root": str(assets.root) if assets.root else None,
+                }
+                if not entry["screenshots"]:
+                    missing = assets.missing_candidates[0] if assets.missing_candidates else (
+                        phase_dir / "design" / "screenshots" / f"{ref.value}.default.png"
+                    )
+                    entry["screenshot_missing"] = str(missing)
+                slug_entries.append(entry)
+                design_image_required = True
+                design_image_paths.extend(entry["screenshots"])
+            elif ref.kind == "no_asset":
+                no_asset_entries.append(ref.value)
+            else:
+                descriptive_entries.append(ref.value)
 
-        design_ref_entries = slug_entries + [
-            {"descriptive": d} for d in descriptive_entries
-        ]
+        design_ref_entries = (
+            slug_entries
+            + [{"no_asset": d} for d in no_asset_entries]
+            + [{"descriptive": d} for d in descriptive_entries]
+        )
 
         lines: list[str] = []
         lines.append("# Design ground truth — MANDATORY (L1)")
@@ -966,6 +965,11 @@ def main():
         if descriptive_entries:
             lines.append("## Code-pattern hints (descriptive, not a PNG read target)")
             for d in descriptive_entries:
+                lines.append(f"  - {d}")
+            lines.append("")
+        if no_asset_entries:
+            lines.append("## Explicit no-asset design gaps (Form B)")
+            for d in no_asset_entries:
                 lines.append(f"  - {d}")
             lines.append("")
         design_context = "\n".join(lines).rstrip()

@@ -8,6 +8,8 @@
 # refs after phase archive, build phase 5 "seeing" mockups of phase 2.
 #
 # Fix: 2-tier resolution. Phase-scoped first, project-shared fallback.
+# Build/read gates also support the transitional `${PHASE_DIR}/designs/`
+# raw scaffold folder so greenfield PNGs are never silently ignored.
 #
 #   Tier 1 — phase-scoped:   ${PHASE_DIR}/design/{slug}.{kind}
 #   Tier 2 — project-shared: ${SHARED_DIR}/{slug}.{kind}     (design-system,
@@ -18,6 +20,7 @@
 #
 # Functions:
 #   vg_design_phase_dir <phase_dir>       → echo "$phase_dir/design"
+#   vg_design_phase_raw_dir <phase_dir>   → echo "$phase_dir/designs"
 #   vg_design_shared_dir                  → echo from config or default
 #   vg_design_legacy_dir                  → echo from config or default
 #   vg_resolve_design_ref <slug> <kind> [phase_dir]
@@ -50,6 +53,11 @@
 vg_design_phase_dir() {
   local phase_dir="${1:?phase_dir required}"
   echo "${phase_dir}/design"
+}
+
+vg_design_phase_raw_dir() {
+  local phase_dir="${1:?phase_dir required}"
+  echo "${phase_dir}/designs"
 }
 
 # Project-shared directory: design system, brand, cross-phase components.
@@ -107,13 +115,16 @@ vg_resolve_design_ref() {
   local phase_dir="${3:-}"
   local candidate
 
-  # Tier 1 — phase-scoped
+  # Tier 1 — phase-scoped (canonical + transitional raw scaffold alias)
   if [ -n "$phase_dir" ]; then
-    candidate="$(vg_design_phase_dir "$phase_dir")/${kind}"
-    if [ -f "$candidate" ]; then
-      echo "$candidate"
-      return 0
-    fi
+    local phase_root
+    for phase_root in "$(vg_design_phase_dir "$phase_dir")" "$(vg_design_phase_raw_dir "$phase_dir")"; do
+      candidate="${phase_root}/${kind}"
+      if [ -f "$candidate" ]; then
+        echo "$candidate"
+        return 0
+      fi
+    done
   fi
 
   # Tier 2 — project-shared
@@ -181,6 +192,9 @@ vg_design_dirs_status() {
     local pd
     pd="$(vg_design_phase_dir "$phase_dir")"
     echo "  Tier 1 (phase): $pd $([ -d "$pd" ] && echo '[exists]' || echo '[missing]')"
+    local pr
+    pr="$(vg_design_phase_raw_dir "$phase_dir")"
+    echo "  Tier 1b (phase raw/scaffold): $pr $([ -d "$pr" ] && echo '[exists]' || echo '[missing]')"
   else
     echo "  Tier 1 (phase): n/a (no phase_dir passed)"
   fi

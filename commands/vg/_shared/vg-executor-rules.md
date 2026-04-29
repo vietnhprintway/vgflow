@@ -369,10 +369,13 @@ reopened.
 
 1. `${PHASE_DIR}/design/{kind}/{slug}.{ext}` — phase-scoped (preferred,
    each phase owns its mockups; isolation prevents cross-phase pollution)
-2. `${config.design_assets.shared_dir}/{kind}/{slug}.{ext}` — project-shared
+2. `${PHASE_DIR}/designs/{slug}.png` — transitional raw scaffold fallback
+   (read-only; `/vg:design-scaffold` now writes `design/`, but old dogfood
+   phases may still hold raw PNG mockups here)
+3. `${config.design_assets.shared_dir}/{kind}/{slug}.{ext}` — project-shared
    (for design system, brand foundations, cross-phase components written
    via `/vg:design-extract --shared`)
-3. `${config.design_assets.output_dir}/{kind}/{slug}.{ext}` — legacy
+4. `${config.design_assets.output_dir}/{kind}/{slug}.{ext}` — legacy
    single-tier path, soft-deprecated since v2.30. Migration helper:
    `bash install.sh --migrate-design <project>`.
 

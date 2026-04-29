@@ -3209,27 +3209,26 @@ design; override `--allow-design-drift` consumes a rationalization-guard
 slot and logs override-debt.
 
 ```bash
-DESIGN_DIR_REL="$(vg_config_get design_assets.output_dir .vg/design-normalized 2>/dev/null || echo .vg/design-normalized)"
 DF_THRESHOLD="$(vg_config_get visual_checks.design_fidelity_threshold_pct 5.0 2>/dev/null || echo 5.0)"
-DF_BASELINE_DIR="${REPO_ROOT}/${DESIGN_DIR_REL}/screenshots"
 
-if [ -d "$DF_BASELINE_DIR" ] && [ -f "${PHASE_DIR}/RUNTIME-MAP.json" ]; then
-  DF_PAIRS=$(${PYTHON_BIN} - "${PHASE_DIR}/RUNTIME-MAP.json" "$DF_BASELINE_DIR" <<'PY'
-import json, os, sys
+if [ -f "${PHASE_DIR}/RUNTIME-MAP.json" ]; then
+  DF_PAIRS=$(PYTHONPATH="${REPO_ROOT}/.claude/scripts/lib:${REPO_ROOT}/scripts/lib:${PYTHONPATH:-}" ${PYTHON_BIN} - "${PHASE_DIR}/RUNTIME-MAP.json" "${PHASE_DIR}" "${REPO_ROOT}" "${REPO_ROOT}/.claude/vg.config.md" <<'PY'
+import json, sys
 from pathlib import Path
+from design_ref_resolver import first_screenshot, parse_config_file, resolve_design_assets
+
 rt = json.load(open(sys.argv[1], encoding="utf-8"))
-baseline_dir = Path(sys.argv[2])
+phase_dir = Path(sys.argv[2])
+repo_root = Path(sys.argv[3])
+config = parse_config_file(Path(sys.argv[4]))
 views = rt.get("views") or rt.get("routes") or []
 for v in views:
     slug = v.get("design_ref") or v.get("design_slug") or v.get("slug")
     if not slug:
         continue
-    png = baseline_dir / f"{slug}.default.png"
-    if not png.exists():
-        legacy = baseline_dir / f"{slug}.png"
-        if not legacy.exists():
-            continue
-        png = legacy
+    png = first_screenshot(resolve_design_assets(slug, repo_root=repo_root, phase_dir=phase_dir, config=config))
+    if not png:
+        continue
     label = v.get("label") or v.get("path") or v.get("url") or slug
     url = v.get("url") or v.get("path") or "/"
     print(f"{slug}\t{url}\t{png}\t{label}")

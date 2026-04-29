@@ -29,8 +29,8 @@ What this validator checks:
   1. Read PLAN*.md for tasks with `<design-ref>...</design-ref>` tags.
 
   2. For each design-ref slug, verify:
-     - Referenced screenshot exists in .planning/design-normalized/
-       screenshots/{slug}.{state}.png OR .vg/design-normalized/...
+     - Referenced screenshot exists in phase-local design/, transitional
+       phase-local designs/, shared design-system, or legacy design-normalized.
      - Structural HTML/JSON ref exists in
        .planning/design-normalized/refs/{slug}.structural.{html,json,xml}
      - Interactions ref exists if task involves interactive behavior
@@ -65,6 +65,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import Evidence, Output, timer, emit_and_exit, find_phase_dir  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from design_ref_resolver import (  # noqa: E402
+    extract_design_ref_entries,
+    resolve_design_assets,
+)
 
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
 
@@ -78,44 +83,21 @@ TASK_HEADER_RE = re.compile(
 )
 
 
-def _design_root() -> list[Path]:
-    """Return possible design-normalized roots."""
-    return [
-        REPO_ROOT / ".planning" / "design-normalized",
-        REPO_ROOT / ".vg" / "design-normalized",
-    ]
-
-
-def _resolve_asset(slug: str, kind: str) -> Path | None:
+def _resolve_asset(slug: str, kind: str, phase_dir: Path) -> Path | None:
     """Look up asset by slug + kind ('screenshot' | 'structural' | 'interactions').
 
     Conventional paths:
-      screenshot:  {root}/screenshots/{slug}*.png  (any state suffix)
-      structural:  {root}/refs/{slug}.structural.{html,json,xml}
-      interactions: {root}/refs/{slug}.interactions.md
+      Tier 1: ${PHASE_DIR}/design/... or transitional ${PHASE_DIR}/designs/...
+      Tier 2: .vg/design-system/...
+      Tier 3: legacy .vg/.planning/design-normalized/...
     """
-    for root in _design_root():
-        if not root.exists():
-            continue
-        if kind == "screenshot":
-            shots = root / "screenshots"
-            if shots.exists():
-                # Match {slug}.png or {slug}.{state}.png
-                for f in shots.glob(f"{slug}*.png"):
-                    return f
-        elif kind == "structural":
-            refs = root / "refs"
-            if refs.exists():
-                for ext in (".structural.html", ".structural.json", ".structural.xml"):
-                    cand = refs / f"{slug}{ext}"
-                    if cand.exists():
-                        return cand
-        elif kind == "interactions":
-            refs = root / "refs"
-            if refs.exists():
-                cand = refs / f"{slug}.interactions.md"
-                if cand.exists():
-                    return cand
+    assets = resolve_design_assets(slug, repo_root=REPO_ROOT, phase_dir=phase_dir)
+    if kind == "screenshot" and assets.screenshots:
+        return assets.screenshots[0]
+    if kind == "structural":
+        return assets.structural
+    if kind == "interactions":
+        return assets.interactions
     return None
 
 
@@ -126,7 +108,11 @@ def _extract_design_refs(plan_text: str) -> list[dict]:
     for i, m in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(plan_text)
         block = plan_text[m.start():end]
-        slugs = [s.strip() for s in DESIGN_REF_RE.findall(block) if s.strip()]
+        slugs = [
+            entry.value
+            for entry in extract_design_ref_entries(block)
+            if entry.kind == "slug"
+        ]
         if slugs:
             results.append({
                 "task_id": m.group(1),
@@ -208,8 +194,8 @@ def main() -> None:
             task_id = ref_record["task_id"]
             for slug in ref_record["slugs"]:
                 # Check 1: at least screenshot OR structural exists
-                has_screenshot = _resolve_asset(slug, "screenshot")
-                has_structural = _resolve_asset(slug, "structural")
+                has_screenshot = _resolve_asset(slug, "screenshot", phase_dir)
+                has_structural = _resolve_asset(slug, "structural", phase_dir)
                 if not has_screenshot and not has_structural:
                     broken_refs.append({
                         "task": task_id,
@@ -238,7 +224,7 @@ def main() -> None:
                 type="design_ref_asset_missing",
                 message=f"{len(broken_refs)} broken <design-ref> link(s) — referenced asset doesn't exist on disk",
                 actual=sample,
-                expected="Each <design-ref>slug</design-ref> tag in PLAN must point to existing screenshot OR structural asset under .planning/design-normalized/ or .vg/design-normalized/",
+                expected="Each <design-ref>slug</design-ref> tag in PLAN must point to an existing screenshot OR structural asset through the 2-tier design resolver",
                 fix_hint=(
                     "Either (a) run /vg:design-extract to normalize raw design "
                     "assets into screenshots/refs, OR (b) remove the broken "

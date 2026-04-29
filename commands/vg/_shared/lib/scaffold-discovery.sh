@@ -6,7 +6,7 @@
 #   - /vg:blueprint D-12 step 0_design_discovery (hard gate)
 #   - /vg:design-scaffold step 2_check_existing_assets
 
-# scaffold_detect_fe_work — returns 0 if PLAN has FE files, 1 otherwise
+# scaffold_detect_fe_work — returns 0 if phase artifacts indicate FE/UI work
 # Args:
 #   $1 — phase dir (defaults to $PHASE_DIR)
 scaffold_detect_fe_work() {
@@ -14,10 +14,17 @@ scaffold_detect_fe_work() {
   [ -z "$phase_dir" ] && return 1
   local plan_files
   plan_files=$(find "$phase_dir" -maxdepth 1 -name "*PLAN*.md" 2>/dev/null)
-  [ -z "$plan_files" ] && return 1
 
   # Match FE patterns in any PLAN file
-  if grep -lE "(apps/(admin|merchant|vendor|web)/|packages/ui/src/(components|theme)/|\.(tsx|jsx|vue|svelte))" $plan_files >/dev/null 2>&1; then
+  if [ -n "$plan_files" ] && grep -lE "(apps/(admin|merchant|vendor|web)/|packages/ui/src/(components|theme)/|\.(tsx|jsx|vue|svelte))" $plan_files >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Blueprint runs before PLAN exists. Fall back to scope/context artifacts so
+  # UI phases cannot skip design discovery just because planning has not run.
+  local phase_docs
+  phase_docs=$(find "$phase_dir" -maxdepth 1 \( -name "CONTEXT.md" -o -name "SCOPE.md" -o -name "SPECS.md" -o -name "SPEC.md" -o -name "ROADMAP.md" \) 2>/dev/null)
+  if [ -n "$phase_docs" ] && grep -lEi "(UI Components?|frontend|front-end|web app|screen|view|dashboard|modal|wizard|sidebar|topbar|app shell|giao diện)" $phase_docs >/dev/null 2>&1; then
     return 0
   fi
   return 1
@@ -70,5 +77,8 @@ scaffold_should_block_blueprint() {
   scaffold_detect_fe_work "$phase_dir" || return 1
   local mockup_count
   mockup_count=$(scaffold_count_existing_mockups "$assets_dir")
-  [ "$mockup_count" = "0" ]
+  local phase_count phase_raw_count
+  phase_count=$(scaffold_count_existing_mockups "${phase_dir}/design")
+  phase_raw_count=$(scaffold_count_existing_mockups "${phase_dir}/designs")
+  [ "$((mockup_count + phase_count + phase_raw_count))" = "0" ]
 }

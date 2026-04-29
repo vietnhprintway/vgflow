@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.31.0 (2026-04-29) - design-grounded blueprint/build hard gate (#45)
+
+User reported a serious design/build pipeline bug: UI phases could reach build
+without blueprint first ensuring that real mockups existed, were copied into the
+phase design directory, and were normalized into design-ref slugs. Build also
+had multiple design lookup paths, so a task could reference a design that one
+stage accepted but another stage could not resolve.
+
+### Closes #45
+
+- `/vg:blueprint` now owns UI design setup end-to-end. Before planning, it
+  detects UI phases from phase artifacts, imports existing mockups from
+  `design_assets.paths` and common mockup directories into phase-local
+  `design/`, auto-runs `/vg:design-scaffold --tool=pencil-mcp` when no mockups
+  exist, then auto-runs `/vg:design-extract --auto` so PLAN generation can use
+  real `<design-ref>` slugs.
+- `/vg:build` now blocks before executor spawn when any `<design-ref>` slug is
+  missing. The gate uses the same resolver as pre-executor checks and visual
+  validators, covering phase `design/`, transitional `designs/`, shared design
+  system assets, and legacy fallback roots consistently.
+- Added `scripts/blueprint-design-preflight.py`, `scripts/design-ref-check.py`,
+  and `scripts/lib/design_ref_resolver.py` as the shared Python design
+  resolution layer.
+- `/vg:review`, `pre-executor-check.py`, and design/vision validators now share
+  that resolver instead of duplicating path assumptions.
+- `/vg:design-scaffold` writes to phase-local `design/`; `/vg:design-extract`
+  and shared shell helpers retain `designs/` as a transitional read fallback.
+- Codex skill mirrors regenerated for blueprint/build/review/design scaffold and
+  extract so release tarballs do not ship stale command mirrors.
+
+---
+
 ## v2.30.0 (2026-04-29) — design path 2-tier layout + migration script
 
 User reported design assets landing in project-level `.vg/design-normalized/` regardless of which phase generated them. Root cause: `design-extract.md` had a single hardcoded output dir from `vg.config.md:design_assets.output_dir`; no per-phase scoping.

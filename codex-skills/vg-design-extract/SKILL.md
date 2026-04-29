@@ -156,6 +156,10 @@ Normalize any design format into AI-consumable visual + structural refs.
   `${config.design_assets.shared_dir}` (default `.vg/design-system/`).
   For brand foundations / design system / cross-phase components.
 
+Compatibility: consumers also read legacy raw scaffold PNGs from
+`${PHASE_DIR}/designs/` as a fallback, but new scaffold/extract writes use
+`${PHASE_DIR}/design/` so build and review resolve the same phase-local root.
+
 Layout under either tier:
   screenshots/{slug}.{state}.png      ← for Claude vision injection
   refs/{slug}.structural.{html|json|xml}  ← DOM/tree truth
@@ -164,8 +168,9 @@ Layout under either tier:
 
 Resolution order at consume time (blueprint/build/accept):
   1. `${PHASE_DIR}/design/...`        (Tier 1 — phase-scoped)
-  2. `${config.design_assets.shared_dir}/...`  (Tier 2 — shared)
-  3. `${config.design_assets.output_dir}/...`  (Tier 3 — legacy compat,
+  2. `${PHASE_DIR}/designs/...`       (Tier 1b — raw scaffold fallback)
+  3. `${config.design_assets.shared_dir}/...`  (Tier 2 — shared)
+  4. `${config.design_assets.output_dir}/...`  (Tier 3 — legacy compat,
                                                 soft-deprecated for 2 releases)
 </objective>
 

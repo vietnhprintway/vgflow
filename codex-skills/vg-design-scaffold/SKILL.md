@@ -1,8 +1,8 @@
 ---
 name: "vg-design-scaffold"
-description: "Scaffold UI mockups for greenfield projects — multi-tool selector (Pencil MCP / PenBoard MCP / AI HTML / Claude design / Stitch / v0 / Figma / manual). Output drops into design_assets.paths/ for /vg:design-extract."
+description: "Scaffold UI mockups for greenfield projects — multi-tool selector (Pencil MCP / PenBoard MCP / AI HTML / Claude design / Stitch / v0 / Figma / manual). Output drops into the phase-local design directory for /vg:design-extract."
 metadata:
-  short-description: "Scaffold UI mockups for greenfield projects — multi-tool selector (Pencil MCP / PenBoard MCP / AI HTML / Claude design / Stitch / v0 / Figma / manual). Output drops into design_assets.paths/ for /vg:design-extract."
+  short-description: "Scaffold UI mockups for greenfield projects — multi-tool selector (Pencil MCP / PenBoard MCP / AI HTML / Claude design / Stitch / v0 / Figma / manual). Output drops into the phase-local design directory for /vg:design-extract."
 ---
 
 <codex_skill_adapter>
@@ -140,7 +140,7 @@ Invoke this skill as `$vg-design-scaffold`. Treat all user text after the skill 
 <rules>
 1. **Greenfield on-ramp** — closes the upstream gap exposed by Phase 19. Without scaffold, projects with zero mockups bypass every L1-L6 gate via Form B.
 2. **Tool selector** — user-driven via AskUserQuestion or `--tool=<name>` flag. Default recommendation: `pencil-mcp` (free + automated + binary output ideal for downstream gates).
-3. **Files converge** — every tool produces files at `${design_assets.paths[0]}/<slug>.{ext}` so existing `/vg:design-extract` consumes via standard handlers.
+3. **Files converge** — every tool produces files at `$(vg_resolve_design_dir "$PHASE_DIR" phase)/<slug>.{ext}` so `/vg:design-extract` and `/vg:build` resolve the same phase-local assets.
 4. **Bulk by default** — multi-page generation in one call; `--interactive` flag opts into per-page review pause.
 5. **Auto-regen on DESIGN.md change** — scaffold caches by DESIGN.md SHA256; mockups regenerated when tokens drift.
 6. **Idempotent** — re-running with same args + same DESIGN.md = no-op. `--refresh` forces re-scaffold.
@@ -149,7 +149,7 @@ Invoke this skill as `$vg-design-scaffold`. Treat all user text after the skill 
 
 <objective>
 Generate UI mockup files for every page in ROADMAP.md so `/vg:design-extract` has assets to normalize. Output:
-  ${design_assets.paths[0]}/<slug>.{pen|html|png|fig}    ← per tool
+  ${PHASE_DIR}/design/<slug>.{pen|html|png|fig}           ← per tool
   ${PHASE_DIR}/.scaffold-evidence/{slug}.json            ← per-page provenance (tool, hash, generated_at)
 </objective>
 
@@ -163,6 +163,7 @@ Generate UI mockup files for every page in ROADMAP.md so `/vg:design-extract` ha
 
 ```bash
 source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/design-system.sh" 2>/dev/null || true
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/design-path-resolver.sh" 2>/dev/null || true
 source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/scaffold-discovery.sh" 2>/dev/null || true
 ```
 
@@ -170,8 +171,11 @@ source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/scaffold-discovery.sh" 2>/d
 ## Step 0: Validate prerequisites
 
 ```bash
-DESIGN_ASSETS_DIR=$(vg_config_get design_assets.paths "" | head -1)
-DESIGN_ASSETS_DIR="${DESIGN_ASSETS_DIR:-designs}"
+if type -t vg_resolve_design_dir >/dev/null 2>&1; then
+  DESIGN_ASSETS_DIR=$(vg_resolve_design_dir "$PHASE_DIR" phase)
+else
+  DESIGN_ASSETS_DIR="${PHASE_DIR}/design"
+fi
 DESIGN_MD_PATH="${PLANNING_DIR}/design/DESIGN.md"
 
 # Need at least one of: ROADMAP page list (preferred) OR current PHASE PLAN
@@ -329,7 +333,7 @@ Write per-page evidence:
 {
   "slug": "home-dashboard",
   "tool": "pencil-mcp",
-  "file": "designs/home-dashboard.pen",
+  "file": "${PHASE_DIR}/design/home-dashboard.pen",
   "design_md_sha256": "<sha256 of DESIGN.md at scaffold time>",
   "generated_at": "2026-04-28T12:34:56Z",
   "interactive_mode": false

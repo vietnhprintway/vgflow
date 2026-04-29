@@ -46,6 +46,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from design_ref_resolver import first_screenshot, resolve_design_assets  # noqa: E402
+
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$", re.IGNORECASE)
 
 
@@ -83,16 +86,22 @@ def main() -> int:
     args = ap.parse_args()
 
     phase_dir = Path(args.phase_dir)
+    repo_root = Path.cwd().resolve()
     design_dir = Path(args.design_dir)
     if not design_dir.is_absolute():
-        design_dir = (Path.cwd() / design_dir).resolve()
+        design_dir = (repo_root / design_dir).resolve()
 
     sentinel = phase_dir / ".read-evidence" / f"task-{args.task_num}.json"
-    expected_png = design_dir / "screenshots" / f"{args.slug}.default.png"
-    if not expected_png.exists():
-        legacy = design_dir / "screenshots" / f"{args.slug}.png"
-        if legacy.exists():
-            expected_png = legacy
+    expected_png = first_screenshot(
+        resolve_design_assets(
+            args.slug,
+            repo_root=repo_root,
+            phase_dir=phase_dir,
+            explicit_design_dir=design_dir,
+        )
+    )
+    if expected_png is None:
+        expected_png = design_dir / "screenshots" / f"{args.slug}.default.png"
 
     result: dict = {
         "phase": str(phase_dir.name),

@@ -709,83 +709,59 @@ Read `${PHASE_DIR}/API-CONTRACTS.md`. Per plan task, extract only endpoint secti
 DESIGN_OUTPUT_DIR=$(vg_config_get design_assets.output_dir "${PLANNING_DIR}/design-normalized")  # OHOK-9 round-4
 DESIGN_MANIFEST="${DESIGN_OUTPUT_DIR}/manifest.json"
 
-# If any task has <design-ref>, classify each as SLUG vs DESCRIPTIVE:
-#   - SLUG: kebab-case filename-like (e.g., "dsp-partners-list", "deal_wizard_step2")
-#     → must resolve in ${DESIGN_OUTPUT_DIR}/refs/${slug}.* + screenshots/${slug}.*
-#     → hard gate (missing = BLOCK, executor can't build without asset)
-#   - DESCRIPTIVE: contains spaces, uppercase, dots, or phrases like "pattern"/"similar to"
-#     (e.g., "Phase 7.13 AdvCampaignWizard pattern")
-#     → NOT a slug — this is code-pattern guidance, not a required asset
-#     → injected into executor prompt as narrative hint, no asset check
-#
-# Rationale: Phase 10 PLAN had <design-ref>Phase 7.13 AdvCampaignWizard pattern</design-ref>
-# which was descriptive guidance ("reuse the pattern from existing code") — the prior
-# hard gate treated it as a slug and BLOCK'd build, false-positive.
-if grep -l "<design-ref>" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
-  MISSING_DESIGN=""
-  DESCRIPTIVE_REFS=""
-  SLUG_REFS=""
+# v2.30+ design resolver gate. This is the active path: build uses the same
+# resolver as pre-executor-check.py and L3/L5/L6 validators, so phase-local
+# `design/`, transitional `designs/`, shared, and legacy roots resolve
+# consistently before any executor sees a UI task.
+if grep -l "<design-ref" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
+  mkdir -p "${PHASE_DIR}/.tmp"
+  DESIGN_CHECK_JSON="${PHASE_DIR}/.tmp/design-ref-check.json"
+  PYTHONPATH="${REPO_ROOT}/.claude/scripts/lib:${REPO_ROOT}/scripts/lib:${PYTHONPATH:-}" \
+    "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/design-ref-check.py" \
+      --phase-dir "${PHASE_DIR}" \
+      --repo-root "${REPO_ROOT}" \
+      --config "${REPO_ROOT}/.claude/vg.config.md" \
+      --wave-tasks-dir "${PHASE_DIR}/.wave-tasks" \
+      --output "${DESIGN_CHECK_JSON}" >/dev/null
 
-  # Collect all design-refs, classify each
-  for plan in "${PHASE_DIR}"/PLAN*.md; do
-    # -oP extracts the inner text; sed strips the tags for clean tokens
-    while IFS= read -r ref_text; do
-      [ -z "$ref_text" ] && continue
-      # Slug heuristic: only [a-z0-9_-], no spaces/uppercase/dots, length <= 80
-      # Descriptive heuristic: anything else (spaces, uppercase, dots, phrases)
-      if [[ "$ref_text" =~ ^[a-z0-9][a-z0-9_-]{1,79}$ ]]; then
-        SLUG_REFS="${SLUG_REFS} ${ref_text}"
-      else
-        DESCRIPTIVE_REFS="${DESCRIPTIVE_REFS}|${ref_text}"
-      fi
-    done < <(grep -oP '<design-ref>[^<]+</design-ref>' "$plan" | sed 's/<[^>]*>//g')
-  done
+  SLUG_REFS=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(' '.join(d.get('slug_refs') or []))" "$DESIGN_CHECK_JSON")
+  MISSING_DESIGN=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('; '.join(f\"task-{m['task']}:{m['slug']} ({m['reason']})\" for m in d.get('missing') or []))" "$DESIGN_CHECK_JSON")
+  DESCRIPTIVE_REFS=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('|'.join(d.get('descriptive_refs') or []))" "$DESIGN_CHECK_JSON")
+  NO_ASSET_REFS=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('|'.join(d.get('no_asset_refs') or []))" "$DESIGN_CHECK_JSON")
+  DESIGN_REF_STALE_WAVE=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('wave_tasks_stale') else '0')" "$DESIGN_CHECK_JSON")
 
-  # Report classification
   if [ -n "$DESCRIPTIVE_REFS" ]; then
     echo "ℹ Descriptive design-refs (code-pattern guidance, NOT required assets):"
-    IFS='|' read -ra REFS_ARR <<< "${DESCRIPTIVE_REFS#|}"
-    for r in "${REFS_ARR[@]}"; do
-      [ -n "$r" ] && echo "    \"$r\""
-    done
-    echo "    → will be injected into executor prompt as narrative hint"
+    IFS='|' read -ra REFS_ARR <<< "$DESCRIPTIVE_REFS"
+    for r in "${REFS_ARR[@]}"; do [ -n "$r" ] && echo "    \"$r\""; done
   fi
-
-  # Only enforce manifest + asset check for SLUG-type refs
-  if [ -n "$SLUG_REFS" ]; then
-    if [ ! -f "$DESIGN_MANIFEST" ]; then
-      MISSING_DESIGN="manifest (slugs found: ${SLUG_REFS})"
-    else
-      MISSING_REFS=""
-      for slug in $SLUG_REFS; do
-        if ! ls "${DESIGN_OUTPUT_DIR}/refs/${slug}".* >/dev/null 2>&1; then
-          MISSING_REFS="${MISSING_REFS} ${slug}"
-        fi
-        if ! ls "${DESIGN_OUTPUT_DIR}/screenshots/${slug}".* >/dev/null 2>&1; then
-          MISSING_REFS="${MISSING_REFS} ${slug}(screenshot)"
-        fi
-      done
-      [ -n "$MISSING_REFS" ] && MISSING_DESIGN="refs:${MISSING_REFS}"
-    fi
+  if [ -n "$NO_ASSET_REFS" ]; then
+    echo "⚠ Explicit Form B design gaps found:"
+    IFS='|' read -ra NO_ASSET_ARR <<< "$NO_ASSET_REFS"
+    for r in "${NO_ASSET_ARR[@]}"; do [ -n "$r" ] && echo "    $r"; done
+  fi
+  if [ "$DESIGN_REF_STALE_WAVE" = "1" ]; then
+    echo "⚠ .wave-tasks design-ref signature is stale vs PLAN.md; regenerating task capsules before executor spawn."
+    rm -rf "${PHASE_DIR}/.wave-tasks"
   fi
 
   if [ -n "$MISSING_DESIGN" ]; then
-    echo "⛔ BLOCK: Tasks reference design but required assets missing: $MISSING_DESIGN"
-    echo "   Required dir: $DESIGN_OUTPUT_DIR"
-    echo "   Fix: /vg:design-extract  (blueprint should have auto-triggered this)"
+    echo "⛔ BLOCK: Tasks reference design slugs but required PNG assets are missing: $MISSING_DESIGN"
+    echo "   Resolver report: $DESIGN_CHECK_JSON"
+    echo "   Search order: PHASE_DIR/design, PHASE_DIR/designs, design_assets.shared_dir, design_assets.output_dir, .vg/.planning design-normalized"
+    echo "   Fix: /vg:design-scaffold then /vg:design-extract, or restore the missing phase-local PNG."
     echo "   Override (NOT RECOMMENDED): /vg:build {phase} --skip-design-check"
     if [[ ! "$ARGUMENTS" =~ --skip-design-check ]]; then
-      # v1.9.2 P4 — try block_resolve before hard exit
       source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
       if type -t block_resolve >/dev/null 2>&1; then
-        export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="build.design-manifest"
-        BR_GATE_CONTEXT="Tasks in PLAN reference design slugs, but referenced assets missing in ${DESIGN_OUTPUT_DIR}: ${MISSING_DESIGN}. Executor needs ground-truth UI to produce faithful code."
-        BR_EVIDENCE=$(printf '{"missing":"%s","output_dir":"%s"}' "$MISSING_DESIGN" "$DESIGN_OUTPUT_DIR")
-        BR_CANDIDATES='[{"id":"auto-extract","cmd":"echo \"Would trigger /vg:design-extract — orchestrator must call SlashCommand tool\" && exit 1","confidence":0.5,"rationale":"design-extract regenerates missing assets from configured sources"}]'
+        export VG_CURRENT_PHASE="$PHASE_NUMBER" VG_CURRENT_STEP="build.design-ref-resolve"
+        BR_GATE_CONTEXT="Tasks in PLAN reference design slugs (${SLUG_REFS}), but PNG assets did not resolve through the 2-tier resolver. Executor needs ground-truth UI pixels before it can build."
+        BR_EVIDENCE=$(printf '{"missing":"%s","report":"%s"}' "$MISSING_DESIGN" "$DESIGN_CHECK_JSON")
+        BR_CANDIDATES='[{"id":"auto-design-scaffold-extract","cmd":"echo \"Run /vg:design-scaffold then /vg:design-extract for the missing slug(s)\" && exit 1","confidence":0.7,"rationale":"scaffold/extract is the canonical way to produce phase-local PNGs before build"}]'
         BR_RESULT=$(block_resolve "build-design-missing" "$BR_GATE_CONTEXT" "$BR_EVIDENCE" "$PHASE_DIR" "$BR_CANDIDATES")
         BR_LEVEL=$(echo "$BR_RESULT" | ${PYTHON_BIN} -c "import json,sys; print(json.loads(sys.stdin.read()).get('level',''))" 2>/dev/null)
         case "$BR_LEVEL" in
-          L1) echo "✓ L1 auto-extracted — continuing" >&2 ;;
+          L1) echo "✓ L1 design assets resolved — continuing" >&2 ;;
           L2) block_resolve_l2_handoff "build-design-missing" "$BR_RESULT" "$PHASE_DIR"; exit 2 ;;
           *)  exit 1 ;;
         esac
@@ -793,18 +769,18 @@ if grep -l "<design-ref>" "${PHASE_DIR}"/PLAN*.md 2>/dev/null; then
         exit 1
       fi
     else
-      # v1.9.0 T1: rationalization guard before honoring --skip-design-check
       RATGUARD_RESULT=$(rationalization_guard_check "design-check" \
-        "Gate requires design assets present when plan tasks reference design-ref. Skipping = build without ground-truth UI." \
-        "missing_design=${MISSING_DESIGN} user_arg=--skip-design-check")
-      if ! rationalization_guard_dispatch "$RATGUARD_RESULT" "design-check" "--skip-design-check" "$PHASE_NUMBER" "build.design-manifest" "$MISSING_DESIGN"; then
+        "Gate requires concrete PNG assets for slug-form design-ref tasks. Skipping = executor builds UI without seeing the design." \
+        "missing_design=${MISSING_DESIGN} user_arg=--skip-design-check report=${DESIGN_CHECK_JSON}")
+      if ! rationalization_guard_dispatch "$RATGUARD_RESULT" "design-check" "--skip-design-check" "$PHASE_NUMBER" "build.design-ref-resolve" "$MISSING_DESIGN"; then
         exit 1
       fi
-      echo "⚠ --skip-design-check set — proceeding WITHOUT design context. Design fidelity compromised."
-      echo "skip-design-check: $(date -u +%FT%TZ) MISSING=$MISSING_DESIGN" >> "${PHASE_DIR}/build-state.log"
+      echo "⚠ --skip-design-check set — proceeding WITHOUT design pixels. Design fidelity compromised."
+      echo "skip-design-check: $(date -u +%FT%TZ) MISSING=$MISSING_DESIGN REPORT=$DESIGN_CHECK_JSON" >> "${PHASE_DIR}/build-state.log"
     fi
   fi
 fi
+
 ```
 
 ### 4c: Sibling module detection — hybrid script (graphify + filesystem + git)
