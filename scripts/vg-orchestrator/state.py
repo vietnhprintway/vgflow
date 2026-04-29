@@ -80,12 +80,11 @@ def read_active_run(session_id: str | None = None) -> dict | None:
          requested one (mid-migration safety).
       3. None.
     """
-    sid = session_id or _session_id_from_env()
+    sid = session_id or _session_id_from_env() or "unknown"
 
-    if sid:
-        run = _read_json(_active_run_path(sid))
-        if run:
-            return run
+    run = _read_json(_active_run_path(sid))
+    if run:
+        return run
 
     # Legacy fallback. Only when active-runs/ hasn't been populated yet, OR
     # the legacy snapshot belongs to the same session (or has no session_id
@@ -115,12 +114,11 @@ def clear_active_run(session_id: str | None = None) -> None:
     """Clear per-session active run + the latest-snapshot mirror if it
     belongs to that session (or session unknown — best-effort).
     """
-    sid = session_id or _session_id_from_env()
-    if sid:
-        try:
-            _active_run_path(sid).unlink()
-        except FileNotFoundError:
-            pass
+    sid = session_id or _session_id_from_env() or "unknown"
+    try:
+        _active_run_path(sid).unlink()
+    except FileNotFoundError:
+        pass
 
     legacy = _read_json(LEGACY_CURRENT_RUN)
     if legacy:

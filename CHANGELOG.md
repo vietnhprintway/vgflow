@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.31.1 (2026-04-29) - no-session active-run fallback fix
+
+v2.31.0 published successfully, but the `main` test workflow exposed an older
+v2.28 active-run regression: when `CLAUDE_SESSION_ID` was absent, `run-start`
+wrote `.vg/active-runs/unknown.json` while `run-complete` only looked for an
+explicit session id. CLI/CI runs without Claude session env therefore reported
+`No active run to complete`.
+
+### Fix
+
+- `scripts/vg-orchestrator/state.py` now consistently defaults
+  read/write/clear operations to the `unknown` active-run slot when no session
+  id is available.
+- Restores no-session CLI behavior while keeping v2.28 multi-session isolation
+  for real Claude sessions.
+- `scripts/tests/test_bypass_negative.py` now passes locally (`10 passed`),
+  restoring the CI negative-bypass suite.
+
+---
+
 ## v2.31.0 (2026-04-29) - design-grounded blueprint/build hard gate (#45)
 
 User reported a serious design/build pipeline bug: UI phases could reach build
