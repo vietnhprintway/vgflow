@@ -13,7 +13,11 @@ VGFlow là một **pipeline AI config-driven** mạnh mẽ — thiết kế chuy
 
 Zero hardcode stack — mọi giá trị derive từ `vg.config.md`. Portable 100% qua mọi project, mọi ngôn ngữ, mọi deployment (VPS / Docker / Kubernetes / serverless).
 
-**Phiên bản:** 2.32.1 · **License:** MIT
+**Phiên bản:** 2.43.1 · **License:** MIT
+
+**v2.43.1 (2026-05-01):** Roam hard gates — chống silent-skip qua `runtime_contract.must_emit_telemetry` + `.tmp` markers, prompt env/model/mode LUÔN fire (resume = pre-fill chứ không lock-in), platform detection (web / mobile-native / desktop / api-only) + tool availability check, mode `self` mới (current Claude Code session = executor qua MCP Playwright). PR #65.
+
+**v2.43.0 (2026-04-30):** `/vg:roam` exploratory CRUD-lifecycle pass + `/vg:deploy` standalone multi-env skill + `/vg:scope` step 1b prompt `preferred_env_for`. Roam là post-confirmation janitor — bắt silent state-mismatch mà `/vg:review`/`/vg:test` bỏ qua; lens-driven (table-interaction, form-lifecycle, business-coherence, v.v.). Deploy: multi-select envs với prod typed-token gate, ghi DEPLOY-STATE.json để env recommendation engine downstream tiêu thụ.
 
 ---
 
@@ -23,8 +27,10 @@ VGFlow là pipeline **chuyên sâu**, **nhiều tầng orchestration**, **tốn 
 
 - `/vg:scope` ~$0.15-0.30/phase (Opus adversarial + dimension expander)
 - `/vg:build` ~$0.50-2.00/phase (Sonnet execution waves, contract-aware)
+- `/vg:deploy` ~$0.05/run (chủ yếu bash + ssh, AI surface nhỏ) [tuỳ chọn, multi-env]
 - `/vg:review` ~$0.30-0.80/phase (Opus navigator + Haiku scanners + CrossAI)
 - `/vg:test` ~$0.20-0.50/phase (goal verification + codegen regression)
+- `/vg:roam` ~$0.10-0.40/phase (lens-driven exploratory pass — mode `self` rẻ nhất, `spawn` thêm cost CLI) [tuỳ chọn, sau test]
 
 **VGFlow shine nhất khi:**
 - Phase có **10-50+ tasks**, spans **nhiều apps** trong monorepo
@@ -41,6 +47,20 @@ VGFlow là pipeline **chuyên sâu**, **nhiều tầng orchestration**, **tốn 
 ---
 
 ## 🚀 Tại sao chọn VGFlow
+
+### Lens-driven Exploratory Pass — `/vg:roam` (v2.43.0)
+Post-test janitor bắt silent state-mismatch mà `/vg:review` + `/vg:test` bỏ qua. **20+ lens adversarial**: table-interaction (filter/sort/paginate URL state sync), form-lifecycle (Create→Read→Update→Delete round-trip với UI/network/DB coherence), business-coherence (UI claim ↔ network truth ↔ DB read-after-write), modal-state (focus trap, ESC, multi-modal stacking), IDOR/BOLA, mass-assignment, BFLA, race conditions, SSRF, JWT alg confusion, file-upload polyglot, path traversal — coverage đầy đủ STRIDE+OWASP dưới dạng lens prompt riêng. Commander phân tích raw observe-*.jsonl logs (R1-R8 deterministic rules), sinh ROAM-BUGS.md + đề xuất `.spec.ts` cho test suite. Per-brief skip khi resume — partial run không phí công cũ.
+
+### Multi-Mode Executor — `self` / `spawn` / `manual` (v2.43.1)
+Roam chạy cùng 1 brief 3 cách khác nhau tuỳ environment:
+- **`self`** — current Claude Code session CHÍNH NÓ là executor, drive Playwright MCP trực tiếp. Không subprocess, không CLI auth, không vướng Chromium permission. Login work vì model đã authed với MCP servers. Rẻ nhất + tin cậy nhất cho web platform.
+- **`spawn`** — VG subprocess `codex exec --full-auto` hoặc `gemini --yolo` per brief, parallel cap 5-slot. Dùng khi muốn model khác voicing run, hoặc cần parallelism qua nhiều model dirs (Council mode).
+- **`manual`** — VG sinh `PASTE-PROMPT.md` + INSTRUCTION-*.md per surface; user paste vào CLI tuỳ ý (Claude Code window khác, Codex desktop, Cursor, web ChatGPT). Drop JSONL về, VG aggregate.
+
+Platform detection (web / mobile-native / desktop / api-only) đọc CONTEXT.md keywords + check tool availability (Playwright MCP, Maestro, adb, codex, gemini binaries) — chỉ offer mode mà platform support được. Phase mobile-native không có Maestro+adb? Skill hard-block + đề xuất `/vg:setup-mobile`.
+
+### Multi-Env Deploy Bridge — `/vg:deploy` (v2.43.0)
+Bước tuỳ chọn standalone giữa build và review/test/roam. Multi-select envs (sandbox/staging/prod), sequential per-env loop, log file riêng cho từng env. **Cổng prod**: AskUserQuestion 3-option danger gate riêng (PROCEED / NON-PROD-ONLY / ABORT) khi interactive, HOẶC `--prod-confirm-token=DEPLOY-PROD-{phase}` cho non-interactive (token phải khớp chính xác — typo abort). Capture `previous_sha` trước khi overwrite, dùng cho `/vg:rollback` sau này. Health check retry 6× 5s trước khi mark failed. DEPLOY-STATE.json drive env recommendation downstream: env gate review/test/roam tự gợi ý "sandbox (Recommended — deployed 2 phút trước, sha abc1234)" qua `enrich-env-question.py` (gợi ý thôi — user vẫn confirm).
 
 ### Multi-tier AI Orchestration
 **Opus / Sonnet / Haiku tier routing theo độ phức tạp task.** Opus cho reasoning-heavy gates (scope adversarial, plan architect, block resolver L2). Sonnet cho execution waves + code review. Haiku cho exhaustive scan, rationalization guard, pattern probing. Right model, right price, right quality.
@@ -107,17 +127,20 @@ ATOMIC)
 
 `/vg:init` còn giữ làm soft alias backward-compat → `/vg:project --init-only`.
 
-### Tầng phase (7 bước)
+### Tầng phase (7 bước core + 2 bridge tuỳ chọn, v2.43+)
 
 ```
-/vg:specs  →  /vg:scope  →  /vg:blueprint  →  /vg:build  →  /vg:review  →  /vg:test  →  /vg:accept
-(mục tiêu,    (thảo luận     (PLAN.md +         (wave-based     (scan + fix    (verify goal   (UAT
-scope,        → CONTEXT.md   API-CONTRACTS +     parallel        loop →         + codegen     bằng người
-constraints)  với D-XX)      TEST-GOALS)         execute)        RUNTIME-MAP)   regression)   → UAT.md)
+/vg:specs  →  /vg:scope  →  /vg:blueprint  →  /vg:build  →  [/vg:deploy]  →  /vg:review  →  /vg:test  →  [/vg:roam]  →  /vg:accept
+(mục tiêu,    (thảo luận     (PLAN.md +         (wave-based     (tuỳ chọn —       (scan + fix    (verify goal   (tuỳ chọn —      (UAT
+scope,        → CONTEXT.md   API-CONTRACTS +     parallel        deploy            loop →         + codegen     lens-driven     bằng người
+constraints)  với D-XX)      TEST-GOALS)         execute)        multi-env)        RUNTIME-MAP)   regression)   CRUD pass)      → UAT.md)
 ```
 
-Shortcut chạy full pipeline: `/vg:phase {X}` chạy cả 7 bước phase với resume support.
-Advance step-by-step: `/vg:next` tự detect vị trí hiện tại + invoke command tiếp theo.
+**Core bắt buộc (7 bước):** specs → scope → blueprint → build → review → test → accept
+**Bridge tuỳ chọn (v2.43+):** `/vg:deploy` giữa build và review khi phase ship lên env remote; `/vg:roam` giữa test và accept cho phase ship-critical cần adversarial coverage.
+
+Shortcut chạy full pipeline: `/vg:phase {X}` chạy cả 7 bước core với resume support; deploy + roam invoke riêng khi cần.
+Advance step-by-step: `/vg:next` tự detect vị trí hiện tại + invoke command tiếp theo (skip deploy/roam trừ khi có flag).
 
 ---
 
@@ -175,15 +198,17 @@ bash /tmp/vgflow-install.sh --refresh .
 | `/vg:map` | Rebuild graphify knowledge graph → `codebase-map.md` |
 | `/vg:prioritize` | Rank phases theo impact + readiness |
 
-### Phase execution (7-step pipeline)
+### Phase execution (7 bước core + 2 bridge tuỳ chọn)
 | Bước | Command | Output |
 |------|---------|--------|
 | 1 | `/vg:specs {X}` | SPECS.md (goal, scope, constraints, success criteria) |
-| 2 | `/vg:scope {X}` | CONTEXT.md (enriched với decisions D-XX) + DISCUSSION-LOG.md |
+| 2 | `/vg:scope {X}` | CONTEXT.md (enriched với decisions D-XX) + DISCUSSION-LOG.md (step 1b: preset `preferred_env_for` per-phase) |
 | 3 | `/vg:blueprint {X}` | PLAN.md + API-CONTRACTS.md + TEST-GOALS.md + CrossAI review |
 | 4 | `/vg:build {X}` | Code + SUMMARY.md (wave-based parallel execution) |
-| 5 | `/vg:review {X}` | RUNTIME-MAP.json (browser discovery + fix loop) |
+| 4.5 | `/vg:deploy {X}` *(tuỳ chọn, v2.43+)* | DEPLOY-STATE.json với block `deployed.{env}` per env (sha + timestamp + health + previous_sha cho rollback). Multi-select envs, prod typed-token gate. |
+| 5 | `/vg:review {X}` | RUNTIME-MAP.json (browser discovery + fix loop). Env gate đọc DEPLOY-STATE → "Recommended sandbox 2 phút trước, sha abc1234". |
 | 6 | `/vg:test {X}` | SANDBOX-TEST.md (goal verification + codegen regression) |
+| 6.5 | `/vg:roam {X}` *(tuỳ chọn, v2.43+)* | ROAM-BUGS.md + RUN-SUMMARY.json + proposed-specs/ (lens-driven CRUD-lifecycle pass). Luôn hỏi env/model/mode (v2.43.1 hard gate). |
 | 7 | `/vg:accept {X}` | UAT.md (human acceptance) |
 
 ### Quản lý
