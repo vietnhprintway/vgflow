@@ -825,14 +825,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.probe_mode == "manual":
         return dispatch_manual(plan, phase_dir, args.mode)
 
-    # hybrid: split via vg.config hybrid_routing — defer to Task 26 wiring;
-    # for now run auto for everything (safe default).
-    sys.stderr.write(
-        "hybrid probe-mode falls back to auto until Phase 1.D vg.config wiring lands.\n"
-    )
-    results = dispatch_auto(plan, phase_dir)
-    print(f"Hybrid (auto-fallback) dispatch complete: {len(results)} workers")
-    return 0
+    # hybrid: hard-fail until v2.41 vg.config hybrid_routing wiring lands.
+    # Previous behavior silently fell back to auto, hiding the limitation
+    # from the operator. v2.40.2: refuse the run with a clear next-step
+    # message instead.
+    if args.probe_mode == "hybrid":
+        sys.stderr.write(
+            "⛔ Hybrid mode is not yet implemented in v2.40.\n"
+            "   Available modes: auto (default), manual.\n"
+            "   Hybrid will ship in v2.41 with vg.config.md hybrid_routing support.\n"
+            "   Use --probe-mode=auto or --probe-mode=manual instead.\n"
+        )
+        return 1
+
+    sys.stderr.write(f"unknown probe-mode: {args.probe_mode!r}\n")
+    return 2
 
 
 if __name__ == "__main__":

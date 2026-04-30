@@ -1,4 +1,4 @@
-"""Hybrid-mode E2E (Task 30, v2.40.0).
+"""Hybrid-mode E2E (Task 30, v2.40.0 + v2.40.2 hard-fail).
 
 Hybrid contract per design doc:
   - lenses listed in vg.config recursive_probe.hybrid_routing.auto_lenses →
@@ -6,14 +6,14 @@ Hybrid contract per design doc:
   - lenses in hybrid_routing.manual_lenses → render prompt file (manual)
   - both groups merge in goal back-flow
 
-State of the implementation as of v2.40:
-  spawn_recursive_probe.py main() detects --probe-mode=hybrid but currently
-  warns "hybrid probe-mode falls back to auto until Phase 1.D vg.config
-  wiring lands" and runs the auto dispatcher for everything. The fallback
-  path is what we lock in here so any regression to it surfaces immediately,
-  and the "auto vs manual split" assertion is pytest.skip'd until v2.41.
+State of the implementation as of v2.40.2:
+  spawn_recursive_probe.py main() detects --probe-mode=hybrid and HARD-FAILS
+  with exit 1 + a clear "ship in v2.41" message. The pre-v2.40.2 silent
+  auto-fallback was hiding the limitation. Tests below lock in the new
+  fail-loud contract; the auto/manual split assertions remain pytest.skip'd
+  until v2.41.
 
-We exercise this with --dry-run so no real Gemini fires.
+We exercise dry-run paths with --dry-run so no real Gemini fires.
 """
 from __future__ import annotations
 
@@ -100,17 +100,16 @@ def test_hybrid_routing_config_disjoint() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: hybrid currently falls back to auto — locks the documented behavior
+# Test 3: hybrid hard-fails with a clear v2.41-deferred message (v2.40.2)
 # ---------------------------------------------------------------------------
-def test_hybrid_falls_back_to_auto_with_warning(tmp_path: Path) -> None:
-    """Until v2.41 hybrid wiring lands, hybrid mode emits the auto-fallback
-    warning to stderr. This test locks in that contract; remove it when the
-    real router replaces the fallback.
+def test_hybrid_mode_hard_fails(tmp_path: Path) -> None:
+    """v2.40.2 — hybrid is no longer silently routed to auto. Real run with
+    --probe-mode=hybrid must exit 1 with a message naming v2.41 as the
+    landing release.
 
-    We patch BOTH _classify_phase (to short-circuit the in-line subprocess
-    call to identify_interesting_clickables.py) AND subprocess.run on the
-    module's own subprocess reference (used by spawn_one_worker for the
-    Gemini call).
+    We patch _classify_phase so the eligibility + plan-build short-circuits
+    without invoking identify_interesting_clickables.py. subprocess.run is
+    patched defensively to ensure no Gemini binary is fired even on regress.
     """
     phase = _copy_fixture(tmp_path)
     import importlib.util
@@ -123,7 +122,6 @@ def test_hybrid_falls_back_to_auto_with_warning(tmp_path: Path) -> None:
         stdout = ""
         stderr = ""
 
-    # Synthetic classification — one mutation_button so build_plan returns ≥1 entry.
     fake_classification = [{
         "element_class": "mutation_button",
         "selector": "button#x",
@@ -135,24 +133,30 @@ def test_hybrid_falls_back_to_auto_with_warning(tmp_path: Path) -> None:
     import io
     import contextlib
     captured_err = io.StringIO()
+    captured_out = io.StringIO()
+    rc: int | None = None
     with patch.object(mod, "_classify_phase", return_value=fake_classification), \
          patch.object(mod.subprocess, "run", return_value=_FakeCompleted()):
         with contextlib.redirect_stderr(captured_err), \
-             contextlib.redirect_stdout(io.StringIO()):
+             contextlib.redirect_stdout(captured_out):
             try:
-                mod.main([
+                rc = mod.main([
                     "--phase-dir", str(phase),
                     "--mode", "light",
                     "--probe-mode", "hybrid",
                     "--non-interactive",
                     "--target-env", "sandbox",
                 ])
-            except SystemExit:
-                pass
+            except SystemExit as exc:
+                rc = int(exc.code) if exc.code is not None else 0
 
     err = captured_err.getvalue()
-    assert "hybrid probe-mode falls back to auto" in err, (
-        f"expected fallback warning, stderr was: {err}"
+    assert rc == 1, f"expected exit 1, got {rc}; stderr={err}"
+    assert "Hybrid mode is not yet implemented" in err, (
+        f"expected hard-fail message, stderr was: {err}"
+    )
+    assert "v2.41" in err, (
+        f"hard-fail message must point to v2.41 landing release, stderr was: {err}"
     )
 
 

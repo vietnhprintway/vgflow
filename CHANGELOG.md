@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.40.2 — Manual mode per-tool subdirs + minor fixes
+
+### Fixed (UX)
+- Manual mode now generates per-tool prompt subdirs (`recursive-prompts/{codex,gemini}/`) — user picks which CLI to paste into without conflicts
+- Per-tool output subdirs (`runs/{codex,gemini}/`) — artifacts isolated, no overwrite when running both tools on same phase
+- Per-probe paste file shortened ~15 lines (refs lens file by path instead of inlining full text) — easier copy-paste UX
+- Tool-specific token env: `GEMINI_PROBE_TOKEN` for gemini, `CODEX_PROBE_TOKEN` for codex
+
+### Fixed (correctness)
+- Hybrid mode now hard-fails with clear v2.41 deferred message (was silently falling back to auto, hiding limitation from user)
+
+### Fixed (docs)
+- Plan docs updated 14→16 lenses (cosmetic drift from Task 17 reality check)
+
+### Added flags
+- `scripts/generate_recursive_prompts.py --tools="gemini,codex"` (default both, single tool OK)
+- `scripts/verify_manual_run_artifacts.py --tool={gemini,codex,both}` (default both)
+
 ## v2.40.1 — Interactive target_env prompt
 
 ### Added

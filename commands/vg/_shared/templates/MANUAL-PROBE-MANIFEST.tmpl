@@ -1,17 +1,18 @@
-# Manual Probe Session — {{phase_name}}
+# Manual Probe Session — {{tool_label}} CLI ({{phase_name}})
 
-You are pasting this into an interactive LLM CLI session (Gemini CLI / Codex CLI / Claude Code) with playwright MCP available.
+## Setup
+1. Set env: `export {{tool_token_env}}="<your-test-account-token>"`
+2. {{cli_open_instruction}}
+3. For each probe below, paste content of corresponding `lens-*.md` file
 
-## Step 1: Verify MCP availability
-Run `mcp list`. Expect at least 1 playwright MCP server.
-
-## Step 2: For each probe below, paste-execute in order
+## Probes ({{probe_count}} total)
 
 {{probe_list}}
 
-## Step 3: After all probes complete
+## After all probes complete
 
-Run `python scripts/verify_manual_run_artifacts.py --phase-dir {{phase_dir}}`
-This validates all {{probe_count}} expected outputs exist and are well-formed.
+Run: `python scripts/verify_manual_run_artifacts.py --phase-dir {{phase_dir}} --tool {{tool}}`
+
+This validates all expected outputs exist and are well-formed JSON.
 
 ## Minimum required (for {{mode}} mode): {{min_required}} probes
