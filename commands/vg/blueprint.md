@@ -1,7 +1,7 @@
 ---
 name: vg:blueprint
 description: Plan + API contracts + verify + CrossAI review — 4 sub-steps before build
-argument-hint: "<phase> [--skip-research] [--gaps] [--reviews] [--text] [--crossai-only] [--skip-crossai] [--from=<substep>] [--override-reason=<text>] [--allow-missing-persistence] [--allow-missing-org] [--allow-crossai-inconclusive] [--skip-crud-surface-contract] [--skip-codex-test-goal-lane] [--apply-amendments] [--skip-amendment-check]"
+argument-hint: "<phase> [--skip-research] [--gaps] [--reviews] [--text] [--crossai-only] [--skip-crossai] [--from=<substep>] [--override-reason=<text>] [--allow-missing-persistence] [--allow-missing-org] [--allow-crossai-inconclusive] [--skip-crud-surface-contract] [--skip-codex-test-goal-lane] [--apply-amendments] [--skip-amendment-check] [--allow-shared-mockup-reuse] [--skip-design-discovery]"
 allowed-tools:
   - Read
   - Write
@@ -147,18 +147,26 @@ elif [[ "$ARGUMENTS" =~ --skip-design-discovery ]]; then
 else
   mkdir -p "${PHASE_DIR}/.tmp"
   BLUEPRINT_DESIGN_PREFLIGHT_JSON="${PHASE_DIR}/.tmp/blueprint-design-preflight.json"
+  # v2.42.3 — forward --allow-shared-mockup-reuse from blueprint args.
+  # Use this when phase legitimately reuses unchanged Phase 1 slugs
+  # (e.g., login form unchanged across milestones); strict default forces
+  # per-phase mockups otherwise (closes silent-pass gap on UI phases).
+  PREFLIGHT_EXTRA=()
+  [[ "$ARGUMENTS" =~ --allow-shared-mockup-reuse ]] && PREFLIGHT_EXTRA+=( --allow-shared-mockup-reuse )
   "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
     --phase-dir "${PHASE_DIR}" \
     --repo-root "${REPO_ROOT}" \
     --config "${REPO_ROOT}/.claude/vg.config.md" \
     --apply \
-    --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" >/dev/null
+    --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" \
+    "${PREFLIGHT_EXTRA[@]}" >/dev/null
 
   HAS_UI=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('has_ui') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
   IMPORTED_COUNT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('imported_count',0))" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
   NEEDS_SCAFFOLD=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_scaffold') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
   NEEDS_EXTRACT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_extract') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
   PHASE_DESIGN_DIR=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print(d.get('phase_design_dir',''))" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
+  SHARED_MANIFEST_EXISTS=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('shared_or_legacy_manifest_exists') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
 
   if [ "$HAS_UI" = "1" ]; then
     echo "▸ Blueprint design preflight: UI phase detected. Report: $BLUEPRINT_DESIGN_PREFLIGHT_JSON"
@@ -167,6 +175,12 @@ else
     fi
 
     if [ "$NEEDS_SCAFFOLD" = "1" ]; then
+      if [ "$SHARED_MANIFEST_EXISTS" = "1" ]; then
+        echo "ℹ Note (v2.42.3): shared/legacy design manifest exists, but this phase has 0 per-phase mockups."
+        echo "   Strict policy: each UI phase needs its own mockups for new surfaces."
+        echo "   If this phase legitimately reuses Phase 1 slugs unchanged (e.g., login form),"
+        echo "   re-run with: /vg:blueprint <phase> --allow-shared-mockup-reuse"
+      fi
       echo "▸ No design mockups found for UI phase — auto-running /vg:design-scaffold --tool=pencil-mcp"
       SlashCommand: /vg:design-scaffold --tool=pencil-mcp
       "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
@@ -174,7 +188,8 @@ else
         --repo-root "${REPO_ROOT}" \
         --config "${REPO_ROOT}/.claude/vg.config.md" \
         --apply \
-        --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" >/dev/null
+        --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" \
+        "${PREFLIGHT_EXTRA[@]}" >/dev/null
       NEEDS_SCAFFOLD=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_scaffold') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
       NEEDS_EXTRACT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_extract') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
       [ "$NEEDS_SCAFFOLD" = "1" ] && { echo "⛔ /vg:design-scaffold did not produce phase design assets. See $BLUEPRINT_DESIGN_PREFLIGHT_JSON"; exit 1; }
