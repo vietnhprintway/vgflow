@@ -13,7 +13,11 @@ VGFlow là một **config-driven AI development pipeline** mạnh mẽ — đư�
 
 Zero hardcoded stack — mọi giá trị đều derive từ `vg.config.md`. Portable 100% qua mọi project, mọi ngôn ngữ, mọi deployment model (VPS / Docker / Kubernetes / serverless).
 
-**Version:** 2.41.0 · **License:** MIT
+**Version:** 2.43.1 · **License:** MIT
+
+**v2.43.1 (2026-05-01):** Roam hard gates — silent-skip enforcement via `runtime_contract.must_emit_telemetry` + `.tmp` markers, env/model/mode prompt always-fires (resume = pre-fill not lock-in), platform detection (web / mobile-native / desktop / api-only) with tool availability check, new `self` executor mode (current Claude Code session = executor via MCP Playwright). PR #65.
+
+**v2.43.0 (2026-04-30):** `/vg:roam` exploratory CRUD-lifecycle pass + `/vg:deploy` standalone multi-env skill + `/vg:scope` step 1b `preferred_env_for` prompt. Roam is post-confirmation janitor — catches silent state mismatches `/vg:review`/`/vg:test` miss; lens-driven (table-interaction, form-lifecycle, business-coherence, etc.). Deploy: multi-select envs with prod typed-token gate, writes DEPLOY-STATE.json consumed by env recommendation engine.
 
 **v2.41.0 (2026-04-30):** Backlog Closure — Tier-2 element classifiers wired (5 lenses now reachable), hybrid probe-mode actually implemented per `hybrid_routing` config, `recursion.state_hash_hit` + `recursion.mutation_budget_exhausted` telemetry, `/vg:review-batch` entry-point multi-fallback resolution. See [CHANGELOG](CHANGELOG.md#v2410).
 
@@ -25,8 +29,10 @@ VGFlow là một pipeline **chuyên sâu**, **nhiều tầng orchestration**, **
 
 - `/vg:scope` ~$0.15-0.30/phase (Opus adversarial challenger + dimension expander)
 - `/vg:build` ~$0.50-2.00/phase (Sonnet execution waves, contract-aware)
+- `/vg:deploy` ~$0.05/run (mostly bash + ssh, tiny AI surface) [optional, multi-env]
 - `/vg:review` ~$0.30-0.80/phase (Opus navigator + Haiku scanners + CrossAI)
 - `/vg:test` ~$0.20-0.50/phase (goal verification + codegen regression)
+- `/vg:roam` ~$0.10-0.40/phase (lens-driven exploratory pass — `self` mode cheapest, `spawn` adds CLI cost) [optional, post-test]
 
 **VGFlow shine nhất khi:**
 - Phase có **10-50+ tasks**, spans **multiple apps** trong monorepo
@@ -46,6 +52,20 @@ VGFlow là một pipeline **chuyên sâu**, **nhiều tầng orchestration**, **
 
 ### Multi-tier AI Orchestration
 **Opus / Sonnet / Haiku tier routing theo task complexity.** Opus cho reasoning-heavy gates (scope adversarial, plan architect, block resolver L2). Sonnet cho execution waves + code review. Haiku cho exhaustive scan, rationalization guard, pattern probing. Right model, right price, right quality.
+
+### Lens-driven Exploratory Pass — `/vg:roam` (v2.43.0)
+Post-test janitor catches silent state mismatches `/vg:review` + `/vg:test` miss. **20+ adversarial lenses**: table-interaction (filter/sort/paginate URL state sync), form-lifecycle (Create→Read→Update→Delete round-trip với UI/network/DB coherence), business-coherence (UI claim ↔ network truth ↔ DB read-after-write), modal-state (focus trap, ESC, multi-modal stacking), IDOR/BOLA, mass-assignment, BFLA, race conditions, SSRF, JWT alg confusion, file-upload polyglot, path traversal — full STRIDE+OWASP coverage as separate lens prompts. Commander analyzes raw observe-*.jsonl logs (R1-R8 deterministic rules), generates ROAM-BUGS.md + proposed `.spec.ts` files for the test suite. Per-brief skip on resume — partial runs don't waste prior work.
+
+### Multi-Mode Executor — `self` / `spawn` / `manual` (v2.43.1)
+Roam runs the same brief 3 different ways depending on environment:
+- **`self`** — current Claude Code session IS the executor, drives Playwright MCP directly. No subprocess, no CLI auth, no Chromium permission issues. Login works because the model is authed to MCP servers. Cheapest + most reliable for web platforms.
+- **`spawn`** — VG subprocess `codex exec --full-auto` or `gemini --yolo` per brief, parallel-bounded 5-slot. For when you want a different model voicing the run, or need parallelism across model dirs (Council mode).
+- **`manual`** — VG generates `PASTE-PROMPT.md` + INSTRUCTION-*.md per surface; user pastes into any CLI of choice (Claude Code window, Codex desktop, Cursor, web ChatGPT). Drop JSONL back, VG aggregates.
+
+Platform detection (web / mobile-native / desktop / api-only) reads CONTEXT.md keywords + checks tool availability (Playwright MCP, Maestro, adb, codex, gemini binaries) — only offers modes the platform supports. Mobile-native phase without Maestro+adb? Skill hard-blocks and suggests `/vg:setup-mobile`.
+
+### Multi-Env Deploy Bridge — `/vg:deploy` (v2.43.0)
+Optional standalone step between build and review/test/roam. Multi-select envs (sandbox/staging/prod), sequential per-env loop, per-env log files. **Prod gate**: separate AskUserQuestion 3-option danger gate (PROCEED / NON-PROD-ONLY / ABORT) interactively, OR `--prod-confirm-token=DEPLOY-PROD-{phase}` for non-interactive runs (token must match exactly — typo aborts). Captures `previous_sha` before overwrite for future `/vg:rollback`. Health check retries 6× 5s before marking failed. DEPLOY-STATE.json drives downstream env recommendation: review/test/roam env gate auto-suggests "sandbox (Recommended — deployed 2min ago, sha abc1234)" via `enrich-env-question.py` (suggestion-only — user always confirms).
 
 ### CrossAI N-reviewer Consensus
 Blueprint + Scope reviews không phê duyệt bằng 1 AI. Pipeline spawn song song **Claude Code + OpenAI Codex CLI + Gemini CLI** → synthesize consensus → PASS / BLOCK / escalate disagreement. Independent eyes catch blind spots mà single-AI thường miss.
@@ -151,6 +171,23 @@ Codegen tự sinh `<goal>.adversarial.<threat>.spec.ts` per threat. Validator `v
 
 `design-path-resolver.sh` abstraction layer — consumers source helper thay vì hardcode path. `/vg:accept` visual baseline resolve qua 3-tier fallback (phase → shared → legacy). Migration script phân tích PLAN.md citations để auto-classify và move existing assets với backup.
 
+### Hard-Gate Enforcement vs Silent-Skip (v2.43.1)
+**Problem:** Skill bodies say "MANDATORY FIRST ACTION — invoke AskUserQuestion" but text-only "must ask" instructions are not enforced. Dogfood incident on `/vg:roam` invocation: AI silently skipped both 0aa resume prompt and 0a env+model+mode batch, then proceeded to backfill ROAM-CONFIG.json + relocate observe-* files + spawn S01 — all without user input. Prose rules don't bind AI execution under auto mode.
+
+**Fix:** Three-layer enforcement that binds at runtime, not at "AI cẩn thận":
+1. **`runtime_contract.must_emit_telemetry`** with `required_unless_flag: --non-interactive` for `roam.resume_mode_chosen` + `roam.config_confirmed` events. Harness-level gate — Stop hook blocks run if events missing.
+2. **`.tmp/{step}-confirmed.marker`** files written ONLY by code paths that follow AskUserQuestion answer. Step 1 entry asserts markers exist + are < 30 min old + env/model/mode env vars non-empty. Bash-level gate — fails fast with explicit "HARD GATE BREACH" message and emits `roam.gate_breach` telemetry.
+3. **Legacy state detection** expanded from "ROAM-CONFIG.json exists" to also include RAW-LOG.jsonl / SURFACES.md / ROAM-BUGS.md / INSTRUCTION-*.md / observe-*.jsonl. Pre-v2.42.6 partial runs no longer silently bypass the resume prompt.
+
+**Lesson:** Soft instructions describing "must ask the user" are routinely ignored when AI sees a quicker path. The fix is enforcement at telemetry + filesystem layer — same pattern as `pre-stage commit-queue mutex` (v2.28.0) and `runtime_contract.must_touch_markers` (v2.2). If the harness can't verify it happened, assume it didn't.
+
+### Resume-Mode Footgun — Lock-In vs Pre-Fill (v2.43.1)
+**Problem:** When `/vg:roam` detects prior state, v2.42.6-9 silently loaded saved `env`/`model`/`mode` from ROAM-CONFIG.json and skipped the 0a 3-question batch. User wanted to switch env mid-stream (local → sandbox) but resume locked them in to the prior choice. Workaround was `--force` wipe — destructive and discards prior briefs.
+
+**Fix:** Step 0a now ALWAYS fires its 3-question batch regardless of resume mode. Prior config loads as `ROAM_PRIOR_ENV/MODEL/MODE` env vars used as "Recommended — prior run" pre-fill in each option. User must confirm even if they keep the same value. Mid-stream env switches become a 3-click operation, not a wipe.
+
+**Lesson:** "Resume" should mean "skip work that was done", not "lock you out of decisions you made before". Conflating the two creates a footgun. The right primitive is *pre-fill, not silent-load*.
+
 ### Bug Reporter — Byte-Safe Context (v2.28.0/v2.29.0)
 **Problem:** `bug-reporter.sh` embed `${context}` vào Python triple-quoted heredoc. Context chứa quote / newline / `$` → SyntaxError; `2>/dev/null` swallow error → GitHub issues với empty body.
 
@@ -195,17 +232,20 @@ ATOMIC)
 
 `/vg:init` is preserved as a backward-compat soft alias → `/vg:project --init-only`.
 
-### Per-phase execution (7 steps)
+### Per-phase execution (7 steps + 2 optional bridges, v2.43+)
 
 ```
-/vg:specs  →  /vg:scope  →  /vg:blueprint  →  /vg:build  →  /vg:review  →  /vg:test  →  /vg:accept
-(goal,        (discussion    (PLAN.md +        (wave-based     (scan + fix    (goal verify    (human UAT
-scope,        → CONTEXT.md   API-CONTRACTS +    parallel        loop →         + codegen       → UAT.md)
-constraints)   with D-XX)    TEST-GOALS)        execute)        RUNTIME-MAP)   regression)
+/vg:specs  →  /vg:scope  →  /vg:blueprint  →  /vg:build  →  [/vg:deploy]  →  /vg:review  →  /vg:test  →  [/vg:roam]  →  /vg:accept
+(goal,        (discussion    (PLAN.md +        (wave-based     (optional —       (scan + fix    (goal verify    (optional —      (human UAT
+scope,        → CONTEXT.md   API-CONTRACTS +    parallel        multi-env         loop →         + codegen       lens-driven       → UAT.md)
+constraints)   with D-XX)    TEST-GOALS)        execute)        deploy)           RUNTIME-MAP)   regression)     CRUD pass)
 ```
 
-Full pipeline shortcut: `/vg:phase {X}` runs all 7 per-phase steps with resume support.
-Advance step-by-step: `/vg:next` auto-detects current position and invokes the next command.
+**Required core (7 steps):** specs → scope → blueprint → build → review → test → accept
+**Optional bridges (v2.43+):** `/vg:deploy` between build and review when phase ships to a remote env; `/vg:roam` between test and accept for ship-critical phases that warrant adversarial coverage.
+
+Full pipeline shortcut: `/vg:phase {X}` runs all 7 required steps with resume support; deploy + roam invoked separately as needed.
+Advance step-by-step: `/vg:next` auto-detects current position and invokes the next command (skips deploy/roam unless flagged).
 
 ---
 
@@ -350,15 +390,17 @@ The script scans `PLAN.md <design-ref slug="...">` citations to classify each sl
 | `/vg:map` | Rebuild graphify knowledge graph → `codebase-map.md` |
 | `/vg:prioritize` | Rank phases by impact + readiness |
 
-### Phase execution (7-step pipeline)
+### Phase execution (7 required steps + 2 optional bridges)
 | Step | Command | Output |
 |------|---------|--------|
 | 1 | `/vg:specs {X}` | SPECS.md (goal, scope, constraints, success criteria) |
-| 2 | `/vg:scope {X}` | CONTEXT.md (enriched with decisions D-XX) + DISCUSSION-LOG.md |
+| 2 | `/vg:scope {X}` | CONTEXT.md (enriched with decisions D-XX) + DISCUSSION-LOG.md (step 1b: per-phase `preferred_env_for` env preset) |
 | 3 | `/vg:blueprint {X}` | PLAN.md + API-CONTRACTS.md + TEST-GOALS.md + CrossAI review |
 | 4 | `/vg:build {X}` | Code + SUMMARY.md (wave-based parallel execution) |
-| 5 | `/vg:review {X}` | RUNTIME-MAP.json (browser discovery + fix loop) |
+| 4.5 | `/vg:deploy {X}` *(optional, v2.43+)* | DEPLOY-STATE.json with `deployed.{env}` block per env (sha + timestamp + health + previous_sha for rollback). Multi-select envs, prod typed-token gate. |
+| 5 | `/vg:review {X}` | RUNTIME-MAP.json (browser discovery + fix loop). Env gate reads DEPLOY-STATE → "Recommended sandbox 2min ago, sha abc1234". |
 | 6 | `/vg:test {X}` | SANDBOX-TEST.md (goal verification + codegen regression) |
+| 6.5 | `/vg:roam {X}` *(optional, v2.43+)* | ROAM-BUGS.md + RUN-SUMMARY.json + proposed-specs/ (lens-driven CRUD-lifecycle pass). Always asks env/model/mode (v2.43.1 hard gate). |
 | 7 | `/vg:accept {X}` | UAT.md (human acceptance) |
 
 ### Management

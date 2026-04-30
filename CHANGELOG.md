@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.44.0 — verdict-aware Next + review.method axis + agents + test-id stack (PR #67)
+
+Bundles 5 reporter-internal milestones (v2.43.1 → v2.43.5) into a single minor release: 1612 insertions, 83 deletions, 18 files. Built on top of v2.43.2's i18n login fix.
+
+### Added — `/vg:review` step 0a 4th axis: **Method** (v2.43.4)
+
+3-axis prompt (env/mode/scanner) → 4-axis prompt (env/mode/scanner/**method**). Method values: `spawn` (Task tool internal) / `manual` (paste prompt) / `hybrid` (mix). Symmetry with `roam.mode` (self/spawn/manual). Smart coercion: `scanner=haiku-only` → coerce method=spawn (Haiku only available via Task tool internal).
+
+### Fixed — verdict-aware `/vg:next` routing (kills accept-on-gaps loop, v2.43.2)
+
+Pre-fix: `/vg:test` verdict=GAPS_FOUND → display always said "Next: /vg:accept" → user runs `/vg:accept` → blocked on gaps → loop. Now: case block per verdict (PASSED / GAPS_FOUND / FAILED) with 5–7 labeled options A–G. `/vg:next` exits 1 if asked to auto-route to accept while verdict is non-PASS.
+
+### Added — VG-branded planner agents (v2.43.1)
+
+- `agents/vg-planner.md` + `agents/vg-plan-checker.md` thin-shells with `install.sh` deploy logic.
+- Replaces "gsd-planner" / "gsd-plan-checker" green tag with VG-branded equivalents.
+- Both fail-loud if calling skill forgot to inject `<vg_*_rules>` block.
+
+### Added — Stable test-IDs stack (v2.43.5)
+
+- `scripts/validators/verify-test-ids-declared.py` — gate that components in PLAN.md have testid declarations.
+- `scripts/validators/verify-test-ids-injected.py` — gate that build emitted `data-testid` per declaration.
+- `scripts/validators/verify-i18n-vs-testid.py` — gate that codegen never used `getByText('English')` when an i18n-stable testid was available.
+- `scripts/retrofit-testids.py` — retrofit tool for already-built phases.
+- `templates/vg/test-ids-setup/README.md` — opt-in setup template; `vg.config.template.md` adds 42-line testid block.
+- Closes the i18n-fragility class entirely: codegen (v2.43.2 Rule 2.5) was layer 1; this is layer 2 (build-time + verify-time gates).
+
+### Updated — README.md + README.vi.md (v2.43.0/v2.43.1 parity)
+
+- Banner updated to v2.43.x line.
+- Pipeline section now shows 9 steps including `[deploy]` + `[roam]`.
+- 3 new strength sections.
+- 2 reliability stories (PrintwayV3 dogfood arc).
+- Command table refreshed.
+- Vietnamese parity in README.vi.md.
+
+### Fixed — test.md test-id rule conflict
+- Conflict resolved by combining: PR #67's template-testid + telemetry guidance + v2.43.2's Rule 2.5 (login id selectors). Both kept.
+
+### Internal
+- 234 tests pass.
+- Codex mirror regenerated.
+- `VGFLOW-VERSION` + `VERSION` synced to 2.44.0 (minor bump — additive features).
+- Credit: external dogfood from @vietnhprintway (PrintwayV3 Phase 3.4b dogfood arc — same week as PRs #57–#66).
+
 ## v2.43.2 — `/vg:test` codegen i18n fix (PR #66)
 
 ### Fixed

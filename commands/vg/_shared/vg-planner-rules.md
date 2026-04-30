@@ -138,6 +138,53 @@ When the flag is on AND the phase has `${PHASE_DIR}/VIEW-COMPONENTS.md` (produce
 
 **Migration impact:** existing PLAN.md files with one task per page DO NOT need rewrite. The flag governs new planning runs only. Validator no-ops on tasks without `<component-scope>`.
 
+### Rule 10 — stable test selectors mandate (v2.43.5 — i18n-resilient codegen)
+
+**Problem:** Playwright codegen using `getByText("Đăng nhập")` breaks the moment i18n rotates the text. Test specs become fragile across language switches and copy edits.
+
+**Solution:** every UI task creating an interactive component MUST declare a stable English `data-testid` value (or whatever `vg.config.md > test_ids.prop_name` specifies). The codegen step (/vg:test) then uses `getByTestId()` instead of text-matching.
+
+**Activation:** rule fires when `vg.config.md > test_ids.enabled: true` (default ON for web profiles). Disable via config for projects that already have alt selectors (data-cy, ID-based).
+
+**MANDATORY task XML block** for any task touching files matching:
+- React: `apps/**/src/components/**/*.tsx`, `apps/**/src/pages/**/*.tsx`, `apps/**/src/features/**/*.tsx`
+- Vue: `apps/**/src/components/**/*.vue`, `apps/**/src/views/**/*.vue`
+- Svelte: `apps/**/src/lib/**/*.svelte`
+
+```xml
+<test_ids>
+  <!-- Declare stable test selectors per element kind from
+       vg.config.md > test_ids.required_for. Values English kebab-case,
+       page-prefixed (page-element-name). Codegen + scanner consume these. -->
+  <id kind="button" value="login-submit-btn">Submit button (form-login)</id>
+  <id kind="input" value="login-email-input">Email field</id>
+  <id kind="input" value="login-password-input">Password field</id>
+  <id kind="link" value="login-forgot-link">Forgot password link</id>
+  <id kind="form" value="login-form">Login form root</id>
+</test_ids>
+```
+
+**Constraints:**
+1. Values English-only — never reference i18n keys, never include translatable strings.
+2. Format kebab-case (no camelCase, no underscores) for cross-framework consistency.
+3. `kind` matches one of `vg.config.md > test_ids.required_for` (button/link/input/select/form/table-row/modal/tab).
+4. Page-prefixed unique scope: `{page-or-feature}-{element-purpose}` (login-submit-btn, users-table-row-{id}, settings-tab-billing).
+5. For dynamic rows (table data), use template syntax: `value="users-table-row-{userId}"` — codegen substitutes at runtime.
+
+**Skip cases (no `<test_ids>` block needed):**
+- Task touches only backend files (no JSX/template)
+- Task is pure CSS / styling (no interactive elements added)
+- Task is config / migration / test-only (no production component shipped)
+- Phase profile is `cli-tool` / `library` (no UI surface)
+
+**Rationale:** locks the contract between blueprint (declares) → executor (implements) → review scanner (captures from DOM) → test codegen (uses for selectors). One source of truth. i18n changes never touch test specs because text is no longer the selector.
+
+**Build-time safety:** production build strips `data-testid` via babel/SWC plugin (configured in `vg.config.md > test_ids.build_time_strip`). Crawlers / production HTML don't see test IDs — only dev/sandbox/staging.
+
+**Validator:** `verify-test-ids-declared.py` runs at /vg:blueprint step 2c verify. For each PLAN task with file paths matching the UI globs above, asserts `<test_ids>` block exists with ≥1 `<id>` child. Override: `--allow-missing-testids="<reason>"` logs OVERRIDE-DEBT critical.
+
+**Migration impact:** existing PLAN.md files without `<test_ids>` blocks DO NOT need rewrite. Validator runs in `warn` mode for first 2 weeks (default config: `test_ids.enforce_severity: "warn"`), then auto-flips to `block` per project config.
+
 ### Wave grouping rules
 
 1. **BE before FE** — API endpoint task MUST be in earlier wave than its FE consumer

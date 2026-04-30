@@ -1835,10 +1835,34 @@ fi
 
 **Codegen rules (READY goal path):**
 1. **Credentials from env vars** — read from `process.env` (keys derived from config role names). Never hardcode emails/passwords/domains.
-2. **Selectors from goal_sequences** — use exact selectors recorded during review discovery. Prefer role-based locators (getByRole > getByText > locator). Never guess selectors.
+2. **Selectors — i18n-resilient priority order (v2.43.5)**:
+
+   Read `vg.config.md > test_ids.codegen_priority` — default order is:
+   ```
+   1: getByTestId    ← PRIMARY, stable English IDs (data-testid="login-submit-btn")
+   2: getByRole      ← FALLBACK 1, semantic + stable ([role=button][name=...])
+   3: getByLabel     ← FALLBACK 2, accessibility-aligned
+   4: getByText      ← LAST RESORT, fragile to i18n; warn in codegen output
+   ```
+
+   Codegen MUST consult RUNTIME-MAP.json for each interactive element. RUNTIME-MAP is populated by `/vg:review` Phase 2b-2 scanner — Haiku scanner captures `data-testid` attribute from DOM snapshot when present.
+
+   **Selection logic per element:**
+   - If `runtime_map.element.testid` is present → emit `page.getByTestId('${testid}')`
+   - Else if element has stable `aria-label` or `<label htmlFor>` → emit `page.getByLabel('${label}')` or `page.getByRole('${role}', { name: '${label}' })`
+   - Else if element has `role` attribute → emit `page.getByRole('${role}')`
+   - Else fall back to `page.getByText('${text}')` AND emit a warning comment in the spec:
+     ```ts
+     // ⚠ codegen-fallback: getByText fragile to i18n
+     // Add data-testid="<page>-<element>" to component → re-run /vg:review → re-codegen
+     await page.getByText('Đăng nhập').click();
+     ```
+
    **NEVER use dynamic IDs as selectors** (e.g., `data-id="site_9872"`, `#row-abc123`).
-   These break when data changes. Prefer: `getByRole('row').first()`, `getByText('site name')`,
-   or `nth(0)` index. If goal_sequence recorded a dynamic ID, the pre-codegen gate above BLOCKS execution — re-run /vg:review to re-record.
+   These break when data changes. For dynamic rows, use template testid: `getByTestId(`users-row-${userId}`)`. If goal_sequence recorded a dynamic ID without testid, the pre-codegen gate BLOCKS — re-run /vg:review to re-record after testid added. Alternative fallbacks (when testid unavailable): `getByRole('row').first()`, `getByText('site name')`, or `nth(0)` index.
+
+   **Cost of fallback** (telemetry): codegen emits `test.codegen.text_fallback` event per `getByText` fallback. /vg:telemetry surfaces high-fallback specs as candidates for testid-injection cleanup.
+
 2.5. **Login flow uses id-based selectors, NOT label regex (i18n-stable, fix Bug-6)** — Forms in i18n projects use translated labels. `getByLabel(/password/i)` works for English but FAILS for Vietnamese ("Mật khẩu"), Spanish ("Contraseña"), etc. Codegen MUST emit a project-local login helper that uses `<input id>` selectors:
 
    ```typescript
@@ -3605,7 +3629,7 @@ if [ -f "${PLANNING_DIR}/ROADMAP.md" ]; then
 fi
 ```
 
-Display:
+Display (verdict-aware Next routing — v2.43.2 fix):
 ```
 Test complete for Phase {N}.
   Deploy: {OK}
@@ -3616,7 +3640,112 @@ Test complete for Phase {N}.
   Regression: {passed}/{total} generated tests
   Security: {verdict}
   Verdict: {PASSED | GAPS_FOUND | FAILED}
-  Next: /vg:accept {phase}
+```
+
+**MANDATORY** — Print Next-block matching `$VERDICT`. Do NOT print a generic
+`Next: /vg:accept` when verdict ≠ PASSED — that was the v2.43.1 footgun
+that sent users into accept-blocks-on-gaps loops. Each verdict gets its
+own labeled options (A/B/C/...) so user picks the right path based on
+diagnosis, not by guessing.
+
+```bash
+case "${VERDICT:-UNKNOWN}" in
+  PASSED)
+    cat <<EOF
+  Next:
+    /vg:accept ${PHASE_NUMBER}    # All goals READY — proceed to human UAT
+EOF
+    ;;
+
+  GAPS_FOUND)
+    REMAINING=$(${PYTHON_BIN:-python3} -c "
+import json
+from pathlib import Path
+p = Path('${PHASE_DIR}/.verdict-computed.json')
+if p.exists():
+    d = json.loads(p.read_text(encoding='utf-8'))
+    failed = d.get('goals_remaining', [])
+    print(len(failed))
+else: print('?')
+" 2>/dev/null || echo "?")
+
+    cat <<EOF
+  Next (pick the matching path — DO NOT just run /vg:accept blindly,
+  it will register OVERRIDE-DEBT for ${REMAINING} non-critical gaps OR
+  BLOCK if any are critical):
+
+    ▸ FIRST — read REVIEW-FEEDBACK.md to know what failed and why:
+        cat ${PHASE_DIR}/REVIEW-FEEDBACK.md
+        cat ${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md
+
+    Then pick:
+
+    A) Code bugs you fixed manually:
+       /vg:test ${PHASE_NUMBER} --regression-only      # rerun without re-codegen
+
+    B) Test spec wrong (selector / wait / data setup):
+       /vg:test ${PHASE_NUMBER} --skip-deploy           # regen codegen + rerun
+
+    C) Root cause is runtime bug (review didn't catch):
+       /vg:review ${PHASE_NUMBER} --retry-failed        # targeted re-scan
+       # then: /vg:test ${PHASE_NUMBER}
+
+    D) Goal needs non-E2E verification (perf / worker / cross-system):
+       # Edit GOAL-COVERAGE-MATRIX.md → mark SKIPPED with alt-test link
+       # Then: /vg:accept ${PHASE_NUMBER}               # documented limitation
+
+    E) Goal spec unrealistic / scope drift:
+       /vg:amend ${PHASE_NUMBER}                        # loosen criteria / redesign
+
+    F) Auto-loop budget exhausted but you fixed root cause:
+       rm ${PHASE_DIR}/.fix-loop-state.json
+       /vg:test ${PHASE_NUMBER}                         # fresh 3-iteration budget
+
+    G) Accept with documented debt (only for NON-critical gaps):
+       /vg:accept ${PHASE_NUMBER}
+       # Will auto-register OVERRIDE-DEBT for each gap; re-evaluated next /vg:test
+
+    Don't do:
+      ❌ /vg:build ${PHASE_NUMBER} --gaps-only          (code already exists — review confirmed)
+      ❌ /vg:review ${PHASE_NUMBER}                     (full re-review wastes tokens — use --retry-failed)
+      ❌ Loop /vg:test ${PHASE_NUMBER} without changes  (budget won't reset; same failures will return)
+EOF
+    ;;
+
+  FAILED)
+    cat <<EOF
+  ⛔ Verdict FAILED — /vg:accept WILL BLOCK with hard-gate redirect.
+
+  Next (mandatory — pick exactly one; /vg:accept is NOT a valid path):
+
+    A) Critical assertion failure (data mismatch, auth bypass, contract drift):
+       cat ${PHASE_DIR}/REVIEW-FEEDBACK.md              # read root cause
+       # fix code → commit → re-run:
+       /vg:test ${PHASE_NUMBER} --regression-only
+
+    B) Service / infra crash (deploy ok but tests can't reach):
+       /vg:doctor                                        # health check
+       # fix infra → /vg:test ${PHASE_NUMBER}
+
+    C) Security finding blocks (Tier 0 / OWASP critical):
+       cat ${PHASE_DIR}/.security-findings.json
+       # fix → /vg:test ${PHASE_NUMBER}
+
+    D) Test framework / codegen bug (false positive):
+       /vg:bug-report                                    # surface to vietdev99/vgflow
+
+    E) Disagree with verdict (rare, justify in writing):
+       /vg:test ${PHASE_NUMBER} --override-reason "<text>" --allow-failed=G-XX
+       # Logs OVERRIDE-DEBT; re-evaluated at /vg:accept critical gate
+EOF
+    ;;
+
+  *)
+    cat <<EOF
+  Verdict UNKNOWN — read SANDBOX-TEST.md for state, then re-run /vg:test.
+EOF
+    ;;
+esac
 ```
 
 ```bash

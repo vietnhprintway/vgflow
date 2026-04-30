@@ -413,7 +413,7 @@ p.write_text(json.dumps(s, indent=2))
 <step name="0a_env_mode_gate">
 ## Step 0a — Confirm review env + mode + scanner (v2.42.1+ — HARD gate)
 
-**Background:** Pre-v2.42, review used `config.step_env.verify` (default `sandbox` for web-fullstack) silently. User had no visibility into which env / mode / scanner depth review ran in. Result: phases needed 2-3 review re-runs because first attempt didn't pin env explicitly. PIPELINE-STATE.json never recorded env+mode → no audit trail. v2.42 added a `severity: warn` prompt — AI agents skipped it (warn = soft). v2.42.1 makes this a HARD block: severity defaults to block + telemetry event required unless `--non-interactive`.
+**Background:** Pre-v2.42, review used `config.step_env.verify` silently. User had no visibility. Phases 3.3/3.4a/3.4b needed re-runs because env wasn't pinned. v2.42 added prompt with `severity: warn` — AI skipped it. v2.42.1 makes this a HARD block (severity: block default + telemetry required).
 
 **This step makes env+mode+scanner user-visible + recorded BEFORE any other work happens.**
 
@@ -428,64 +428,75 @@ p.write_text(json.dumps(s, indent=2))
 
 If ANY of the 3 axes is missing on CLI and not waived → AskUserQuestion is REQUIRED. Do NOT silently default. Do NOT run the bash block below before the AskUserQuestion call returns.
 
-**Why HARD gate (v2.42.1):** AI agents have a strong pull to silent-default in `warn` severity contracts. Block severity + telemetry-required closes the gap.
+**Why HARD gate (v2.42.1):** AI agents have a strong pull to silent-default in `warn` severity contracts. Phases 3.3/3.4a/3.4b confirmed this. Block severity + telemetry-required closes the gap.
 
 ### AskUserQuestion payload (3 questions, single batched call)
 
 ```
 questions:
-  - question: "Review environment — which environment to run review against?"
+  - question: "Review environment — chạy review trên môi trường nào? (môi trường = environment, môi trường thử nghiệm)"
     header: "Env"
     multiSelect: false
     options:
-      - label: "local — your machine (fastest)"
-        description: "Browser MCP local, local DB seed, no SSH needed. Best for fast iteration."
-      - label: "sandbox — VPS / staging-like"
-        description: "Production-like, ssh deploy. Default for ship-ready phases."
-      - label: "staging — staging server (only if configured)"
-        description: "Selecting will fail if vg.config.md has no staging entry."
-      - label: "prod — production (WARNING: read-only debug)"
-        description: "Emergency debug only. Workflow blocks mutations."
-  - question: "Review mode — which phase profile?"
+      - label: "local — máy của bạn (port 3001-3010, fastest)"
+        description: "Browser MCP local, DB seed local, không cần SSH. Tốt khi iterate nhanh."
+      - label: "sandbox — VPS Hetzner (printway.work subdomain)"
+        description: "Production-like, ssh deploy. Mặc định cho phase ship-ready."
+      - label: "staging — staging server (CHỈ nếu config có)"
+        description: "Hiện chưa cấu hình ở project này — chọn sẽ fail."
+      - label: "prod — production (CẢNH BÁO: read-only debug)"
+        description: "CHỈ dùng debug khẩn cấp. Workflow sẽ block mutations."
+  - question: "Review mode — chạy theo profile (hồ sơ phase) nào?"
     header: "Mode"
     multiSelect: false
     options:
-      - label: "full — full discovery (feature profile)"
-        description: "Phase 1 code scan + Phase 2 browser scan + fix loop. Default for new features."
-      - label: "delta — diff-aware (hotfix profile)"
-        description: "Scan only changed regions. Best for small hotfixes."
-      - label: "regression — sweep after bugfix (bugfix profile)"
+      - label: "full — discovery đầy đủ (feature profile)"
+        description: "Phase 1 code scan + Phase 2 browser scan + fix loop. Mặc định cho feature mới."
+      - label: "delta — chỉ scan vùng đã sửa (hotfix profile)"
+        description: "Diff-aware. Tốt cho hotfix nhỏ, không cần full sweep."
+      - label: "regression — sweep sau bugfix (bugfix profile)"
         description: "Re-verify parent goals + new bug fix area."
       - label: "schema-verify — round-trip migration (migration profile)"
-        description: "Up/down migration check, no UI discovery."
+        description: "Up/down migration check, không discovery UI."
       - label: "link-check — markdown links (docs profile)"
         description: "Validate links + cross-refs only. Skip UI."
-      - label: "infra-smoke — run success_criteria bash (infra profile)"
-        description: "Parse SPECS bash bullets, run each, record results."
-  - question: "Scanner — depth/CLI for code-scan + view-scan"
+      - label: "infra-smoke — chạy success_criteria bash (infra profile)"
+        description: "Parse SPECS bash bullets, run từng cái, ghi kết quả."
+  - question: "Scanner — model nào chạy code-scan + view-scan (deepscan = quét sâu)"
     header: "Scanner"
     multiSelect: false
     options:
-      - label: "haiku-only — Haiku scanner default (fastest)"
-        description: "Phase 1 + Phase 2b-2 use Haiku agents. Best ratio depth/cost. Default unless deeper sweep needed."
-      - label: "codex-supplement — Haiku + Codex CLI deepscan on key surfaces"
-        description: "After Haiku finishes, spawn Codex CLI to cross-scan key views. +cost +time, catches logic bugs Haiku misses."
+      - label: "haiku-only — Haiku scanner mặc định (nhanh nhất)"
+        description: "Phase 1 + Phase 2b-2 dùng Haiku agents qua Task tool. Best ratio depth/cost. Mặc định trừ khi cần deeper sweep. Method axis bên dưới ignored (Haiku spawn qua Task internal, không có manual mode)."
+      - label: "codex-supplement — Haiku + Codex CLI deepscan trên surfaces trọng yếu"
+        description: "Sau khi Haiku xong, spawn Codex CLI (gpt-5.5) cross-scan key views. +cost +time, bắt được logic bugs Haiku miss."
       - label: "gemini-supplement — Haiku + Gemini CLI deepscan"
-        description: "Gemini Pro cross-scan, focus on UI consistency + a11y. +cost +time."
-      - label: "council-all — Haiku + Codex + Gemini + Claude (full council)"
-        description: "Triple cross-AI review. Use for ship-critical phases (e.g., payment, auth)."
+        description: "Gemini Pro 3.1 cross-scan, focus on UI consistency + a11y. +cost +time."
+      - label: "council-all — Haiku + Codex + Gemini + Claude (full council deepscan)"
+        description: "Triple cross-AI review. CHỈ dùng khi phase ship-critical (e.g., payment, auth)."
+  - question: "Method — cách chạy scanner: spawn auto subprocess hay manual paste prompt? (chỉ áp dụng khi scanner ≠ haiku-only)"
+    header: "Method"
+    multiSelect: false
+    options:
+      - label: "spawn — VG tự subprocess CLI scanner (Recommended)"
+        description: "Hands-off, tự chạy + tự gom log. Cần CLI authenticated trên máy này (codex / gemini). Cho scanner=haiku-only thì luôn dùng Task tool internal — option này ignored."
+      - label: "manual — VG sinh prompt files cho user paste"
+        description: "Generates per-tool prompts vào `.vg/phases/{phase}/review/prompts/{codex,gemini}/` cho user paste sang CLI desktop / Cursor / web ChatGPT. User tự chạy, drop scan results vào `runs/{tool}/`, VG verify khi user signal continue."
+      - label: "hybrid — auto cho high-confidence lenses, manual cho human-judgment"
+        description: "Routing per `vg.config review.scanner.hybrid_routing`. Phù hợp khi muốn tốc độ + control selective."
 ```
 
 ### After AskUserQuestion returns
 
 **Export BEFORE running bash:**
 ```bash
-export VG_ENV="<chosen env>"          # e.g., "local"
-export VG_REVIEW_MODE="<chosen>"      # e.g., "full"
-export VG_SCANNER="<chosen scanner>"  # e.g., "haiku-only"
+export VG_ENV="<chosen env>"            # e.g., "local"
+export VG_REVIEW_MODE="<chosen>"        # e.g., "full"
+export VG_SCANNER="<chosen scanner>"    # e.g., "haiku-only"
+export VG_METHOD="<chosen method>"      # e.g., "spawn" / "manual" / "hybrid"
 ```
 
-If non-interactive path: echo chosen values to user (`Auto-pinned: env=X, mode=Y, scanner=Z`) but do NOT prompt.
+If non-interactive path: echo chosen values to user (`Auto-pinned: env=X, mode=Y, scanner=Z, method=W`) but do NOT prompt.
 
 ### Bash (resolve final values + persist + emit telemetry)
 
@@ -494,6 +505,7 @@ If non-interactive path: echo chosen values to user (`Auto-pinned: env=X, mode=Y
 : "${VG_ENV:=${CONFIG_STEP_ENV_VERIFY:-local}}"
 : "${VG_REVIEW_MODE:=${REVIEW_MODE:-full}}"
 : "${VG_SCANNER:=haiku-only}"
+: "${VG_METHOD:=spawn}"
 
 # 2. CLI flag override (still applies even if AI exported — explicit beats prompt)
 if [[ "$ARGUMENTS" =~ --target-env=([a-z]+) ]]; then VG_ENV="${BASH_REMATCH[1]}"; fi
@@ -503,8 +515,16 @@ if [[ "$ARGUMENTS" =~ --staging ]]; then VG_ENV="staging"; fi
 if [[ "$ARGUMENTS" =~ --prod ]]; then VG_ENV="prod"; fi
 if [[ "$ARGUMENTS" =~ --mode=([a-z-]+) ]]; then VG_REVIEW_MODE="${BASH_REMATCH[1]}"; fi
 if [[ "$ARGUMENTS" =~ --scanner=([a-z-]+) ]]; then VG_SCANNER="${BASH_REMATCH[1]}"; fi
+if [[ "$ARGUMENTS" =~ --method=([a-z]+) ]]; then VG_METHOD="${BASH_REMATCH[1]}"; fi
 
-export VG_ENV VG_REVIEW_MODE VG_SCANNER
+# 2b. v2.43.4 — coerce method when scanner=haiku-only (Haiku spawns via Task,
+# manual/hybrid don't apply). Echo correction so user sees what happened.
+if [ "$VG_SCANNER" = "haiku-only" ] && [ "$VG_METHOD" != "spawn" ]; then
+  echo "ℹ Method '${VG_METHOD}' không áp dụng cho scanner=haiku-only (Haiku qua Task tool internal). Coerce method=spawn."
+  VG_METHOD="spawn"
+fi
+
+export VG_ENV VG_REVIEW_MODE VG_SCANNER VG_METHOD
 
 # 3. Backward-compat: existing code reads ENV_NAME / REVIEW_MODE
 ENV_NAME="$VG_ENV"
@@ -513,15 +533,15 @@ export ENV_NAME REVIEW_MODE
 
 # 4. Validate env exists in config (warn if not configured)
 if ! grep -qE "^[[:space:]]*${VG_ENV}:" .claude/vg.config.md 2>/dev/null; then
-  echo "⚠ Env '${VG_ENV}' not present in vg.config.md — may fail at deploy/auth steps." >&2
-  echo "   Available envs: $(grep -oE '^  (local|sandbox|staging|prod):' .claude/vg.config.md | tr -d ' :' | tr '\n' ' ')" >&2
+  echo "⚠ Env '${VG_ENV}' không có trong vg.config.md — có thể fail ở deploy/auth steps." >&2
+  echo "   Available envs (môi trường khả dụng): $(grep -oE '^  (local|sandbox|staging|prod):' .claude/vg.config.md | tr -d ' :' | tr '\n' ' ')" >&2
 fi
 
 # 5. Validate mode is recognized
 case "$VG_REVIEW_MODE" in
   full|delta|regression|schema-verify|link-check|infra-smoke) ;;
   *)
-    echo "⚠ Mode '${VG_REVIEW_MODE}' invalid — falling back to 'full'." >&2
+    echo "⚠ Mode '${VG_REVIEW_MODE}' không hợp lệ — fall back về 'full'." >&2
     VG_REVIEW_MODE="full"
     REVIEW_MODE="full"
     export VG_REVIEW_MODE REVIEW_MODE
@@ -532,9 +552,19 @@ esac
 case "$VG_SCANNER" in
   haiku-only|codex-supplement|gemini-supplement|council-all) ;;
   *)
-    echo "⚠ Scanner '${VG_SCANNER}' invalid — falling back to 'haiku-only'." >&2
+    echo "⚠ Scanner '${VG_SCANNER}' không hợp lệ — fall back về 'haiku-only'." >&2
     VG_SCANNER="haiku-only"
     export VG_SCANNER
+    ;;
+esac
+
+# 5c. v2.43.4 — validate method
+case "$VG_METHOD" in
+  spawn|manual|hybrid) ;;
+  *)
+    echo "⚠ Method '${VG_METHOD}' không hợp lệ — fall back về 'spawn'." >&2
+    VG_METHOD="spawn"
+    export VG_METHOD
     ;;
 esac
 
@@ -547,6 +577,7 @@ echo "  Phase:    ${PHASE_NUMBER} (profile=${PHASE_PROFILE})"
 echo "  Env:      ${VG_ENV}"
 echo "  Mode:     ${VG_REVIEW_MODE}"
 echo "  Scanner:  ${VG_SCANNER}"
+echo "  Method:   ${VG_METHOD}    # spawn=auto subprocess / manual=paste prompt / hybrid"
 echo "  Args:     ${ARGUMENTS}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
@@ -563,21 +594,21 @@ review = steps.setdefault('review', {})
 review['env'] = '${VG_ENV}'
 review['mode'] = '${VG_REVIEW_MODE}'
 review['scanner'] = '${VG_SCANNER}'
+review['method'] = '${VG_METHOD}'
 review['profile'] = '${PHASE_PROFILE}'
 review['last_invoked_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 review['last_args'] = '''${ARGUMENTS}'''[:500]
 p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 
-# 8. Emit telemetry — orchestrator gates on this event.
-# event_type is positional; --phase/--command are NOT valid args (orchestrator
-# infers phase from active run). Valid --actor values: orchestrator | hook |
-# validator | llm-claimed | user (the literal "skill" is rejected by argparse).
+# 8. Emit telemetry — orchestrator gates on this event
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
-  "review.env_mode_confirmed" \
-  --actor "orchestrator" \
+  --event-type "review.env_mode_confirmed" \
+  --phase "${PHASE_NUMBER}" \
+  --command "vg:review" \
+  --actor "skill" \
   --outcome "INFO" \
-  --payload "{\"env\":\"${VG_ENV}\",\"mode\":\"${VG_REVIEW_MODE}\",\"scanner\":\"${VG_SCANNER}\",\"profile\":\"${PHASE_PROFILE}\",\"interactive\":$([[ \"$ARGUMENTS\" =~ --non-interactive ]] && echo false || echo true)}" \
+  --payload "{\"env\":\"${VG_ENV}\",\"mode\":\"${VG_REVIEW_MODE}\",\"scanner\":\"${VG_SCANNER}\",\"method\":\"${VG_METHOD}\",\"profile\":\"${PHASE_PROFILE}\",\"interactive\":$([[ \"$ARGUMENTS\" =~ --non-interactive ]] && echo false || echo true)}" \
   2>/dev/null || true
 
 # 9. Mark step
@@ -587,8 +618,8 @@ p.write_text(json.dumps(s, indent=2))
 
 **Downstream impact:**
 - Phase 1 / Phase 2 / Phase 2.5 / Phase 3 / Phase 4 all read `$ENV_NAME` and `$REVIEW_MODE` — no further changes needed; they pick up user choice automatically.
-- `phaseP_*` profile branches gate on `$REVIEW_MODE` — user can override auto-detected profile mode here.
-- `$VG_SCANNER` is recorded into PIPELINE-STATE.json + telemetry. Banner echoes the choice at start of phase1_code_scan so user sees the value was honored. **Supplemental CrossAI CLI scan (codex-supplement / gemini-supplement / council-all) wires in v2.42.2** — a follow-up patch lands the actual `codex exec` / `gemini` / Claude CLI dispatch after Haiku completes, plus merge into RUNTIME-MAP under `crossai_scanner_findings`. v2.42.1 captures the user choice so the data path is in place.
+- `phaseP_*` profile branches (line 528+) gate on `$REVIEW_MODE` — user can override auto-detected profile mode here.
+- `$VG_SCANNER` is recorded into PIPELINE-STATE.json + telemetry. **Banner echoes the choice at start of phase1_code_scan** so user sees the value was honored. **Supplemental CrossAI CLI scan (codex-supplement / gemini-supplement / council-all) is wired in v2.42.2** — a follow-up patch lands the actual `codex exec` / `gemini` / Claude CLI dispatch after Haiku completes, plus merge into RUNTIME-MAP under `crossai_scanner_findings`. v2.42.1 captures the user choice so the data path is in place.
 - Re-running `/vg:review <phase>` re-prompts (audit trail accumulates `last_invoked_at` history).
 </step>
 
@@ -2413,7 +2444,37 @@ Then immediately proceed to 2b-2 (spawn Haiku).
 
 #### 2b-2: Spawn Haiku Scanners (parallel OR sequential per view — v1.9.4 R3.3)
 
+<DEEPSCAN_OPT_IN_GATE_v2.42.4>
+**v2.42.4+ refactor — Phase 2b-2 default OFF.**
+
+Per the 3-tier review/test/roam refactor (see `.vg/research/ROAM-RFC-v1.md`
+and `PLAN-vgflow-2026-05-01.md` Part D), exhaustive UI exploration moves
+to `/vg:roam`. /vg:review keeps light browser smoke (Phase 2b-1 navigator
++ Phase 2b-3 goal recording) for goal-binding verification, but skips
+the per-view Haiku exhaustive scan unless explicitly opted in.
+
+**Skip 2b-2 entirely UNLESS one of these holds:**
+- `$ARGUMENTS` contains `--with-deepscan`, OR
+- `$ARGUMENTS` contains `--full-scan` (legacy alias, kept for backward compat), OR
+- Phase profile is mobile-* (mobile uses sequential haiku as primary scan path), OR
+- `CONFIG_REVIEW_DEEPSCAN_DEFAULT` is set to `on` in vg.config.md (per-project opt-back-in)
+
+Skip narration:
+```
+echo "▸ Phase 2b-2 (Haiku per-view exhaustive scan) skipped — v2.42.4 default off."
+echo "  Lens-driven exhaustive exploration now lives in /vg:roam (post-test janitor)."
+echo "  Pass --with-deepscan to opt back in for this run, or set"
+echo "  config.review.deepscan_default=on in vg.config.md for project-wide opt-in."
+```
+
+After echoing skip narration, jump directly to phase2b-3 (goal sequence
+recording). The MANDATORY_GATE block below applies ONLY when 2b-2 is
+gated ON via the conditions above.
+</DEEPSCAN_OPT_IN_GATE_v2.42.4>
+
 <MANDATORY_GATE>
+**Applies only when 2b-2 is gated ON (--with-deepscan, --full-scan, mobile-*, or config opt-in).**
+
 **You MUST spawn Haiku agents in step 2b-2** (unless spawn_mode=none for cli-tool/library profiles). This is NOT optional.
 - Do NOT skip this step because "phase is small" or "I already covered everything in 2b-1"
 - Do NOT replace spawning with "I'll click through views myself"
