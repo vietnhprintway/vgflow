@@ -1,0 +1,21 @@
+{
+  "view": "/admin/refunds",
+  "results": [
+    {
+      "selector": "button#issue-refund",
+      "network": [
+        {"method": "POST", "path": "/api/refunds/42", "url": "https://x.com/api/refunds/42"}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": [],
+  "business_flow": {"has_state_machine": true, "states": ["pending", "approved", "issued"]},
+  "crud_resources": [
+    {"name": "refunds", "category": "refund"},
+    {"name": "audit_logs", "category": "audit"}
+  ]
+}

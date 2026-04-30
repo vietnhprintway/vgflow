@@ -1,0 +1,16 @@
+{
+  "view": "/admin/bulk-mutate",
+  "_comment": "100 calls to the same endpoint, all returning 500 — must collapse to ONE error_response entry",
+  "results": [
+    {"selector": "btn-1", "network": [{"method": "DELETE", "path": "/api/items/1", "status": 500, "response_body": "boom"}]},
+    {"selector": "btn-2", "network": [{"method": "DELETE", "path": "/api/items/1", "status": 500, "response_body": "boom"}]},
+    {"selector": "btn-3", "network": [{"method": "DELETE", "path": "/api/items/1", "status": 500, "response_body": "boom"}]},
+    {"selector": "btn-4", "network": [{"method": "DELETE", "path": "/api/items/1", "status": 500, "response_body": "boom"}]},
+    {"selector": "btn-5", "network": [{"method": "DELETE", "path": "/api/items/1", "status": 500, "response_body": "boom"}]}
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}

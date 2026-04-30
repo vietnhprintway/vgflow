@@ -11,18 +11,23 @@ VALID_BUG_CLASSES = {
     "server-side", "redirect", "ui-mechanic"
 }
 
-# Element classes that have lens probes (Tier 1 from identify_clickables)
+# Element classes that have lens probes (Tier 1 + Tier 2 active in v2.41).
+# Tier-2 wiring closed v2.40 backlog #2; 5 lenses (open-redirect, ssrf,
+# auth-jwt, business-logic, info-disclosure) are now reachable via the
+# detectors in scripts/identify_interesting_clickables.py.
 ACTIVE_ELEMENT_CLASSES = {
+    # Tier 1
     "mutation_button", "form_trigger", "row_action",
     "bulk_action", "sub_view_link", "modal_trigger",
     "file_upload",
+    # Tier 2 (promoted in v2.41)
+    "redirect_url_param", "url_fetch_param", "auth_endpoint",
+    "payment_or_workflow", "error_response",
 }
 
-# Element classes that are recognized but lensed via Tier 2+ surfaces
-# (param-based or response-based, not direct UI clicks)
+# Still-deferred element classes (Tier 2+ surfaces awaiting downstream wiring).
 FUTURE_ELEMENT_CLASSES = {
-    "tab", "redirect_url_param", "url_fetch_param", "path_param",
-    "auth_endpoint", "payment_or_workflow", "error_response",
+    "tab", "path_param",
 }
 
 # v2.40 ships exactly 16 lens files (Tier 1 through Tier 7)

@@ -1,0 +1,16 @@
+{
+  "view": "/api/diagnostics",
+  "results": [
+    {
+      "selector": "button#trigger-500",
+      "network": [
+        {"method": "POST", "path": "/api/widgets", "status": 500, "response_body": "Internal Server Error"}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}

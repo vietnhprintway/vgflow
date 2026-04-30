@@ -6,6 +6,7 @@ applies_to_element_classes:
   - mutation_button
   - form_trigger
   - bulk_action
+  - auth_endpoint
 applies_to_phase_profiles:
   - feature
   - feature-legacy

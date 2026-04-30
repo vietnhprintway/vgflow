@@ -1,0 +1,17 @@
+{
+  "view": "/api/checkout",
+  "results": [
+    {
+      "selector": "form#checkout",
+      "network": [
+        {"method": "POST", "path": "/api/checkout", "status": 200,
+         "response_body": "TypeError: Cannot read properties of undefined\n    at Object.handler (/app/server.js:42:5)\n    at <anonymous>:1:1"}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}

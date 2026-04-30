@@ -1,0 +1,36 @@
+{
+  "view": "/account",
+  "results": [
+    {
+      "selector": "form#login-form",
+      "network": [
+        {"method": "POST", "path": "/login", "url": "https://x.com/login"}
+      ]
+    },
+    {
+      "selector": "button#logout",
+      "network": [
+        {"method": "POST", "path": "/logout", "url": "https://x.com/logout"}
+      ]
+    },
+    {
+      "selector": "a#oauth-token",
+      "network": [
+        {"method": "POST", "path": "/oauth/token", "url": "https://x.com/oauth/token"}
+      ]
+    },
+    {
+      "_comment": "Authorization header alone MUST NOT classify as auth_endpoint (regression guard)",
+      "selector": "button#refresh-data",
+      "network": [
+        {"method": "GET", "path": "/api/users/me", "url": "https://x.com/api/users/me",
+         "headers": {"Authorization": "Bearer abc.def.ghi"}}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}

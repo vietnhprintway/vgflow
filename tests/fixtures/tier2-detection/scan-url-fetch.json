@@ -1,0 +1,22 @@
+{
+  "view": "/admin/integrations",
+  "results": [
+    {
+      "selector": "form#proxy",
+      "network": [
+        {"method": "POST", "path": "/api/proxy", "url": "https://x.com/api/proxy?url=https://internal.svc/secret"}
+      ]
+    },
+    {
+      "selector": "form#webhook",
+      "network": [
+        {"method": "POST", "path": "/api/webhook", "url": "https://x.com/api/webhook?webhook=https://attacker.test/cb&callback=ping"}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}

@@ -1,0 +1,22 @@
+{
+  "view": "/account/oauth-callback",
+  "results": [
+    {
+      "selector": "a#oauth-link",
+      "network": [
+        {"method": "GET", "path": "/oauth/callback", "url": "https://x.com/oauth/callback?return_to=/dashboard&code=abc"}
+      ]
+    },
+    {
+      "selector": "a#login-link",
+      "network": [
+        {"method": "GET", "path": "/login", "url": "https://x.com/login?next=https%3A//evil.com"}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}

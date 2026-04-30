@@ -1,0 +1,23 @@
+{
+  "view": "/admin/files",
+  "results": [
+    {
+      "selector": "a#download",
+      "network": [
+        {"method": "GET", "path": "/api/files", "url": "https://x.com/api/files?file=/etc/passwd"}
+      ]
+    },
+    {
+      "selector": "a#contact",
+      "network": [
+        {"_comment": "name=Alice has no '/' so MUST NOT trigger path_param",
+         "method": "GET", "path": "/api/contacts", "url": "https://x.com/api/contacts?name=Alice"}
+      ]
+    }
+  ],
+  "forms": [],
+  "tabs": [],
+  "tables": [],
+  "modal_triggers": [],
+  "sub_views_discovered": []
+}
