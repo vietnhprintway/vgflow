@@ -85,6 +85,43 @@ def load_tokens(phase_dir: Path) -> dict:
             return {}
 
 
+def resolve_base_url(phase_dir: Path) -> str | None:
+    """Resolve `base_url` from a prioritized list of config locations.
+
+    Lookup order (first hit wins):
+        1. ``phase_dir/.claude/vg.config.md``
+        2. ``phase_dir/vg.config.md``
+        3. ``REPO_ROOT/.claude/vg.config.md``
+        4. ``REPO_ROOT/vg.config.md``
+
+    A "hit" is a file that exists AND contains a parseable ``base_url:`` key
+    (top-level OR nested under any block such as ``review.auth.base_url``).
+    The match is intentionally permissive — first ``base_url:`` line in the
+    file wins, regardless of indentation depth.
+
+    Args:
+        phase_dir: Phase directory absolute path.
+
+    Returns:
+        The resolved URL string, or ``None`` if no config file declares one.
+    """
+    candidates = [
+        phase_dir / ".claude" / "vg.config.md",
+        phase_dir / "vg.config.md",
+        REPO_ROOT / ".claude" / "vg.config.md",
+        REPO_ROOT / "vg.config.md",
+    ]
+    pattern = re.compile(r"(?:^|\n)\s*base_url:\s*[\"']?([^\"'\n#]+)")
+    for cfg_path in candidates:
+        if not cfg_path.is_file():
+            continue
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+        m = pattern.search(text)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
 def load_kit_prompt(repo_root: Path) -> str:
     kit_path = repo_root / ".claude" / "commands" / "vg" / "_shared" / "transition-kits" / "crud-roundtrip.md"
     if not kit_path.is_file():
@@ -209,13 +246,7 @@ def main() -> int:
         print("⛔ crud-roundtrip.md kit prompt not found", file=sys.stderr)
         return 1
 
-    base_url = None
-    cfg_path = REPO_ROOT / ".claude" / "vg.config.md"
-    if cfg_path.is_file():
-        cfg_text = cfg_path.read_text(encoding="utf-8", errors="replace")
-        m = re.search(r"\bbase_url:\s*[\"']?([^\"'\s]+)", cfg_text)
-        if m:
-            base_url = m.group(1)
+    base_url = resolve_base_url(phase_dir)
 
     plan: list[dict] = []
     for resource in resources:
@@ -231,6 +262,20 @@ def main() -> int:
     if not plan:
         print(f"  (no (resource × role) pairs to dispatch)")
         return 0
+
+    # Fail-fast: crud-roundtrip workers cannot drive a real browser without
+    # a base_url. Empty/null URL silently produces empty network_log[] in
+    # run artifacts (Phase 0 root cause #1).
+    needs_base_url = any(r["resource"].get("kit") == "crud-roundtrip" for r in plan)
+    if needs_base_url and not base_url:
+        print(
+            "⛔ base_url not found in any of: "
+            "phase_dir/.claude/vg.config.md, phase_dir/vg.config.md, "
+            "REPO_ROOT/.claude/vg.config.md, REPO_ROOT/vg.config.md. "
+            "crud-roundtrip kit requires base_url.",
+            file=sys.stderr,
+        )
+        return 1
 
     estimated = estimate_cost(len(plan))
     if not args.quiet:
