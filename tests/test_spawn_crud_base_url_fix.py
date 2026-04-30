@@ -55,6 +55,35 @@ def test_base_url_resolves_from_repo_root_claude(tmp_path, monkeypatch):
     assert base_url == "http://repo-root:7777"
 
 
+def test_base_url_resolves_from_repo_root_no_claude(tmp_path, monkeypatch):
+    """Priority 4: REPO_ROOT/vg.config.md (no .claude/ subdir) — last fallback."""
+    phase = tmp_path / "phase"
+    phase.mkdir()
+    fake_repo = tmp_path / "fake-repo"
+    fake_repo.mkdir()
+    (fake_repo / "vg.config.md").write_text("base_url: http://repo-flat:8888\n")
+    mod = load_module()
+    monkeypatch.setattr(mod, "REPO_ROOT", fake_repo)
+    assert mod.resolve_base_url(phase) == "http://repo-flat:8888"
+
+
+def test_base_url_priority_phase_dir_wins_over_repo_root(tmp_path, monkeypatch):
+    """When both phase-local AND repo root have base_url, phase-local wins."""
+    phase = tmp_path / "phase"
+    (phase / ".claude").mkdir(parents=True)
+    (phase / ".claude" / "vg.config.md").write_text(
+        "base_url: http://phase-wins:1111\n"
+    )
+    fake_repo = tmp_path / "fake-repo"
+    (fake_repo / ".claude").mkdir(parents=True)
+    (fake_repo / ".claude" / "vg.config.md").write_text(
+        "base_url: http://repo-loses:2222\n"
+    )
+    mod = load_module()
+    monkeypatch.setattr(mod, "REPO_ROOT", fake_repo)
+    assert mod.resolve_base_url(phase) == "http://phase-wins:1111"
+
+
 def test_base_url_returns_none_when_no_config_found(tmp_path, monkeypatch):
     phase = tmp_path / "phase"
     phase.mkdir()

@@ -16,7 +16,9 @@ PROVIDED_FIELDS = {
 }
 
 # Old field names that should no longer appear as orphan refs
-LEGACY_FIELDS = {"route_list", "route_create", "route_update", "route_delete"}
+LEGACY_FIELDS = {
+    "route_list", "route_create", "route_update", "route_delete", "route_detail",
+}
 
 
 def test_kit_no_legacy_field_refs():

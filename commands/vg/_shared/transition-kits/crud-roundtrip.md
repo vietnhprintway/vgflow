@@ -84,12 +84,16 @@ For each step, observe the actual response, compare to expected behavior for thi
 - Verify the new row contains the submitted values.
 - If row not visible: emit `high` finding `persistence_broken_or_optimistic_ui`, evidence = full request/response of Step 2 + this list query.
 
-### Step 4 — Read detail
+### Step 4 — Read detail (after Create)
 
-- If a detail route is declared (e.g. `platforms_web.detail.route` or derivable from `platforms_web.form.update_route` minus `/edit`): navigate to that detail URL for the created entity.
+The context block does NOT carry a dedicated detail-route field. Derive the
+detail URL from `platforms_web.form.update_route` by stripping the trailing
+`/edit` segment (e.g. `/users/42/edit` → `/users/42`).
+
+- If `platforms_web.form.update_route` is absent: emit `step.status: skipped`, reason `no_detail_view`, continue to Step 5. Do NOT reference any other detail-route field name (none exists in context).
+- Otherwise navigate to `${base_url}` + (update_route with trailing `/edit` removed) for the created entity (use `browser_navigate`).
 - Verify all submitted fields are persisted with submitted values.
 - Capture: detail view structure (which fields shown, edit/delete affordance presence per role).
-- If detail view doesn't exist for this resource: emit `step.status: skipped`, reason `no_detail_view`, continue to Step 5.
 
 ### Step 5 — Update
 
