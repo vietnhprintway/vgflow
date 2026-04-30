@@ -127,3 +127,21 @@ def test_mass_assignment_lens_specific():
     assert fm["name"] == "lens-mass-assignment"
     assert fm["bug_class"] == "injection"
     assert "form_trigger" in fm["applies_to_element_classes"]
+
+
+def test_path_traversal_lens_specific():
+    """lens-path-traversal.md must use injection bug class and apply to file_upload."""
+    lens = LENS_DIR / "lens-path-traversal.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-path-traversal"
+    assert fm["bug_class"] == "injection"
+    assert "file_upload" in fm["applies_to_element_classes"]
+
+
+def test_file_upload_lens_specific():
+    """lens-file-upload.md must use injection bug class and apply to file_upload."""
+    lens = LENS_DIR / "lens-file-upload.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-file-upload"
+    assert fm["bug_class"] == "injection"
+    assert "file_upload" in fm["applies_to_element_classes"]
