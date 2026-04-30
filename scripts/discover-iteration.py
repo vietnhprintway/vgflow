@@ -88,9 +88,23 @@ def current_iteration(phase_dir: Path) -> int:
     return int(load_json(state_path).get("iteration", 0))
 
 
-def write_state(phase_dir: Path, iteration: int) -> None:
+def write_state(phase_dir: Path, iteration: int,
+                recursion_depth: dict[str, int] | None = None) -> None:
+    """Persist iteration state.
+
+    Existing schema readers (which only look at ``iteration``) keep working —
+    we add the new ``recursion_depth`` field as a sibling keyed by view url.
+    The map is merged with any prior state so cross-iteration depth survives.
+    """
     state_path = phase_dir / "iteration-state.json"
-    state_path.write_text(json.dumps({"iteration": iteration}, indent=2), encoding="utf-8")
+    prior = load_json(state_path) if state_path.is_file() else {}
+    merged_depth = dict(prior.get("recursion_depth") or {})
+    if recursion_depth:
+        merged_depth.update(recursion_depth)
+    payload: dict = {"iteration": iteration}
+    if merged_depth:
+        payload["recursion_depth"] = merged_depth
+    state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def main() -> int:
@@ -98,6 +112,10 @@ def main() -> int:
     ap.add_argument("--phase-dir", required=True)
     ap.add_argument("--max-iterations", type=int, default=2)
     ap.add_argument("--max-new", type=int, default=5)
+    ap.add_argument("--recursion-depth", type=int, default=1,
+                    help="Tag every newly-queued view with this recursion depth "
+                         "in iteration-state.json (v2.40 Phase 2b-2.5 lens probe). "
+                         "Default 1 — first descent past the initial nav.")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true")
@@ -128,6 +146,7 @@ def main() -> int:
         "known_in_nav": len(known),
         "candidates": candidates_sorted,
         "queue": queue,
+        "recursion_depth": int(args.recursion_depth),
         "iteration_queued": False,
         "reason_capped": None,
     }
@@ -159,7 +178,8 @@ def main() -> int:
                 })
             nav_path.write_text(json.dumps(nav, indent=2), encoding="utf-8")
 
-        write_state(phase_dir, iter_now + 1)
+        depth_map = {url: int(args.recursion_depth) for url in queue}
+        write_state(phase_dir, iter_now + 1, recursion_depth=depth_map)
 
     if args.json:
         print(json.dumps(payload, indent=2))
