@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.43.2 — `/vg:test` codegen i18n fix (PR #66)
+
+### Fixed
+- `commands/vg/test.md` codegen rules — added Rule 2.5: generated Playwright specs MUST use id-based selectors (`#login-email`, `#login-password`) for login, NOT `getByLabel(/password/i)` regex.
+- **Why**: `getByLabel(/password/i)` only matches English labels. i18n projects translate FormLabel text (Vietnamese: "Mật khẩu", Spanish: "Contraseña", etc.) and tests fail with `TimeoutError` at password field — login never completes, ALL downstream specs fail.
+- Discovery: PrintwayV3 dogfood Phase 3.4b `/vg:test` (2026-04-30) — 5/5 generated specs failed at password fill because project labels are Vietnamese. After switching to id-based helper: 2/5 specs PASSED before API rate limit, 3 remaining only need `.first()` refinement (multi-element strict mode); login itself succeeded.
+- This is bug class 6 of 6 critical bugs surfaced during the PrintwayV3 dogfood arc — all share root cause "shipped code without runtime coordination". Credit: external dogfood from @vietnhprintway.
+
+### Internal
+- 234 tests pass.
+- Codex mirror regenerated.
+- Both `VGFLOW-VERSION` and `VERSION` synced to 2.43.2.
+
 ## v2.43.1 — `/vg:roam` HARD gates + always-ask + `self` executor mode (PR #65)
 
 Three dogfood-driven fixes layered on v2.43.0's `/vg:roam` skill (reporter's internal milestones v2.42.9 → v2.42.11):
