@@ -2512,19 +2512,81 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
 
 If eligibility fails → write `.recursive-probe-skipped.yaml` and continue to 2b-3 (no error).
 
+**Pre-flight (v2.41.1) — operator config via AskUserQuestion:**
+
+> ⚠ Why this lives in the command layer (not script stdin):
+> Claude Code wraps bash in a sandbox where `sys.stdin.isatty()` returns `False`,
+> so the script-side `input()` prompts in `spawn_recursive_probe.py` silently fall
+> back to defaults (`light` / `auto` / `sandbox`) without the operator ever
+> seeing them. To deliver an actual interactive UX under Claude Code, the
+> command layer asks **before** invoking bash, then exports the answers as
+> env vars that bash forwards via flags.
+
+Phase 2b-2.5 has three operator-controlled axes. The orchestrator MUST resolve
+all three before invoking bash:
+
+| Env var | Source priority | Default |
+|---|---|---|
+| `RECURSION_MODE` | (1) `--recursion` CLI flag → (2) AskUserQuestion → (3) `light` | `light` |
+| `PROBE_MODE`     | (1) `--probe-mode` CLI flag → (2) AskUserQuestion → (3) `auto` | `auto` |
+| `TARGET_ENV`     | (1) `--target-env` CLI flag → (2) `vg.config review.target_env` → (3) AskUserQuestion → (4) `sandbox` | `sandbox` |
+
+**Resolution procedure (the orchestrator runs these BEFORE the bash block):**
+
+1. **Parse `/vg:review` CLI args.** For each of `--recursion`, `--probe-mode`,
+   `--target-env` that the operator passed, set the matching env var
+   (`RECURSION_MODE` / `PROBE_MODE` / `TARGET_ENV`) and skip its prompt.
+
+2. **Skip prompts entirely if `VG_NON_INTERACTIVE=1`** (CI / piped runs) —
+   downstream defaults apply.
+
+3. **For each axis still unset, call `AskUserQuestion`** with the spec below.
+   Ask in this order, ONE call per axis (so operator answers can short-circuit
+   the next prompt — e.g. picking `skip` for probe-mode means we skip the
+   target-env question because no probes will fire).
+
+   **Question 1 — `RECURSION_MODE` (depth/coverage envelope):**
+   - `light` *(recommended)* — ~15 workers, depth 2, goal cap 50. Quick coverage on touched resources only.
+   - `deep` — ~40 workers, depth 3, goal cap 150. Typical dogfood pass.
+   - `exhaustive` — ~100 workers, depth 4, goal cap 400. Pre-release sweep; expect ≥30min wall-clock.
+
+   **Question 2 — `PROBE_MODE` (execution strategy):**
+   - `auto` *(recommended)* — VG spawns Gemini Flash subprocess workers end-to-end.
+   - `manual` — VG generates per-tool prompt files (`recursive-prompts/{codex,gemini}/`) for paste; operator runs CLI session, drops artifacts in `runs/<tool>/`, VG verifies. Pick when subprocess sandboxing isn't available.
+   - `hybrid` — auto for high-confidence lenses (authz-negative, idor, csrf, ...), manual for human-judgment ones (business-logic, ssrf, auth-jwt). Routing comes from `vg.config review.recursive_probe.hybrid_routing`.
+   - `skip` — emit `.recursive-probe-skipped.yaml` and continue to 2b-3. Logs OVERRIDE-DEBT critical with reason `"interactive: operator chose skip"`. Use when the recursive layer would be redundant (e.g. follow-up review of a phase that already passed 2b-2.5).
+
+   **Question 3 — `TARGET_ENV` (deploy environment policy):** *only ask if probe-mode ≠ skip.*
+   - `local` — full mutations OK, unlimited budget. Pick for local dev runs.
+   - `sandbox` *(recommended)* — full mutations OK, 50-mutation/phase budget, disposable seed data assumed.
+   - `staging` — mutations OK, `lens-input-injection` blocked, 25-mutation budget, shared-env hygiene.
+   - `prod` — **READ-ONLY** (no POST/PUT/PATCH/DELETE), only safe lenses fire. Requires the operator to also pass `--i-know-this-is-prod=<reason>` on the next invocation (hard gate, logs OVERRIDE-DEBT critical).
+
+4. **Export the resolved values** so the bash block sees them:
+
+   ```bash
+   export RECURSION_MODE PROBE_MODE TARGET_ENV
+   ```
+
+5. **If the operator chose `skip` for probe-mode**, also set
+   `SKIP_RECURSIVE_PROBE="interactive: operator chose skip"` before bash.
+
 **Bash invocation:**
 
 ```bash
-RECURSION_MODE="${RECURSION_MODE:-light}"           # light|deep|exhaustive
-PROBE_MODE="${PROBE_MODE:-auto}"                    # auto|manual|hybrid
-TARGET_ENV="${TARGET_ENV:-}"                        # local|sandbox|staging|prod (empty → interactive prompt; CI sets explicitly)
-SKIP_REASON="${SKIP_RECURSIVE_PROBE:-}"             # populated only if user supplied --skip-recursive-probe
+# v2.41.1 — env vars resolved by the AskUserQuestion pre-flight above.
+# Bash forwards each axis ONLY if set; the script's argparse defaults apply
+# otherwise (matches CI / VG_NON_INTERACTIVE=1 contract).
+SKIP_REASON="${SKIP_RECURSIVE_PROBE:-}"
 
-ARGS=( --phase-dir "$PHASE_DIR" --mode "$RECURSION_MODE" --probe-mode "$PROBE_MODE" )
-# v2.40.1 — only forward --target-env when caller pinned it. Empty TARGET_ENV
-# triggers the interactive Phase 2b-2.5 prompt (l/s/g/p) when running on a TTY;
-# falls back to 'sandbox' silently in CI/non-interactive runs.
-if [[ -n "$TARGET_ENV" ]]; then
+ARGS=( --phase-dir "$PHASE_DIR" )
+if [[ -n "${RECURSION_MODE:-}" ]]; then
+  ARGS+=( --mode "$RECURSION_MODE" )
+fi
+if [[ -n "${PROBE_MODE:-}" ]]; then
+  ARGS+=( --probe-mode "$PROBE_MODE" )
+fi
+if [[ -n "${TARGET_ENV:-}" ]]; then
   ARGS+=( --target-env "$TARGET_ENV" )
 fi
 if [[ -n "$SKIP_REASON" ]]; then
@@ -2540,12 +2602,15 @@ python scripts/spawn_recursive_probe.py "${ARGS[@]}"
 **Argparse forwarding (entry point of /vg:review):**
 
 ```bash
-# /vg:review accepts these flags and forwards them to spawn_recursive_probe.py:
-#   --recursion={light,deep,exhaustive}     → RECURSION_MODE
-#   --probe-mode={auto,manual,hybrid}       → PROBE_MODE
-#   --target-env={local,sandbox,staging,prod} → TARGET_ENV (default sandbox)
-#   --skip-recursive-probe="<reason>"       → SKIP_RECURSIVE_PROBE (logs OVERRIDE-DEBT)
-#   --non-interactive                       → VG_NON_INTERACTIVE=1 (CI; suppress stdin prompt)
+# /vg:review accepts these flags. The orchestrator parses them BEFORE the
+# AskUserQuestion pre-flight runs and exports the matching env var so the
+# operator only gets prompted for axes they didn't pre-supply:
+#   --recursion={light,deep,exhaustive}     → export RECURSION_MODE=$value
+#   --probe-mode={auto,manual,hybrid}       → export PROBE_MODE=$value
+#   --target-env={local,sandbox,staging,prod} → export TARGET_ENV=$value
+#   --skip-recursive-probe="<reason>"       → export SKIP_RECURSIVE_PROBE=$value
+#   --non-interactive                       → export VG_NON_INTERACTIVE=1 (suppress AskUserQuestion + stdin prompts)
+#   --i-know-this-is-prod="<reason>"        → forwarded as-is (prod-safety opt-in)
 ```
 
 **Manual mode (`PROBE_MODE=manual`):**

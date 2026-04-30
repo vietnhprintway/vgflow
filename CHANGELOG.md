@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.41.1 — Phase 2b-2.5 interactive prompt fix (orchestrator-layer)
+
+### Fixed (UX, regression from v2.40.0)
+- `/vg:review` under Claude Code now actually prompts for `--recursion`, `--probe-mode`, `--target-env` when the operator omits them.
+  - **Root cause:** Claude Code's bash sandbox makes `sys.stdin.isatty()` return `False`, so the script-side `input()` prompts in `spawn_recursive_probe.py` silently fell back to defaults (`light` / `auto` / `sandbox`). Additionally, the bash block hard-coded `RECURSION_MODE="${RECURSION_MODE:-light}"` and `PROBE_MODE="${PROBE_MODE:-auto}"`, so even when the script's TTY check would have fired, the env vars were always pre-set → script defaults won.
+  - **Fix:** Phase 2b-2.5 now uses `AskUserQuestion` at the command (review.md) layer, which Claude Code surfaces natively. Bash forwards each axis only when set; argparse defaults apply otherwise. `VG_NON_INTERACTIVE=1` still suppresses prompts for CI.
+
+### Internal
+- `commands/vg/review.md` — new "Pre-flight (v2.41.1) — operator config via AskUserQuestion" section before the bash invocation
+- Bash block restructured to forward `--mode` / `--probe-mode` / `--target-env` only when corresponding env var is set
+- `codex-skills/vg-review/SKILL.md` re-mirrored for parity gate
+
+### Notes
+- No behavior change for non-interactive callers (CI, `--non-interactive`, piped runs) — they continue to use script defaults.
+- No behavior change for terminal-direct callers (running `python scripts/spawn_recursive_probe.py` outside Claude Code) — script-side TTY prompt still works as fallback.
+
 ## v2.41.0 — Backlog Closure (Tier-2 wiring + Telemetry + Hybrid mode)
 
 ### Added
