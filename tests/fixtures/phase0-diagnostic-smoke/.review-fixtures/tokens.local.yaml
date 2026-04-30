@@ -1,0 +1,16 @@
+# Phase 0 diagnostic fixture — fake tokens (NOT real auth, never issued).
+# Shape mirrors `review-fixture-bootstrap.py::write_tokens` output and
+# `spawn-crud-roundtrip.py::build_worker_prompt` consumer expectation:
+#   role -> { token, user_id, tenant_id, issued_at, expires_at }
+admin:
+  token: "Bearer fake-admin-token-phase0-diagnostic"
+  user_id: "u-admin-001"
+  tenant_id: "t-diagnostic-001"
+  issued_at: "2026-04-30T00:00:00Z"
+  expires_at: "2026-04-30T23:59:59Z"
+user:
+  token: "Bearer fake-user-token-phase0-diagnostic"
+  user_id: "u-user-001"
+  tenant_id: "t-diagnostic-001"
+  issued_at: "2026-04-30T00:00:00Z"
+  expires_at: "2026-04-30T23:59:59Z"
