@@ -1,0 +1,16 @@
+{
+  "view": "/admin/topup-requests",
+  "results": [
+    {"selector": "button#delete-42", "network": [{"method": "DELETE", "path": "/api/topup/42"}]},
+    {"selector": "button#approve-42", "network": [{"method": "POST", "path": "/api/topup/42/approve"}]},
+    {"selector": "button#reject-42", "network": [{"method": "POST", "path": "/api/topup/42/reject"}]}
+  ],
+  "forms": [
+    {"selector": "form#search", "submit_result": {"status": 200},
+     "fields": [{"type": "text", "name": "q"}]},
+    {"selector": "form#filter", "submit_result": {"status": 200},
+     "fields": [{"type": "select", "name": "status"}]}
+  ],
+  "modal_triggers": ["button#confirm-modal"],
+  "sub_views_discovered": ["/admin/topup-detail/42"]
+}
