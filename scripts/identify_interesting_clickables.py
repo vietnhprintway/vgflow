@@ -18,15 +18,18 @@ Tier 1 — fully implemented (direct map from scan-*.json fields):
   - sub_view_link     sub_views_discovered[]
   - modal_trigger     modal_triggers[]
 
-Tier 2 — basic detection on best-effort signals (URL params and endpoint paths
-present in scan results). Stubs are kept narrow on purpose — heavier semantic
-analysis is deferred to later tasks (see docs/plans/2026-04-30-v2.40-implementation.md).
-  - redirect_url_param  /(redirect_uri|return_to|next|continue)/ in query
-  - url_fetch_param     /(url|link|webhook|callback|fetch_from)/ in query
-  - path_param          /(file|path|template|name)/ in query AND value contains '/'
-  - auth_endpoint       endpoint path matches /api/auth/.+ OR Authorization header used
-  - payment_or_workflow business_flow.has_state_machine OR resource ∈ {payment,refund,credit,quota}
-  - error_response      response status >= 500 OR contains stack-trace markers
+Tier 2 — STUBBED (deferred to Task 18 — spawn-recursive-probe.py):
+  - redirect_url_param, url_fetch_param, path_param
+  - auth_endpoint, payment_or_workflow, error_response
+
+Tier 2 detection requires:
+  1. Haiku scanner output schema to be locked (Phase 1.D) — current scan-*.json
+     shape (network[], headers, response_body) is provisional.
+  2. CRUD-SURFACES.category field to be confirmed (open question #5 in design
+     doc) — payment_or_workflow should key off `category`, not path regex.
+  3. Per-detector fixtures + tests so the heuristics don't over-spawn lenses
+     (e.g. naïve "Authorization header → auth_endpoint" flags every API call
+     in a modern app and blows the worker cap).
 
 Output schema:
 
@@ -55,23 +58,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
-from typing import Any, Iterable
-from urllib.parse import parse_qsl, urlparse
+from typing import Any
 
 # --- Tier 1 ------------------------------------------------------------------
 MUTATION_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-
-# --- Tier 2 (basic) ----------------------------------------------------------
-REDIRECT_PARAM_RE = re.compile(r"^(redirect_uri|return_to|next|continue)$", re.I)
-URL_FETCH_PARAM_RE = re.compile(r"^(url|link|webhook|callback|fetch_from)$", re.I)
-PATH_PARAM_RE = re.compile(r"^(file|path|template|name)$", re.I)
-AUTH_ENDPOINT_RE = re.compile(r"^/api/auth/.+", re.I)
-PAYMENT_RESOURCE_RE = re.compile(r"^(payment|refund|credit|quota)s?$", re.I)
-STACK_TRACE_MARKERS = ("Traceback (most recent call last)", "at java.", "at scala.",
-                       "Exception in thread", "panic:", "fatal error:")
 
 # Hash truncation length — design-doc spec; documented as a constant rather
 # than a magic number sprinkled in code.
@@ -180,7 +172,7 @@ def classify_scan(scan: dict) -> list[dict]:
         _emit(out, view, "sub_view_link", f"link[{sv}]",
               action_semantic="navigate", metadata={"target": sv})
 
-    # --- Tier 2 (basic; deeper semantics deferred) --------------------------
+    # --- Tier 2 (stubbed; see module docstring) -----------------------------
     out.extend(_tier2_url_param_classes(scan, view))
     out.extend(_tier2_endpoint_classes(scan, view))
     out.extend(_tier2_workflow_classes(scan, view))
@@ -190,111 +182,34 @@ def classify_scan(scan: dict) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Tier 2 — basic detectors
+# Tier 2 — STUBS (implementation deferred to Task 18)
 # ---------------------------------------------------------------------------
-def _iter_network_entries(scan: dict) -> Iterable[dict]:
-    for r in scan.get("results", []) or []:
-        for n in r.get("network", []) or []:
-            yield n
-
-
 def _tier2_url_param_classes(scan: dict, view: str) -> list[dict]:
-    """Detect redirect_url_param / url_fetch_param / path_param from query strings."""
-    out: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
-    for n in _iter_network_entries(scan):
-        path = n.get("path") or n.get("url") or ""
-        if not path:
-            continue
-        try:
-            parsed = urlparse(path)
-        except ValueError:
-            continue
-        for k, v in parse_qsl(parsed.query, keep_blank_values=True):
-            ec: str | None = None
-            if REDIRECT_PARAM_RE.match(k):
-                ec = "redirect_url_param"
-            elif URL_FETCH_PARAM_RE.match(k):
-                ec = "url_fetch_param"
-            elif PATH_PARAM_RE.match(k) and "/" in (v or ""):
-                ec = "path_param"
-            if not ec:
-                continue
-            key = (ec, k, v)
-            if key in seen:
-                continue
-            seen.add(key)
-            sel = f"param[{k}]"
-            _emit(out, view, ec, sel,
-                  action_semantic="param_inject",
-                  metadata={"name": k, "value": v, "path": path})
-    return out
+    """TODO(task-18): URL param-based classification (redirect_url_param, url_fetch_param, path_param).
+
+    Defer until Haiku scanner output schema is locked (Phase 1.D)."""
+    return []
 
 
 def _tier2_endpoint_classes(scan: dict, view: str) -> list[dict]:
-    """Detect auth_endpoint based on path or Authorization header presence."""
-    out: list[dict] = []
-    seen: set[str] = set()
-    for n in _iter_network_entries(scan):
-        path = n.get("path") or n.get("url") or ""
-        headers = n.get("headers") or {}
-        # headers may be a list of {name,value} or a dict — accept both.
-        header_names = []
-        if isinstance(headers, dict):
-            header_names = [str(k).lower() for k in headers.keys()]
-        elif isinstance(headers, list):
-            header_names = [str(h.get("name", "")).lower() for h in headers if isinstance(h, dict)]
-        has_auth_header = "authorization" in header_names
-        if AUTH_ENDPOINT_RE.match(path or "") or has_auth_header:
-            key = path or "<no-path>"
-            if key in seen:
-                continue
-            seen.add(key)
-            _emit(out, view, "auth_endpoint", f"endpoint[{key}]",
-                  action_semantic="auth_call",
-                  resource=_resource_from_path(path),
-                  metadata={"path": path, "auth_header": has_auth_header})
-    return out
+    """TODO(task-18): Auth endpoint detection. Path-only pattern (NOT Authorization header — too noisy).
+
+    Defer until Haiku scanner output schema is locked (Phase 1.D)."""
+    return []
 
 
 def _tier2_workflow_classes(scan: dict, view: str) -> list[dict]:
-    """Detect payment_or_workflow from business_flow flags / resource hints."""
-    out: list[dict] = []
-    bf = scan.get("business_flow") or {}
-    resource = scan.get("resource") or _resource_from_path(view)
-    is_payment = bool(PAYMENT_RESOURCE_RE.match(resource or ""))
-    has_state_machine = bool(bf.get("has_state_machine"))
-    if is_payment or has_state_machine:
-        sel = f"workflow[{resource or view}]"
-        _emit(out, view, "payment_or_workflow", sel,
-              action_semantic="state_transition",
-              resource=resource,
-              metadata={"has_state_machine": has_state_machine, "resource": resource})
-    return out
+    """TODO(task-18): payment_or_workflow detection via CRUD-SURFACES.category field.
+
+    Defer until CRUD-SURFACES schema confirms category field exists (open question #5)."""
+    return []
 
 
 def _tier2_error_responses(scan: dict, view: str) -> list[dict]:
-    """Detect error_response from status>=500 or stack-trace markers in body."""
-    out: list[dict] = []
-    seen: set[str] = set()
-    for n in _iter_network_entries(scan):
-        status = n.get("status")
-        body = n.get("response_body") or n.get("body") or ""
-        if not isinstance(body, str):
-            body = json.dumps(body)
-        is_5xx = isinstance(status, int) and status >= 500
-        has_trace = any(marker in body for marker in STACK_TRACE_MARKERS)
-        if is_5xx or has_trace:
-            path = n.get("path") or n.get("url") or "<unknown>"
-            key = f"{path}:{status}"
-            if key in seen:
-                continue
-            seen.add(key)
-            _emit(out, view, "error_response", f"error[{path}]",
-                  action_semantic="error_observed",
-                  resource=_resource_from_path(path),
-                  metadata={"status": status, "stack_trace": has_trace, "path": path})
-    return out
+    """TODO(task-18): error_response detection (status>=500 + multi-language stack markers).
+
+    Defer until Haiku scanner output schema confirms response_body field shape."""
+    return []
 
 
 # ---------------------------------------------------------------------------
