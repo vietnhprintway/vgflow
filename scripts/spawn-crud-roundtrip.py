@@ -139,8 +139,15 @@ def spawn_worker(prompt: str, model: str, mcp_server: str, timeout: int,
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if debug_log_path:
+            cmd_redacted = [
+                "gemini",
+                "-p", f"<REDACTED {len(prompt)} chars>",
+                "-m", model,
+                "--approval-mode", "yolo",
+                "--allowed-mcp-server-names", mcp_server,
+            ]
             debug_log_path.write_text(
-                f"=== CMD ===\n{' '.join(cmd[:5])} [PROMPT REDACTED {len(prompt)} chars]\n"
+                f"=== CMD ===\n{' '.join(cmd_redacted)}\n"
                 f"=== EXIT {result.returncode} duration={round(time.time()-started,1)}s ===\n"
                 f"=== STDOUT (full, {len(result.stdout)} chars) ===\n{result.stdout}\n"
                 f"=== STDERR (full, {len(result.stderr)} chars) ===\n{result.stderr}\n",
