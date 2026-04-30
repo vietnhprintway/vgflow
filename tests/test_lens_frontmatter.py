@@ -181,3 +181,21 @@ def test_business_logic_lens_specific():
     assert fm["name"] == "lens-business-logic"
     assert fm["bug_class"] == "bizlogic"
     assert "mutation_button" in fm["applies_to_element_classes"]
+
+
+def test_ssrf_lens_specific():
+    """lens-ssrf.md must use server-side bug class and apply to url_fetch_param."""
+    lens = LENS_DIR / "lens-ssrf.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-ssrf"
+    assert fm["bug_class"] == "server-side"
+    assert "url_fetch_param" in fm["applies_to_element_classes"]
+
+
+def test_info_disclosure_lens_specific():
+    """lens-info-disclosure.md must use server-side bug class and apply to error_response."""
+    lens = LENS_DIR / "lens-info-disclosure.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-info-disclosure"
+    assert fm["bug_class"] == "server-side"
+    assert "error_response" in fm["applies_to_element_classes"]
