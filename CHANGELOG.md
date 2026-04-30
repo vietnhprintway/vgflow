@@ -1,5 +1,63 @@
 # Changelog
 
+## v2.40.0 — Recursive Lens Probe + Multi-Phase Batch + Sandbox Env
+
+### Added
+- Phase 2b-2.5 recursive lens probe layer in `/vg:review` — exploratory deep-scan style (Strix-spider, NOT scripted), 16 bug-class lenses
+- 14+2 lens prompts in `commands/vg/_shared/lens-prompts/` covering authz, injection, auth, bizlogic, server-side, ui-mechanic, redirect bug classes
+- Phase 0 diagnostic gate — `--debug` flag + base_url multi-location resolver + fail-fast guard + crud-roundtrip kit imperative preamble
+- 6-rule eligibility check with auto-skip + override (`--skip-recursive-probe="<reason>"` logs OVERRIDE-DEBT critical)
+- 3 probe modes: `auto` (subprocess workers), `manual` (paste prompts in CLI), `hybrid` (split per lens config)
+- Interactive prompt at Phase 2b-2.5 (with `--non-interactive` for CI)
+- `/vg:review-batch` for multi-phase deep-scan (sequential, aggregates BATCH-FINDINGS-{date}.json)
+- Target environment policy: `--target-env={local,sandbox,staging,prod}` with prod read-only safeguard via `--i-know-this-is-prod="<reason>"`
+- Per-tool subdir isolation: `runs/{gemini,codex,claude}/recursive-*.json`
+- Goal back-flow with canonical-key dedupe: light=50, deep=150, exhaustive=400 caps + recursive-goals-overflow.json
+- Mode caps: light/deep/exhaustive (depth 2/3/4, workers ~15/40/100)
+- Probe-only contract: workers report facts, no severity/fix/exploit reasoning (delegated to derive-findings.py downstream)
+
+### Fixed
+- Phase 0 production bug: base_url silently null when REPO_ROOT/.claude/vg.config.md missing → workers got null URL (H1, commit `2292dc7`)
+- Phase 0 production bug: kit prompt advertised legacy field names (route_list/create) but context_block nests under platforms_web.list.route → ambiguous prompt (H3, commit `0323ba0`)
+- Auth token leak in --debug log via cmd[:5] slice (commit `28e51c9`) — security fix
+
+### New configs (vg.config.md)
+- `review.recursive_probe.{default_mode,default_probe_mode,worker_concurrency,max_depth_overrides,activation_profiles,activation_surfaces,hybrid_routing}`
+- `review.target_env: "sandbox"` (default)
+- `review.prod_safety.require_reason_flag: true`
+- `review.batch.{parallelism,continue_on_phase_fail}`
+
+### New commands
+- `/vg:review --recursion={light,deep,exhaustive} --probe-mode={auto,manual,hybrid} --target-env={local,sandbox,staging,prod}`
+- `/vg:review-batch --phases <p1,p2,...>` OR `--milestone <M>` OR `--since <git-sha>`
+
+### New scripts
+- `scripts/spawn_recursive_probe.py` — manager dispatcher (eligibility + lens map + worker spawn)
+- `scripts/generate_recursive_prompts.py` — manual mode template renderer
+- `scripts/verify_manual_run_artifacts.py` — BLOCK validator post-manual-paste
+- `scripts/identify_interesting_clickables.py` — Tier-1 element classifier
+- `scripts/aggregate_recursive_goals.py` — single-writer goal dedupe + overflow
+- `scripts/canonicalize_url.py` — URL state-hash memoization
+- `scripts/env_policy.py` — per-env constraints (local/sandbox/staging/prod)
+- `scripts/review_batch.py` — multi-phase orchestrator
+
+### Internal
+- 16 lens prompt files + _TEMPLATE.md + README.md in `commands/vg/_shared/lens-prompts/`
+- Manual mode templates in `commands/vg/_shared/templates/MANUAL-PROBE-{MANIFEST,PER-LENS}.tmpl`
+- 100+ new tests across 18+ test files
+- Pre-existing v2.39 pipeline (findings-broker, derive-findings, replay-finding, route-findings-to-build, challenge-coverage) reused without modification
+
+### Closes
+- #50 (review không dò thông minh — recursive layer + 16 bug-class lenses + exploratory style)
+
+### Deferred to v2.41+
+- Tier-2 element classifier wiring (currently 5 lenses unreachable: open-redirect, ssrf, auth-jwt, business-logic, info-disclosure)
+- State hash actual implementation (test scaffold present, telemetry emit deferred)
+- Mutation budget telemetry emission (test scaffold present)
+- Hybrid mode per-lens router (currently falls back to auto)
+- Real LLM dogfood (mocked in test suite — see `docs/plans/2026-04-30-v2.40-dogfood-deferred.md`)
+- Codex GPT-5 xhigh re-review (open question #2 in design doc)
+
 ## v2.39.0 (2026-04-30) — Charter-violation closer (Codex review v2.38)
 
 After v2.34→v2.38 arc, asked Codex GPT-5 for adversarial review against VG's specific charter (contract-driven white-box, NOT Strix-style black-box pentest). Verdict was sharp: **"not adequate for first dogfood yet — risk of artifact-driven theater"**. 7 charter violations identified.
