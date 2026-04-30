@@ -76,7 +76,11 @@ def main() -> int:
         return 1
 
     seen: dict[str, dict] = {}
-    for partial in sorted(runs_dir.glob("goals-*.partial.yaml")):
+    # v2.40 Task 26h — per-tool subdir layout: runs/{gemini,codex,claude}/.
+    # Backward-compat: also pick up legacy goals-*.partial.yaml at runs/ root.
+    partials = list(runs_dir.glob("goals-*.partial.yaml"))
+    partials.extend(runs_dir.glob("*/goals-*.partial.yaml"))
+    for partial in sorted(set(partials)):
         try:
             entries = yaml.safe_load(partial.read_text(encoding="utf-8")) or []
         except yaml.YAMLError as e:

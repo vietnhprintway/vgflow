@@ -50,7 +50,16 @@ def load_runs(phase_dir: Path) -> list[dict]:
     if not runs_dir.is_dir():
         return []
     out: list[dict] = []
-    for p in sorted(runs_dir.glob("*.json")):
+    # v2.40 Task 26h — per-tool subdir layout: runs/{gemini,codex,claude}/.
+    # Backward-compat: also pick up legacy artifacts at runs/ root.
+    paths = list(runs_dir.glob("*.json"))
+    paths.extend(runs_dir.glob("*/recursive-*.json"))
+    paths.extend(runs_dir.glob("*/*.json"))
+    seen_paths: set[Path] = set()
+    for p in sorted(paths):
+        if p in seen_paths:
+            continue
+        seen_paths.add(p)
         if p.name in {"INDEX.json"}:
             continue
         data = load_run(p)

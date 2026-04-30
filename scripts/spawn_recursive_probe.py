@@ -81,6 +81,23 @@ MODE_WORKER_CAPS: dict[str, int] = {"light": 15, "deep": 40, "exhaustive": 100}
 MCP_SLOTS: list[str] = [f"playwright{i}" for i in range(1, 6)]
 
 
+def tool_for_model(model: str) -> str:
+    """Map a worker model name to its tool family ∈ {gemini, codex, claude}.
+
+    Used for runs/{tool}/ subdir isolation (Task 26h). Unknown models default
+    to 'gemini' since v2.40 ships gemini-2.5-flash as the canonical worker.
+    """
+    name = (model or "").lower()
+    if name.startswith("gemini"):
+        return "gemini"
+    if name.startswith("claude"):
+        return "claude"
+    if name.startswith("codex") or name.startswith("o1") or name.startswith("o3") \
+            or name.startswith("o4") or "gpt" in name:
+        return "codex"
+    return "gemini"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -339,7 +356,11 @@ def spawn_one_worker(entry: dict[str, Any], phase_dir: Path,
     """
     elem = entry.get("element", {})
     lens = entry.get("lens", "lens-unknown")
-    runs_dir = phase_dir / "runs" / mcp_slot
+    # Task 26h — subdir keyed by tool family (gemini/codex/claude), not by
+    # MCP slot. MCP slot lives in the artifact body so we still preserve the
+    # parallel-pool fingerprint without leaking it into the path.
+    tool = tool_for_model(model)
+    runs_dir = phase_dir / "runs" / tool
     runs_dir.mkdir(parents=True, exist_ok=True)
     output_path = runs_dir / f"{_output_basename(entry)}.json"
 
