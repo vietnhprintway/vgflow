@@ -149,9 +149,69 @@ Display only — không block. User decision: re-migrate (recommended) hay skip.
 - `NEXT_STEP == "blueprint"` → Next: `/vg:blueprint {phase}`
 - `NEXT_STEP == "build"` → Next: `/vg:build {phase}`
 - `NEXT_STEP == "review"` → Next: `/vg:review {phase}` (see Cross-CLI option below)
-- `NEXT_STEP == "test"` → Next: `/vg:test {phase}`
-- `NEXT_STEP == "accept"` → Next: `/vg:accept {phase}`
+- `NEXT_STEP == "test"` → Next: `/vg:test {phase}` (UNLESS prior review verdict ∈ FAIL/BLOCK — see verdict gate)
+- `NEXT_STEP == "accept"` → Next: `/vg:accept {phase}` (UNLESS prior test verdict ∈ GAPS_FOUND/FAILED — see verdict gate)
 - `NEXT_STEP == "complete"` → Phase done (check Route 8/9)
+
+**Verdict gate (v2.43.2 — fixes "loop tới /vg:accept dù test có gap" bug):**
+
+Before routing to `/vg:test` or `/vg:accept`, read PIPELINE-STATE.json verdict
+of the prior step. If non-PASS verdict, do NOT auto-advance — show the same
+verdict-aware guidance the prior skill printed at exit:
+
+```bash
+PRIOR_REVIEW_VERDICT=$(${PYTHON_BIN:-python3} -c "
+import json
+try:
+  d = json.load(open('${PHASE_DIR}/PIPELINE-STATE.json'))
+  print(d.get('steps',{}).get('review',{}).get('verdict','?'))
+except Exception: print('?')
+" 2>/dev/null)
+
+PRIOR_TEST_VERDICT=$(${PYTHON_BIN:-python3} -c "
+import json
+try:
+  d = json.load(open('${PHASE_DIR}/PIPELINE-STATE.json'))
+  print(d.get('steps',{}).get('test',{}).get('verdict','?'))
+except Exception: print('?')
+" 2>/dev/null)
+
+# Gate before /vg:test
+if [ "$NEXT_STEP" = "test" ] && [[ "$PRIOR_REVIEW_VERDICT" =~ ^(BLOCK|FAIL)$ ]]; then
+  echo "⛔ /vg:next refuses auto-advance to /vg:test — review verdict=${PRIOR_REVIEW_VERDICT}."
+  echo "   Read REVIEW-FEEDBACK.md + ROAM-MAP.md.  Pick A/B/C/D/E from /vg:review's exit guidance."
+  echo "   Then re-run /vg:next or invoke the chosen path directly."
+  exit 1
+fi
+
+# Gate before /vg:accept
+if [ "$NEXT_STEP" = "accept" ] && [[ "$PRIOR_TEST_VERDICT" =~ ^(GAPS_FOUND|FAILED)$ ]]; then
+  echo ""
+  echo "⛔ /vg:next refuses auto-advance to /vg:accept — test verdict=${PRIOR_TEST_VERDICT}."
+  echo ""
+  if [ "$PRIOR_TEST_VERDICT" = "FAILED" ]; then
+    echo "   /vg:accept WILL BLOCK with hard-gate redirect for FAILED verdict."
+  else
+    echo "   /vg:accept will register OVERRIDE-DEBT for non-critical gaps OR BLOCK on critical."
+  fi
+  echo ""
+  echo "   First: cat ${PHASE_DIR}/REVIEW-FEEDBACK.md   ${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
+  echo "   Then pick A-G from /vg:test's exit guidance (re-print: tail -100 ${PHASE_DIR}/.test-exit-output.log)"
+  echo ""
+  echo "   Common paths:"
+  echo "     A) Code bug fixed manually  → /vg:test ${PHASE_NUMBER} --regression-only"
+  echo "     B) Test spec wrong          → /vg:test ${PHASE_NUMBER} --skip-deploy"
+  echo "     C) Runtime bug              → /vg:review ${PHASE_NUMBER} --retry-failed"
+  echo "     D) Goal needs redesign      → /vg:amend ${PHASE_NUMBER}"
+  echo "     E) Accept with debt (NON-critical only) → /vg:accept ${PHASE_NUMBER}"
+  echo ""
+  exit 1
+fi
+```
+
+The gate intentionally exits 1 (not auto-route) so user MUST consciously pick
+the next step. Auto-routing on a non-PASS verdict was the v2.43.1 bug —
+sent users to /vg:accept which blocks, no clear way out.
 
 **Review cross-CLI option** (only when NEXT_STEP == "review"):
 Display cross-CLI option:
