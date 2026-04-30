@@ -213,6 +213,33 @@ where Maestro can run declarative YAML flows with assertions.
 - Diff vs working list → any NEW elements? Append them. Continue iteration.
 - Catches: accordion content, inline expansions, lazy-loaded sections, conditional buttons.
 
+**Capture stable selectors (v2.43.5 — i18n-resilient codegen):**
+For every interactive element observed (button/link/input/select/form/tab/modal/table-row), record these attributes from the DOM snapshot in addition to `name` and `role`:
+
+- `testid` — value of `data-testid` attribute (or whatever `vg.config.md > test_ids.prop_name` specifies). Empty string if absent. **Critical** — downstream `/vg:test` codegen uses this for stable selectors over `getByText`.
+- `aria_label` — `aria-label` attribute value when present (fallback selector).
+- `htmlFor` — when element is a `<label>`, record `htmlFor` so codegen can pair label↔input via `getByLabel`.
+
+When extracting from `browser_snapshot` YAML output, look for these props in the element's attribute list. Example snapshot fragment:
+```yaml
+- button "Đăng nhập" [ref=e19]:
+    /data-testid: "login-submit-btn"
+    /aria-label: "Đăng nhập vào hệ thống"
+```
+
+Map to scan output:
+```json
+{
+  "ref": "e19",
+  "role": "button",
+  "name": "Đăng nhập",
+  "testid": "login-submit-btn",
+  "aria_label": "Đăng nhập vào hệ thống"
+}
+```
+
+If `testid` is empty for an interactive element, the scan still proceeds — but downstream codegen will emit `getByText("Đăng nhập")` with a fragility warning. The `verify-i18n-vs-testid.py` validator surfaces these gaps to user post-review.
+
 Per element type:
 
 | Type | Action |
@@ -287,6 +314,8 @@ optional fields — no breaking change for web.
       "ref": "e1",
       "role": "button",
       "name": "Add Site",
+      "testid": "sites-add-btn",
+      "aria_label": "Add new site",
       "action": "click",
       "outcome": "modal_opened",
       "network": [{"method": "GET", "url": "/api/categories", "status": 200}],

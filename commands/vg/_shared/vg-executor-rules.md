@@ -355,6 +355,64 @@ const handleSubmit = async () => {
 };
 ```
 
+## Stable test selectors (v2.43.5 — MANDATORY when task has `<test_ids>` block)
+
+When the task XML contains a `<test_ids>` block (declared by planner per Rule 10), executor MUST inject the corresponding attribute on every component implementation:
+
+```xml
+<test_ids>
+  <id kind="button" value="login-submit-btn">Submit button</id>
+  <id kind="input" value="login-email-input">Email field</id>
+</test_ids>
+```
+
+**Implementation contract:**
+
+1. **Inject the attribute** matching `vg.config.md > test_ids.prop_name` (default `data-testid`):
+
+   ```tsx
+   // React/JSX
+   <button data-testid="login-submit-btn" onClick={handleSubmit}>
+     {t("login.submit")}
+   </button>
+
+   <input data-testid="login-email-input" type="email" {...field} />
+   ```
+
+   ```vue
+   <!-- Vue -->
+   <button :data-testid="'login-submit-btn'" @click="handleSubmit">
+     {{ $t('login.submit') }}
+   </button>
+   ```
+
+   ```svelte
+   <!-- Svelte -->
+   <button data-testid="login-submit-btn" on:click={handleSubmit}>
+     {$_('login.submit')}
+   </button>
+   ```
+
+2. **Value verbatim from PLAN** — copy the `value=` from `<test_ids>` exactly. Do NOT translate, do NOT camelCase, do NOT prefix unless planner did. The string is a contract. If you think the value is wrong, raise as Rule 4 deviation, ask user — do NOT silently rename.
+
+3. **English-only values** — if `<test_ids>` contains a value with non-ASCII characters (Vietnamese, etc.), STOP — that is a planner bug. Report via `report_bug "<test_ids> value contains non-ASCII: {value}"` and ask user before continuing.
+
+4. **Dynamic IDs (table rows, repeated items)** — when value contains `{...}` placeholder, substitute the runtime expression:
+   ```tsx
+   // <id kind="table-row" value="users-table-row-{userId}">
+   <tr data-testid={`users-table-row-${user.id}`}>
+   ```
+
+5. **Production strip is automatic** — DO NOT manually conditional-render the attribute (`{process.env.NODE_ENV !== 'production' && ...}`). Build plugin (configured via `vg.config.md > test_ids.build_time_strip`) handles this at compile time. Ship the attribute unconditionally in source.
+
+**What this prevents:** test specs (`/vg:test` codegen) can use stable English IDs (`getByTestId('login-submit-btn')`) instead of fragile text-matching (`getByText('Đăng nhập')`). When i18n rotates strings, test specs DO NOT BREAK.
+
+**What this does NOT do:**
+- It does NOT replace semantic HTML — keep `<button>` not `<div onClick>`. Test IDs supplement; they don't substitute for accessibility.
+- It does NOT skip ARIA / labels — `aria-label`, `<label htmlFor>` still required for accessibility.
+
+**Validator:** `verify-test-ids-injected.py` runs at /vg:build wave commit. Greps committed files for declared values; failure → wave reopen with reason.
+
 ## Design fidelity (L1 + L2 + L-002 lesson — MANDATORY for any `<design-ref>` slug)
 
 When the task has `<design-ref>` pointing to a real slug (Form A — NOT

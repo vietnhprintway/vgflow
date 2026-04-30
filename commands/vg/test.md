@@ -1835,10 +1835,33 @@ fi
 
 **Codegen rules (READY goal path):**
 1. **Credentials from env vars** — read from `process.env` (keys derived from config role names). Never hardcode emails/passwords/domains.
-2. **Selectors from goal_sequences** — use exact selectors recorded during review discovery. Prefer role-based locators (getByRole > getByText > locator). Never guess selectors.
+2. **Selectors — i18n-resilient priority order (v2.43.5)**:
+
+   Read `vg.config.md > test_ids.codegen_priority` — default order is:
+   ```
+   1: getByTestId    ← PRIMARY, stable English IDs (data-testid="login-submit-btn")
+   2: getByRole      ← FALLBACK 1, semantic + stable ([role=button][name=...])
+   3: getByLabel     ← FALLBACK 2, accessibility-aligned
+   4: getByText      ← LAST RESORT, fragile to i18n; warn in codegen output
+   ```
+
+   Codegen MUST consult RUNTIME-MAP.json for each interactive element. RUNTIME-MAP is populated by `/vg:review` Phase 2b-2 scanner — Haiku scanner captures `data-testid` attribute from DOM snapshot when present.
+
+   **Selection logic per element:**
+   - If `runtime_map.element.testid` is present → emit `page.getByTestId('${testid}')`
+   - Else if element has stable `aria-label` or `<label htmlFor>` → emit `page.getByLabel('${label}')` or `page.getByRole('${role}', { name: '${label}' })`
+   - Else if element has `role` attribute → emit `page.getByRole('${role}')`
+   - Else fall back to `page.getByText('${text}')` AND emit a warning comment in the spec:
+     ```ts
+     // ⚠ codegen-fallback: getByText fragile to i18n
+     // Add data-testid="<page>-<element>" to component → re-run /vg:review → re-codegen
+     await page.getByText('Đăng nhập').click();
+     ```
+
    **NEVER use dynamic IDs as selectors** (e.g., `data-id="site_9872"`, `#row-abc123`).
-   These break when data changes. Prefer: `getByRole('row').first()`, `getByText('site name')`,
-   or `nth(0)` index. If goal_sequence recorded a dynamic ID, the pre-codegen gate above BLOCKS execution — re-run /vg:review to re-record.
+   These break when data changes. For dynamic rows, use template testid: `getByTestId(`users-row-${userId}`)`. If goal_sequence recorded a dynamic ID without testid, the pre-codegen gate BLOCKS — re-run /vg:review to re-record after testid added.
+
+   **Cost of fallback** (telemetry): codegen emits `test.codegen.text_fallback` event per `getByText` fallback. /vg:telemetry surfaces high-fallback specs as candidates for testid-injection cleanup.
 3. **Assertions from TEST-GOALS** — each `test()` block maps to a success criterion. Never invent assertions beyond what TEST-GOALS specifies.
 4. **Steps from goal_sequences** — each `do` step becomes a Playwright action, each `assert` step becomes an `expect()`. Nearly 1:1 mapping.
 5. **Web-first assertions** — use `expect(locator).toHaveText()`, `expect(locator).toBeVisible()` with auto-retry. Never use single-shot checks.

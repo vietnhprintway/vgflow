@@ -423,6 +423,48 @@ test_strategy:
   auto_threshold: 0.80
   haiku_threshold: 0.50
 
+# === Stable Test Selectors (v2.43.5 — i18n-resilient codegen) ===
+# Problem: Playwright codegen using getByText("Đăng nhập") breaks when i18n
+# rotates the text. Solution: every interactive component declares a stable
+# `data-testid` attribute (English, kebab-case, value invariant under i18n).
+# Production build strips the attribute via babel/SWC plugin → no crawl exposure.
+#
+# Blueprint (planner) MUST declare <test_ids> per UI task. Executor MUST inject
+# the attribute when building the component. Codegen (test) prefers
+# getByTestId() over getByText(). Scanner (review) captures testid → RUNTIME-MAP.
+test_ids:
+  enabled: true
+  prop_name: "data-testid"          # convention — prop key in JSX/template
+  value_lang: "en"                   # values English-only (kebab-case)
+                                     # invariant under i18n re-translation
+  value_format: "kebab-case"         # btn-login-submit, form-email, table-users-row-{id}
+  scope: "page-prefixed"             # unique per page (page-button-name) vs global
+  required_for:                      # element kinds that MUST have testid
+    - button                          # <button>, [role=button]
+    - link                            # <a>, [role=link]
+    - input                           # text/email/password/textarea
+    - select                          # combobox, dropdown
+    - form                            # <form> root
+    - table-row                       # <tr> in data tables (id-suffixed)
+    - modal                           # dialog/drawer root
+    - tab                             # tab buttons + panels
+  exclude_layout:                    # decorative-only — testid optional
+    - "div"                           # pure layout containers
+    - "span"                          # inline text without interaction
+  build_time_strip:
+    enabled: true
+    env_var: "NODE_ENV"              # strip when env_var matches strip_when_value
+    strip_when_value: "production"
+    plugin_recommendation:
+      react_vite: "babel-plugin-jsx-remove-data-test-id"
+      next:       "@swc/plugin-remove-properties (props: ['data-testid'])"
+      vue:        "vite-plugin-vue-attrs-strip (or custom transform)"
+  codegen_priority:                  # /vg:test selector preference order
+    1: "getByTestId"                  # PRIMARY — stable
+    2: "getByRole"                    # FALLBACK 1 — semantic, stable
+    3: "getByLabel"                   # FALLBACK 2 — accessibility-aligned
+    4: "getByText"                    # LAST RESORT — fragile to i18n; warn
+
 # === CRUD Surface Contract (v2.12+) ===
 # Blueprint writes CRUD-SURFACES.md as the parent contract for resource list,
 # read, create, update, delete behavior. Existing paging/list/security
