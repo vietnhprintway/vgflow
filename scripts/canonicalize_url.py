@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""canonicalize-url.py — strip volatile params, normalize URL for memoization.
+"""canonicalize_url.py — strip volatile params, normalize URL for memoization.
 
-Usage: canonicalize-url.py <url>
+Usage: canonicalize_url.py <url>
 Outputs canonical form to stdout.
 """
 import sys
@@ -16,9 +16,7 @@ VOLATILE_PARAMS = {
 def canonicalize(url: str) -> str:
     p = urlparse(url)
     netloc = p.netloc.lower()
-    path = p.path.rstrip("/") or "/"
-    if path == "/":
-        path = ""
+    path = p.path.rstrip("/")
     qs = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
           if k.lower() not in VOLATILE_PARAMS]
     qs.sort()
@@ -26,6 +24,6 @@ def canonicalize(url: str) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: canonicalize-url.py <url>", file=sys.stderr)
+        print("Usage: canonicalize_url.py <url>", file=sys.stderr)
         sys.exit(2)
     print(canonicalize(sys.argv[1]))
