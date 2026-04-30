@@ -1,7 +1,7 @@
 ---
 name: vg:review
 description: Post-build review — code scan + browser discovery + fix loop + goal comparison → RUNTIME-MAP
-argument-hint: "<phase> [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--full-scan] [--allow-no-crud-surface]"
+argument-hint: "<phase> [--target-env=local|staging|sandbox|prod | --local | --sandbox | --staging | --prod] [--mode=full|delta|regression|schema-verify|link-check|infra-smoke] [--scanner=haiku-only|codex-supplement|gemini-supplement|council-all] [--non-interactive] [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--full-scan] [--allow-no-crud-surface]"
 allowed-tools:
   - Read
   - Write
@@ -47,6 +47,13 @@ runtime_contract:
       severity: "warn"
     - name: "create_task_tracker"
       severity: "warn"
+    # v2.42.1 — env+mode+scanner gate: HARD block. AI MUST run AskUserQuestion
+    # for env/mode/scanner before proceeding. Closes silent-default gap where
+    # phases re-ran review 2-3× because env wasn't pinned and no audit trail
+    # existed in PIPELINE-STATE.json. Waiver: --non-interactive flag OR
+    # (--target-env + --mode + --scanner all on CLI).
+    - name: "0a_env_mode_gate"
+      required_unless_flag: "--non-interactive"
     - name: "phase_profile_branch"
       severity: "warn"
 
@@ -108,6 +115,11 @@ runtime_contract:
       phase: "${PHASE_NUMBER}"
     - event_type: "review.started"
       phase: "${PHASE_NUMBER}"
+    # v2.42.1 — env+mode+scanner confirmation. Required unless --non-interactive
+    # OR all axes (--target-env + --mode + --scanner) already on CLI.
+    - event_type: "review.env_mode_confirmed"
+      phase: "${PHASE_NUMBER}"
+      required_unless_flag: "--non-interactive"
     - event_type: "review.completed"
       phase: "${PHASE_NUMBER}"
     - event_type: "crossai.verdict"
@@ -403,6 +415,187 @@ s['updated_at'] = __import__('datetime').datetime.now().isoformat()
 p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 ```
+</step>
+
+<step name="0a_env_mode_gate">
+## Step 0a — Confirm review env + mode + scanner (v2.42.1+ — HARD gate)
+
+**Background:** Pre-v2.42, review used `config.step_env.verify` (default `sandbox` for web-fullstack) silently. User had no visibility into which env / mode / scanner depth review ran in. Result: phases needed 2-3 review re-runs because first attempt didn't pin env explicitly. PIPELINE-STATE.json never recorded env+mode → no audit trail. v2.42 added a `severity: warn` prompt — AI agents skipped it (warn = soft). v2.42.1 makes this a HARD block: severity defaults to block + telemetry event required unless `--non-interactive`.
+
+**This step makes env+mode+scanner user-visible + recorded BEFORE any other work happens.**
+
+### ⛔ MANDATORY FIRST ACTION (before ANY other tool call in this step)
+
+**STOP. The very first thing you do in step `0a_env_mode_gate` is invoke `AskUserQuestion`** with the 3-question payload below — no exceptions other than the documented waivers.
+
+**Skip AskUserQuestion ONLY when:**
+- `$ARGUMENTS` contains `--non-interactive` flag, OR
+- `VG_NON_INTERACTIVE=1` env var is set, OR
+- `$ARGUMENTS` contains ALL THREE: `--target-env=<v>` (or `--sandbox`/`--local`/`--staging`/`--prod`), `--mode=<v>`, and `--scanner=<v>`
+
+If ANY of the 3 axes is missing on CLI and not waived → AskUserQuestion is REQUIRED. Do NOT silently default. Do NOT run the bash block below before the AskUserQuestion call returns.
+
+**Why HARD gate (v2.42.1):** AI agents have a strong pull to silent-default in `warn` severity contracts. Block severity + telemetry-required closes the gap.
+
+### AskUserQuestion payload (3 questions, single batched call)
+
+```
+questions:
+  - question: "Review environment — which environment to run review against?"
+    header: "Env"
+    multiSelect: false
+    options:
+      - label: "local — your machine (fastest)"
+        description: "Browser MCP local, local DB seed, no SSH needed. Best for fast iteration."
+      - label: "sandbox — VPS / staging-like"
+        description: "Production-like, ssh deploy. Default for ship-ready phases."
+      - label: "staging — staging server (only if configured)"
+        description: "Selecting will fail if vg.config.md has no staging entry."
+      - label: "prod — production (WARNING: read-only debug)"
+        description: "Emergency debug only. Workflow blocks mutations."
+  - question: "Review mode — which phase profile?"
+    header: "Mode"
+    multiSelect: false
+    options:
+      - label: "full — full discovery (feature profile)"
+        description: "Phase 1 code scan + Phase 2 browser scan + fix loop. Default for new features."
+      - label: "delta — diff-aware (hotfix profile)"
+        description: "Scan only changed regions. Best for small hotfixes."
+      - label: "regression — sweep after bugfix (bugfix profile)"
+        description: "Re-verify parent goals + new bug fix area."
+      - label: "schema-verify — round-trip migration (migration profile)"
+        description: "Up/down migration check, no UI discovery."
+      - label: "link-check — markdown links (docs profile)"
+        description: "Validate links + cross-refs only. Skip UI."
+      - label: "infra-smoke — run success_criteria bash (infra profile)"
+        description: "Parse SPECS bash bullets, run each, record results."
+  - question: "Scanner — depth/CLI for code-scan + view-scan"
+    header: "Scanner"
+    multiSelect: false
+    options:
+      - label: "haiku-only — Haiku scanner default (fastest)"
+        description: "Phase 1 + Phase 2b-2 use Haiku agents. Best ratio depth/cost. Default unless deeper sweep needed."
+      - label: "codex-supplement — Haiku + Codex CLI deepscan on key surfaces"
+        description: "After Haiku finishes, spawn Codex CLI to cross-scan key views. +cost +time, catches logic bugs Haiku misses."
+      - label: "gemini-supplement — Haiku + Gemini CLI deepscan"
+        description: "Gemini Pro cross-scan, focus on UI consistency + a11y. +cost +time."
+      - label: "council-all — Haiku + Codex + Gemini + Claude (full council)"
+        description: "Triple cross-AI review. Use for ship-critical phases (e.g., payment, auth)."
+```
+
+### After AskUserQuestion returns
+
+**Export BEFORE running bash:**
+```bash
+export VG_ENV="<chosen env>"          # e.g., "local"
+export VG_REVIEW_MODE="<chosen>"      # e.g., "full"
+export VG_SCANNER="<chosen scanner>"  # e.g., "haiku-only"
+```
+
+If non-interactive path: echo chosen values to user (`Auto-pinned: env=X, mode=Y, scanner=Z`) but do NOT prompt.
+
+### Bash (resolve final values + persist + emit telemetry)
+
+```bash
+# 1. Defaults (if AI did not export — non-interactive or skipped paths)
+: "${VG_ENV:=${CONFIG_STEP_ENV_VERIFY:-local}}"
+: "${VG_REVIEW_MODE:=${REVIEW_MODE:-full}}"
+: "${VG_SCANNER:=haiku-only}"
+
+# 2. CLI flag override (still applies even if AI exported — explicit beats prompt)
+if [[ "$ARGUMENTS" =~ --target-env=([a-z]+) ]]; then VG_ENV="${BASH_REMATCH[1]}"; fi
+if [[ "$ARGUMENTS" =~ --sandbox ]]; then VG_ENV="sandbox"; fi
+if [[ "$ARGUMENTS" =~ --local ]]; then VG_ENV="local"; fi
+if [[ "$ARGUMENTS" =~ --staging ]]; then VG_ENV="staging"; fi
+if [[ "$ARGUMENTS" =~ --prod ]]; then VG_ENV="prod"; fi
+if [[ "$ARGUMENTS" =~ --mode=([a-z-]+) ]]; then VG_REVIEW_MODE="${BASH_REMATCH[1]}"; fi
+if [[ "$ARGUMENTS" =~ --scanner=([a-z-]+) ]]; then VG_SCANNER="${BASH_REMATCH[1]}"; fi
+
+export VG_ENV VG_REVIEW_MODE VG_SCANNER
+
+# 3. Backward-compat: existing code reads ENV_NAME / REVIEW_MODE
+ENV_NAME="$VG_ENV"
+REVIEW_MODE="$VG_REVIEW_MODE"
+export ENV_NAME REVIEW_MODE
+
+# 4. Validate env exists in config (warn if not configured)
+if ! grep -qE "^[[:space:]]*${VG_ENV}:" .claude/vg.config.md 2>/dev/null; then
+  echo "⚠ Env '${VG_ENV}' not present in vg.config.md — may fail at deploy/auth steps." >&2
+  echo "   Available envs: $(grep -oE '^  (local|sandbox|staging|prod):' .claude/vg.config.md | tr -d ' :' | tr '\n' ' ')" >&2
+fi
+
+# 5. Validate mode is recognized
+case "$VG_REVIEW_MODE" in
+  full|delta|regression|schema-verify|link-check|infra-smoke) ;;
+  *)
+    echo "⚠ Mode '${VG_REVIEW_MODE}' invalid — falling back to 'full'." >&2
+    VG_REVIEW_MODE="full"
+    REVIEW_MODE="full"
+    export VG_REVIEW_MODE REVIEW_MODE
+    ;;
+esac
+
+# 5b. Validate scanner is recognized
+case "$VG_SCANNER" in
+  haiku-only|codex-supplement|gemini-supplement|council-all) ;;
+  *)
+    echo "⚠ Scanner '${VG_SCANNER}' invalid — falling back to 'haiku-only'." >&2
+    VG_SCANNER="haiku-only"
+    export VG_SCANNER
+    ;;
+esac
+
+# 6. Display banner — user-visible confirmation of what's about to run
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  /vg:review configuration"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Phase:    ${PHASE_NUMBER} (profile=${PHASE_PROFILE})"
+echo "  Env:      ${VG_ENV}"
+echo "  Mode:     ${VG_REVIEW_MODE}"
+echo "  Scanner:  ${VG_SCANNER}"
+echo "  Args:     ${ARGUMENTS}"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# 7. Persist to PIPELINE-STATE.json — audit trail
+${PYTHON_BIN} -c "
+import json
+from pathlib import Path
+import datetime
+p = Path('${PHASE_DIR}/PIPELINE-STATE.json')
+s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+steps = s.setdefault('steps', {})
+review = steps.setdefault('review', {})
+review['env'] = '${VG_ENV}'
+review['mode'] = '${VG_REVIEW_MODE}'
+review['scanner'] = '${VG_SCANNER}'
+review['profile'] = '${PHASE_PROFILE}'
+review['last_invoked_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+review['last_args'] = '''${ARGUMENTS}'''[:500]
+p.write_text(json.dumps(s, indent=2))
+" 2>/dev/null
+
+# 8. Emit telemetry — orchestrator gates on this event
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+  --event-type "review.env_mode_confirmed" \
+  --phase "${PHASE_NUMBER}" \
+  --command "vg:review" \
+  --actor "skill" \
+  --outcome "INFO" \
+  --payload "{\"env\":\"${VG_ENV}\",\"mode\":\"${VG_REVIEW_MODE}\",\"scanner\":\"${VG_SCANNER}\",\"profile\":\"${PHASE_PROFILE}\",\"interactive\":$([[ \"$ARGUMENTS\" =~ --non-interactive ]] && echo false || echo true)}" \
+  2>/dev/null || true
+
+# 9. Mark step
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "0a_env_mode_gate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/0a_env_mode_gate.done" 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review 0a_env_mode_gate 2>/dev/null || true
+```
+
+**Downstream impact:**
+- Phase 1 / Phase 2 / Phase 2.5 / Phase 3 / Phase 4 all read `$ENV_NAME` and `$REVIEW_MODE` — no further changes needed; they pick up user choice automatically.
+- `phaseP_*` profile branches gate on `$REVIEW_MODE` — user can override auto-detected profile mode here.
+- `$VG_SCANNER` is recorded into PIPELINE-STATE.json + telemetry. Banner echoes the choice at start of phase1_code_scan so user sees the value was honored. **Supplemental CrossAI CLI scan (codex-supplement / gemini-supplement / council-all) wires in v2.42.2** — a follow-up patch lands the actual `codex exec` / `gemini` / Claude CLI dispatch after Haiku completes, plus merge into RUNTIME-MAP under `crossai_scanner_findings`. v2.42.1 captures the user choice so the data path is in place.
+- Re-running `/vg:review <phase>` re-prompts (audit trail accumulates `last_invoked_at` history).
 </step>
 
 <step name="0b_goal_coverage_gate">
@@ -1275,6 +1468,30 @@ fi
 ## Phase 1: CODE SCAN (automated, <10 sec)
 
 **If --skip-scan, skip this phase.**
+
+```bash
+# Echo scanner choice from step 0a so user sees their --scanner choice was honored
+echo ""
+echo "━━━ Phase 1 — Code scan (scanner=${VG_SCANNER:-haiku-only}) ━━━"
+case "${VG_SCANNER:-haiku-only}" in
+  haiku-only)
+    echo "  Mode: Haiku-only — fastest path, default depth."
+    ;;
+  codex-supplement)
+    echo "  Mode: Haiku + Codex CLI supplement (queued for v2.42.2 wiring)."
+    echo "  Note: v2.42.1 records the choice; supplemental Codex scan invocation lands in next iter."
+    ;;
+  gemini-supplement)
+    echo "  Mode: Haiku + Gemini CLI supplement (queued for v2.42.2 wiring)."
+    echo "  Note: v2.42.1 records the choice; supplemental Gemini scan invocation lands in next iter."
+    ;;
+  council-all)
+    echo "  Mode: Haiku + Codex + Gemini + Claude council (queued for v2.42.2 wiring)."
+    echo "  Note: v2.42.1 records the choice; full council scan invocation lands in next iter."
+    ;;
+esac
+echo ""
+```
 
 ### 1a: Contract Verify (grep)
 
