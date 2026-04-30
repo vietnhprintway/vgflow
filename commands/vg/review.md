@@ -71,6 +71,10 @@ runtime_contract:
       severity: "warn"
     - name: "phase2_browser_discovery"
       severity: "warn"
+    - name: "phase2_5_recursive_lens_probe"
+      severity: "warn"
+    - name: "phase2b_collect_merge"
+      severity: "warn"
     - name: "phase2_exploration_limits"
       severity: "warn"
     - name: "phase2_mobile_discovery"
@@ -109,6 +113,13 @@ runtime_contract:
     - event_type: "crossai.verdict"
       phase: "${PHASE_NUMBER}"
       required_unless_flag: "--skip-crossai"
+    # v2.41.2 — Phase 2b-2.5 enforcement (closes regression from v2.40.0
+    # that nested 2b-2.5 inside phase2_browser_discovery without contract)
+    - event_type: "review.recursive_probe.preflight_asked"
+      phase: "${PHASE_NUMBER}"
+      required_unless_flag: "--non-interactive"
+    - event_type: "review.recursive_probe.eligibility_checked"
+      phase: "${PHASE_NUMBER}"
   forbidden_without_override:
     - "--override-reason"
     - "--skip-scan"
@@ -2482,6 +2493,10 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
   - `sequential` mode: exactly 1 Haiku agent at a time (mobile safety)
   - `none` mode: no Haiku agents spawned (cli-tool/library)
 
+</step>
+
+<step name="phase2_5_recursive_lens_probe" profile="web-fullstack,web-frontend-only">
+
 #### 2b-2.5: Recursive Lens Probe (v2.40, manager dispatcher)
 
 **Purpose:** After parallel Haiku scanners (2b-2) complete, run the recursive lens probe layer to deep-dive each interesting clickable through bug-class lenses (authz-negative, csrf, idor, ssrf, ...). Manager dispatcher reads scan-*.json, classifies clickables into element classes, picks lenses per class, spawns workers in parallel (auto), generates prompt files (manual), or both (hybrid). Goals discovered by lens probes are merged single-writer into TEST-GOALS-DISCOVERED.md.
@@ -2495,6 +2510,14 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
 6. `ENV-CONTRACT.md` present, `disposable_seed_data: true`, all `third_party_stubs` stubbed
 
 If eligibility fails → write `.recursive-probe-skipped.yaml` and continue to 2b-3 (no error).
+
+<MANDATORY_GATE>
+**You MUST run the AskUserQuestion pre-flight below BEFORE invoking the bash block** — unless `--non-interactive` / `VG_NON_INTERACTIVE=1` is set, OR all three axes (`--recursion`, `--probe-mode`, `--target-env`) were already passed on the `/vg:review` command line.
+- Do NOT skip the pre-flight because "defaults look fine" — the operator must explicitly choose recursion depth, probe execution mode, and target environment per run.
+- Do NOT delegate the prompt to `spawn_recursive_probe.py` stdin — Claude Code's bash sandbox makes `sys.stdin.isatty()` return False, so script-side prompts silently fall back to defaults.
+- The bash block at the end of this section will refuse to launch (loud abort + telemetry) if it detects an interactive run with no env vars set, which means the pre-flight was skipped.
+- After AskUserQuestion answers, emit telemetry event `review.recursive_probe.preflight_asked` (logs the chosen axes for audit).
+</MANDATORY_GATE>
 
 **Pre-flight (v2.41.1) — operator config via AskUserQuestion:**
 
@@ -2563,6 +2586,29 @@ all three before invoking bash:
 # otherwise (matches CI / VG_NON_INTERACTIVE=1 contract).
 SKIP_REASON="${SKIP_RECURSIVE_PROBE:-}"
 
+# v2.41.2 — anti-forge guard: if the orchestrator skipped the AskUserQuestion
+# pre-flight (no env vars set + not in CI), refuse to launch with bare defaults.
+# This catches the regression where Phase 2b-2.5 silently ran with light/auto/
+# sandbox because the markdown narrative pre-flight was lazy-skipped by the LLM.
+if [[ -z "${RECURSION_MODE:-}" && -z "${PROBE_MODE:-}" && -z "${TARGET_ENV:-}" \
+      && "${VG_NON_INTERACTIVE:-0}" != "1" ]]; then
+  echo "" >&2
+  echo "⛔ Phase 2b-2.5 pre-flight skipped." >&2
+  echo "   The MANDATORY_GATE above requires AskUserQuestion to run BEFORE this bash block" >&2
+  echo "   so the operator can choose recursion depth / probe-mode / target-env." >&2
+  echo "   None of the three env vars (RECURSION_MODE / PROBE_MODE / TARGET_ENV) are set." >&2
+  echo "" >&2
+  echo "   Fix one of the following:" >&2
+  echo "   1. Run AskUserQuestion to ask the operator (recommended for interactive runs)" >&2
+  echo "   2. Pass --recursion / --probe-mode / --target-env on the /vg:review CLI" >&2
+  echo "   3. Set VG_NON_INTERACTIVE=1 to accept defaults (CI / scripted runs only)" >&2
+  echo "   4. Pass --skip-recursive-probe=<reason> to skip Phase 2b-2.5 entirely" >&2
+  echo "" >&2
+  emit_telemetry_v2 "review.recursive_probe.preflight_skipped" "${PHASE_NUMBER}" \
+    --tag "severity=block" 2>/dev/null || true
+  exit 2
+fi
+
 ARGS=( --phase-dir "$PHASE_DIR" )
 if [[ -n "${RECURSION_MODE:-}" ]]; then
   ARGS+=( --mode "$RECURSION_MODE" )
@@ -2579,6 +2625,12 @@ fi
 if [[ "${VG_NON_INTERACTIVE:-0}" == "1" ]]; then
   ARGS+=( --non-interactive )
 fi
+
+# v2.41.2 — pre-flight succeeded; emit telemetry so audit can confirm prompts ran.
+emit_telemetry_v2 "review.recursive_probe.preflight_asked" "${PHASE_NUMBER}" \
+  --tag "recursion=${RECURSION_MODE:-default}" \
+  --tag "probe_mode=${PROBE_MODE:-default}" \
+  --tag "target_env=${TARGET_ENV:-default}" 2>/dev/null || true
 
 python scripts/spawn_recursive_probe.py "${ARGS[@]}"
 ```
@@ -2623,6 +2675,10 @@ python scripts/aggregate_recursive_goals.py --phase-dir "$PHASE_DIR" --mode "$RE
 **Idempotency:** Re-running 2b-2.5 reuses existing `runs/` artifacts; canonical-key dedup in aggregator prevents duplicate goal stubs.
 
 **Failure semantics:** Eligibility fail → skip block (continue). Worker fail → recorded in `runs/INDEX.json`, does not abort pipeline. Manual mode timeout → operator re-runs; no automatic retry.
+
+</step>
+
+<step name="phase2b_collect_merge" profile="web-fullstack,web-frontend-only">
 
 #### 2b-3: Collect, Cross-Check, Fill Gaps (Opus, no browser)
 

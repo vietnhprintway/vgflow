@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.41.2 — Phase 2b-2.5 enforcement model fix (regression from v2.40.0)
+
+User report: "/vg:review on another project just runs headless browser and reports bugs — no prompts for recursion / probe-mode / target-env, even after v2.41.1." Cross-AI review traced this to an enforcement-model regression: v2.40.0 introduced Phase 2b-2.5 by **nesting it inside `<step name="phase2_browser_discovery">`** instead of giving it its own step wrapper. v2.39.0 had 24 top-level `<step>` wrappers, each with profile filter + `must_touch_markers` entry + telemetry contract. Phase 2b-2.5 had none of these — orchestrator could (and did) silently skip the entire 142-line block.
+
+### Fixed (root cause: enforcement model)
+- `commands/vg/review.md`: split Phase 2b-2.5 into its own `<step name="phase2_5_recursive_lens_probe">` (profile=web-fullstack,web-frontend-only). 2b-3 (collect/merge) split into `<step name="phase2b_collect_merge">`. Both registered in `must_touch_markers` (severity: warn).
+- New telemetry contract: `review.recursive_probe.preflight_asked` (required unless --non-interactive) + `review.recursive_probe.eligibility_checked` (always emitted with passed=true|false payload).
+- AskUserQuestion pre-flight section now wrapped in `<MANDATORY_GATE>` — orchestrator can no longer lazy-skip.
+- Bash anti-forge guard: refuses to launch with bare defaults if all three env vars empty + not in CI mode. Emits `review.recursive_probe.preflight_skipped` block-severity telemetry.
+
+### Fixed (B2: dead lens prompts)
+- `scripts/spawn_recursive_probe.py`: workers now actually load the lens markdown body from `commands/vg/_shared/lens-prompts/lens-*.md` (mirrors `spawn-crud-roundtrip.py:load_kit_prompt` pattern). Pre-v2.41.2 the 16 lens prompts sat unused on disk while workers received a 3-line generic prompt — explains why run artifacts came back empty.
+- Placeholder substitution: `${VIEW_PATH}`, `${SELECTOR}`, `${ROLE}`, `${TOKEN_REF}`, `${PEER_TOKEN_REF}`, `${BASE_URL}`, `${OUTPUT_PATH}`, `${ACTION_BUDGET}`, etc. resolved before subprocess spawn. Unknown placeholders left as `${VAR}` literal (workers can detect missing context).
+- Auth context loaded: `tokens.local.yaml` + `vg.config.md base_url:` injected into context block + lens body.
+
+### Fixed (B3: silent eligibility skip)
+- `scripts/spawn_recursive_probe.py:check_eligibility`: skip path now writes a stderr banner with per-rule actionable hints (e.g. "set `phase_profile: feature` in `.phase-profile`"), emits `review.recursive_probe.skipped` telemetry, and points at the `.recursive-probe-skipped.yaml` audit file. Pre-v2.41.2 the skip went silently to stdout mixed with Haiku scanner log → operators thought 2b-2.5 ran when it had failed eligibility silently.
+
+### Internal
+- `codex-skills/vg-review/SKILL.md` re-mirrored with new step boundaries + contract entries.
+- 234 tests pass.
+
+### Migration note for existing projects
+Run `/vg:update` then `/vg:reapply-patches` (if you have local edits to `review.md`). The next `/vg:review` will show three AskUserQuestion prompts before browser probes start.
+
 ## v2.41.1 — Phase 2b-2.5 interactive prompt fix (orchestrator-layer)
 
 ### Fixed (UX, regression from v2.40.0)

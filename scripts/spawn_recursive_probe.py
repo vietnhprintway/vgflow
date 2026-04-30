@@ -210,6 +210,45 @@ def _check_env_contract(phase_dir: Path) -> tuple[bool, list[str]]:
 # ---------------------------------------------------------------------------
 # Eligibility
 # ---------------------------------------------------------------------------
+def _eligibility_hint(reason: str) -> str:
+    """Return an actionable hint for a failed eligibility reason. v2.41.2 —
+    closes B3 (silent skip). Empty string when no specific hint applies."""
+    r = reason.lower()
+    if "override:" in r:
+        return ("operator passed --skip-recursive-probe; remove the flag to "
+                "re-enable Phase 2b-2.5")
+    if "phase_profile" in r:
+        return ("set `phase_profile: feature` (or feature-legacy/hotfix) in "
+                "the phase's `.phase-profile` YAML — Phase 2b-2.5 only fires "
+                "for resource-mutation profiles")
+    if "visual-only" in r:
+        return ("surface=visual disables runtime probes by design; switch to "
+                "surface=ui in `.phase-profile` if this phase actually mutates "
+                "data")
+    if "surface" in r:
+        return ("set `surface: ui` (or ui-mobile) in the phase's "
+                "`.phase-profile` YAML — non-UI phases skip browser probes")
+    if "crud-surfaces.md declares 0 resources" in r:
+        return ("populate CRUD-SURFACES.md with at least one resource block "
+                "(see `.vg/templates/CRUD-SURFACES.template.md`) — recursive "
+                "probe needs CRUD targets to pick lenses against")
+    if "touched_resources" in r and "intersect" in r:
+        return ("ensure SUMMARY.md / RIPPLE-ANALYSIS.md lists at least one "
+                "`touched_resources` entry that matches a name in "
+                "CRUD-SURFACES.md — otherwise the probe has nothing to test")
+    if "env-contract.md" in r and "missing" in r:
+        return ("create ENV-CONTRACT.md with disposable_seed_data: true and "
+                "third_party_stubs declarations (template at "
+                "`.vg/templates/ENV-CONTRACT.template.md`)")
+    if "disposable_seed_data" in r:
+        return ("set `disposable_seed_data: true` in ENV-CONTRACT.md — "
+                "recursive probe refuses to mutate non-disposable data")
+    if "third_party_stubs" in r:
+        return ("set every entry in ENV-CONTRACT.md `third_party_stubs:` to "
+                "`stubbed` — Phase 2b-2.5 must not hit live third-party APIs")
+    return ""
+
+
 def check_eligibility(phase_dir: Path,
                       override_reason: str | None) -> dict[str, Any]:
     """Run the 6-rule eligibility gate. Returns a JSON-friendly dict."""
@@ -374,6 +413,134 @@ def _classify_phase(phase_dir: Path) -> list[dict[str, Any]]:
     return clickables if isinstance(clickables, list) else []
 
 
+# ---------------------------------------------------------------------------
+# Lens prompt loading (v2.41.2 — closes B2 from cross-AI review)
+#
+# The 16 lens markdown files at commands/vg/_shared/lens-prompts/lens-*.md
+# define the actual probe instructions (threat model, recon, probe ideas,
+# stopping criteria, output schema). Pre-v2.41.2 spawn_one_worker shipped a
+# 3-line generic prompt and never read these files → workers had no clue
+# how to probe → run artifacts came back empty. We now load the lens body,
+# strip the YAML frontmatter, substitute ${VAR} placeholders, and use it
+# as the worker prompt — mirrors spawn-crud-roundtrip.py:load_kit_prompt.
+# ---------------------------------------------------------------------------
+
+_LENS_DIRS = [
+    REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "lens-prompts",
+    REPO_ROOT / "commands" / "vg" / "_shared" / "lens-prompts",
+]
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n.*?\n---\s*\n", re.S)
+_VAR_RE = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
+
+
+def _load_lens_prompt(lens: str) -> str:
+    """Load a lens prompt body (frontmatter stripped). Returns empty string
+    if the lens file is missing — caller will fall back to the generic
+    inline prompt rather than crash, but the run artifact will be marked
+    ``lens_body_missing=true`` so post-hoc audit can flag it."""
+    for d in _LENS_DIRS:
+        path = d / f"{lens}.md"
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            return _FRONTMATTER_RE.sub("", text, count=1).lstrip()
+    return ""
+
+
+def _substitute_lens_vars(text: str, variables: dict[str, str]) -> str:
+    """Replace ``${VAR}`` placeholders in ``text`` with values from
+    ``variables``. Unknown placeholders are left untouched (the worker will
+    see the literal ``${VAR}`` and can either skip that probe variation or
+    treat it as a sentinel). This is intentional — we'd rather a worker
+    skip an IDOR variation that needs PEER_TOKEN_REF than silently substitute
+    None/null and probe the wrong endpoint."""
+    def _replace(m: re.Match[str]) -> str:
+        key = m.group(1)
+        return str(variables[key]) if key in variables else m.group(0)
+    return _VAR_RE.sub(_replace, text)
+
+
+# ---------------------------------------------------------------------------
+# Auth context loader (v2.41.2 — closes I2 from cross-AI review)
+#
+# Mirrors scripts/spawn-crud-roundtrip.py:{load_tokens, resolve_base_url}
+# so workers receive auth_token + base_url + peer_token in the rendered
+# prompt. Without these, every probe on an auth-required endpoint returns
+# 401 and the lens variations that need cross-tenant comparison can't run.
+# ---------------------------------------------------------------------------
+
+def _load_tokens(phase_dir: Path) -> dict[str, Any]:
+    """Load tokens.local.yaml (phase-local first, repo-root fallback)."""
+    candidates = [
+        phase_dir / ".review-fixtures" / "tokens.local.yaml",
+        REPO_ROOT / ".review-fixtures" / "tokens.local.yaml",
+    ]
+    for p in candidates:
+        if not p.is_file():
+            continue
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            if isinstance(data, dict):
+                return data
+        except yaml.YAMLError:
+            return {}
+    return {}
+
+
+_BASE_URL_RE = re.compile(
+    r"(?:^|\n)[^\S\n]*base_url:[^\S\n]*[\"']?([^\"'\n#]+)"
+)
+
+
+def _resolve_base_url(phase_dir: Path) -> str | None:
+    """Find ``base_url:`` in vg.config.md (4-location priority)."""
+    for cfg_path in (
+        phase_dir / ".claude" / "vg.config.md",
+        phase_dir / "vg.config.md",
+        REPO_ROOT / ".claude" / "vg.config.md",
+        REPO_ROOT / "vg.config.md",
+    ):
+        if not cfg_path.is_file():
+            continue
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+        m = _BASE_URL_RE.search(text)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def _build_lens_variables(entry: dict[str, Any], phase_dir: Path,
+                          output_path: Path,
+                          tokens: dict[str, Any],
+                          base_url: str | None) -> dict[str, str]:
+    """Assemble the ${VAR} → value map for lens placeholder substitution."""
+    elem = entry.get("element", {})
+    lens = entry.get("lens", "lens-unknown")
+    role = elem.get("role") or entry.get("role") or "anonymous"
+    role_token = (tokens.get(role) or {}) if isinstance(tokens, dict) else {}
+    peer_token = (tokens.get("peer") or tokens.get("peer_tenant") or {}) \
+        if isinstance(tokens, dict) else {}
+
+    return {
+        "VIEW_PATH": str(elem.get("view") or ""),
+        "ELEMENT_DESCRIPTION": str(elem.get("description") or elem.get("selector") or ""),
+        "ELEMENT_CLASS": str(elem.get("element_class") or ""),
+        "SELECTOR": str(elem.get("selector") or ""),
+        "RESOURCE": str(elem.get("resource") or ""),
+        "SCOPE": str(elem.get("scope") or "global"),
+        "ROLE": str(role),
+        "TOKEN_REF": str(role_token.get("token") or ""),
+        "PEER_TOKEN_REF": str(peer_token.get("token") or ""),
+        "BASE_URL": str(base_url or ""),
+        "OUTPUT_PATH": str(output_path),
+        "ACTION_BUDGET": str(entry.get("action_budget") or 12),
+        "DEPTH": str(entry.get("depth") or 1),
+        "TENANT_ID": str(role_token.get("tenant_id") or ""),
+        "USER_ID": str(role_token.get("user_id") or ""),
+        "LENS": lens,
+    }
+
+
 def _output_basename(entry: dict[str, Any]) -> str:
     """Stable filename component: ``recursive-{lens}-{selector_hash}-d{depth}``."""
     elem = entry.get("element", {})
@@ -402,23 +569,58 @@ def spawn_one_worker(entry: dict[str, Any], phase_dir: Path,
     runs_dir.mkdir(parents=True, exist_ok=True)
     output_path = runs_dir / f"{_output_basename(entry)}.json"
 
+    # v2.41.2 — load full lens prompt body (was missing pre-v2.41.2; workers
+    # received only a 3-line generic prompt). Frontmatter is stripped, then
+    # ${VAR} placeholders are substituted from the activation context.
+    tokens = _load_tokens(phase_dir)
+    base_url = _resolve_base_url(phase_dir)
+    variables = _build_lens_variables(entry, phase_dir, output_path,
+                                      tokens=tokens, base_url=base_url)
+    lens_body = _load_lens_prompt(lens)
+
     context_block = {
         "element_class": elem.get("element_class"),
         "selector": elem.get("selector"),
         "view": elem.get("view"),
         "resource": elem.get("resource"),
+        "role": variables["ROLE"],
         "lens": lens,
         "metadata": elem.get("metadata", {}),
         "output_path": str(output_path),
+        "base_url": variables["BASE_URL"],
+        "auth_token": variables["TOKEN_REF"],
+        "peer_token": variables["PEER_TOKEN_REF"],
+        "action_budget": variables["ACTION_BUDGET"],
+        "depth": variables["DEPTH"],
+        "lens_body_missing": not bool(lens_body),
     }
-    prompt = (
-        f"You are running the {lens} recursive-lens probe on a UI clickable.\n"
-        "Use the playwright MCP tools to interact with the target element and "
-        "record the network log + step trace.\n\n"
-        "## CONTEXT\n```json\n"
-        + json.dumps(context_block, indent=2)
-        + "\n```\nWrite the run artifact JSON to OUTPUT_PATH and return briefly."
-    )
+
+    if lens_body:
+        # Substitute ${VAR} placeholders inside the lens body, then append
+        # the JSON context block as a structured fallback for fields the
+        # lens body didn't reference.
+        lens_body_filled = _substitute_lens_vars(lens_body, variables)
+        prompt = (
+            lens_body_filled
+            + "\n\n---\n\n## CONTEXT (provided per spawn)\n\n```json\n"
+            + json.dumps(context_block, indent=2)
+            + "\n```\n\nWrite the run artifact JSON to `${OUTPUT_PATH}` "
+              "(see Activation context above for the absolute path). "
+              "Do not write anywhere else. Return briefly when done.\n"
+        )
+    else:
+        # Fallback: lens markdown not found on disk. Keep going so the
+        # caller can still aggregate "lens_body_missing" diagnostics, but
+        # this branch should never fire on a healthy install.
+        prompt = (
+            f"You are running the {lens} recursive-lens probe on a UI clickable.\n"
+            f"WARNING: lens prompt file missing on disk — this run will "
+            f"likely produce empty artifacts. Report `lens_body_missing` in "
+            f"the artifact metadata.\n\n"
+            "## CONTEXT\n```json\n"
+            + json.dumps(context_block, indent=2)
+            + "\n```\nWrite the run artifact JSON to OUTPUT_PATH and return briefly."
+        )
 
     cmd: list[str] = [
         "gemini", "-p", prompt, "-m", model,
@@ -934,15 +1136,63 @@ def main(argv: list[str] | None = None) -> int:
         write_skip_evidence(phase_dir, eligibility)
         if eligibility.get("skipped_via_override") and args.skip_recursive_probe:
             log_override_debt(args.skip_recursive_probe)
+
+        # v2.41.2 — closes B3: pre-v2.41.2 the skip went silently to stdout
+        # (mixed in with Haiku scanner log) and emitted no telemetry, so
+        # operators thought 2b-2.5 ran when in fact eligibility had failed.
+        # Now: stderr banner + per-reason actionable hint + telemetry event.
+        emit_event(
+            "review.recursive_probe.eligibility_checked",
+            phase_dir=phase_dir,
+            payload={"passed": False, "reasons": eligibility["reasons"]},
+        )
+        emit_event(
+            "review.recursive_probe.skipped",
+            phase_dir=phase_dir,
+            payload={
+                "reasons": eligibility["reasons"],
+                "via_override": bool(eligibility.get("skipped_via_override")),
+            },
+        )
+
         if args.json:
             print(json.dumps(payload, indent=2))
         else:
-            print(f"Recursive probe skipped: {', '.join(eligibility['reasons'])}")
+            sys.stderr.write("\n")
+            sys.stderr.write(
+                "━━━ ⚠ Phase 2b-2.5 Recursive Lens Probe SKIPPED ━━━\n"
+            )
+            sys.stderr.write(f"Phase dir: {phase_dir}\n")
+            sys.stderr.write("Failed rules (eligibility gate, see "
+                             "docs/plans/2026-04-30-v2.40-recursive-lens-probe.md):\n")
+            for reason in eligibility["reasons"]:
+                hint = _eligibility_hint(reason)
+                sys.stderr.write(f"  ✗ {reason}\n")
+                if hint:
+                    sys.stderr.write(f"    → {hint}\n")
+            sys.stderr.write(
+                "Skip evidence: "
+                f"{phase_dir / '.recursive-probe-skipped.yaml'}\n"
+            )
+            sys.stderr.write(
+                "Telemetry: review.recursive_probe.skipped emitted "
+                "(audit via /vg:telemetry)\n"
+            )
+            sys.stderr.write("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+            sys.stderr.flush()
         return 0
 
     # ------------------------------------------------------------------
     # Eligibility passed → classify + build plan (Task 19).
+    # v2.41.2 — emit eligibility_checked event for symmetry with the skip
+    # branch above. /vg:telemetry can now confirm the gate ran in either
+    # outcome (passed or skipped).
     # ------------------------------------------------------------------
+    emit_event(
+        "review.recursive_probe.eligibility_checked",
+        phase_dir=phase_dir,
+        payload={"passed": True, "reasons": []},
+    )
     try:
         classification = _classify_phase(phase_dir)
     except subprocess.CalledProcessError as exc:
