@@ -198,6 +198,16 @@ def main() -> int:
     ap.add_argument("--config", default=".claude/vg.config.md")
     ap.add_argument("--apply", action="store_true", help="copy discovered raw mockups into PHASE_DIR/design")
     ap.add_argument("--output", default=None)
+    ap.add_argument(
+        "--allow-shared-mockup-reuse",
+        action="store_true",
+        help=(
+            "Treat presence of shared/legacy manifest as proof of design coverage "
+            "(v2.42.3+ default is strict: each phase needs per-phase mockups). "
+            "Use ONLY when the phase legitimately reuses unchanged Phase 1 slugs "
+            "(e.g., login form unchanged across milestones)."
+        ),
+    )
     args = ap.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -221,8 +231,22 @@ def main() -> int:
     phase_mockups = list_mockups(phase_design_dir) + list_mockups(phase_raw_dir)
     phase_manifest = phase_design_dir / "manifest.json"
     shared_manifest = has_shared_or_legacy_manifest(repo_root, config)
-    needs_scaffold = has_ui and not phase_mockups and not shared_manifest
-    needs_extract = has_ui and bool(phase_mockups) and manifest_stale(phase_design_dir, phase_mockups)
+
+    # v2.42.3 — strict per-phase mockup requirement.
+    # Pre-v2.42.3 logic let phases pass scaffold check whenever ANY shared/legacy
+    # manifest existed (e.g. .vg/design-normalized/manifest.json from initial
+    # Phase 1 design extract). That silent-passed every subsequent phase, so
+    # builds shipped with AI-imagined UI even when phase had zero per-phase mockups.
+    # New default: each UI phase needs its own per-phase mockups. Override with
+    # --allow-shared-mockup-reuse for legitimate shared-slug reuse (e.g., login
+    # form unchanged across milestones).
+    if args.allow_shared_mockup_reuse and shared_manifest:
+        needs_scaffold = has_ui and not phase_mockups and not shared_manifest
+    else:
+        needs_scaffold = has_ui and not phase_mockups
+    needs_extract = has_ui and bool(phase_mockups) and (
+        not phase_manifest.exists() or manifest_stale(phase_design_dir, phase_mockups)
+    )
 
     result = {
         "phase_dir": str(phase_dir),
