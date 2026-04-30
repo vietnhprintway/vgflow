@@ -87,11 +87,14 @@ For each step, observe the actual response, compare to expected behavior for thi
 ### Step 4 — Read detail (after Create)
 
 The context block does NOT carry a dedicated detail-route field. Derive the
-detail URL from `platforms_web.form.update_route` by stripping the trailing
-`/edit` segment (e.g. `/users/42/edit` → `/users/42`).
+detail URL from `platforms_web.form.update_route` ONLY if the route ends with
+the exact 5-character suffix `/edit` (no trailing slash, no query string
+`?...`, no fragment `#...`). Strip those 5 characters to get the detail URL.
 
-- If `platforms_web.form.update_route` is absent: emit `step.status: skipped`, reason `no_detail_view`, continue to Step 5. Do NOT reference any other detail-route field name (none exists in context).
-- Otherwise navigate to `${base_url}` + (update_route with trailing `/edit` removed) for the created entity (use `browser_navigate`).
+- If `platforms_web.form.update_route` is null/absent, OR does not end in the
+  exact suffix `/edit` (e.g. has a query string, fragment, trailing slash, or
+  different suffix): emit `step.status: "skipped"`, `reason: "cannot_derive_detail_url"`, continue to Step 5. Do NOT reference any other detail-route field name (none exists in context).
+- Otherwise navigate to `${base_url}${platforms_web.form.update_route minus trailing /edit}` for the created entity (use `browser_navigate`).
 - Verify all submitted fields are persisted with submitted values.
 - Capture: detail view structure (which fields shown, edit/delete affordance presence per role).
 

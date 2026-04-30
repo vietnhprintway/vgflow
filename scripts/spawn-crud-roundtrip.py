@@ -111,7 +111,10 @@ def resolve_base_url(phase_dir: Path) -> str | None:
         REPO_ROOT / ".claude" / "vg.config.md",
         REPO_ROOT / "vg.config.md",
     ]
-    pattern = re.compile(r"(?:^|\n)\s*base_url:\s*[\"']?([^\"'\n#]+)")
+    # `[^\S\n]*` = whitespace excluding newline (tabs/spaces only). Using
+    # bare `\s*` would let the regex bleed across newlines and capture the
+    # next YAML key when `base_url:` has no inline value (malformed config).
+    pattern = re.compile(r"(?:^|\n)[^\S\n]*base_url:[^\S\n]*[\"']?([^\"'\n#]+)")
     for cfg_path in candidates:
         if not cfg_path.is_file():
             continue
