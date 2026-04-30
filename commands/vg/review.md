@@ -2482,6 +2482,77 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
   - `sequential` mode: exactly 1 Haiku agent at a time (mobile safety)
   - `none` mode: no Haiku agents spawned (cli-tool/library)
 
+#### 2b-2.5: Recursive Lens Probe (v2.40, manager dispatcher)
+
+**Purpose:** After parallel Haiku scanners (2b-2) complete, run the recursive lens probe layer to deep-dive each interesting clickable through bug-class lenses (authz-negative, csrf, idor, ssrf, ...). Manager dispatcher reads scan-*.json, classifies clickables into element classes, picks lenses per class, spawns workers in parallel (auto), generates prompt files (manual), or both (hybrid). Goals discovered by lens probes are merged single-writer into TEST-GOALS-DISCOVERED.md.
+
+**Eligibility (6 rules — all must pass unless `--skip-recursive-probe` is set):**
+1. `.phase-profile` declares `phase_profile ∈ {feature, feature-legacy, hotfix}`
+2. `.phase-profile` declares `surface ∈ {ui, ui-mobile}` (NOT visual-only)
+3. `CRUD-SURFACES.md` declares ≥1 resource
+4. `SUMMARY.md` / `RIPPLE-ANALYSIS.md` lists ≥1 `touched_resources` intersecting CRUD
+5. `surface != 'visual'`
+6. `ENV-CONTRACT.md` present, `disposable_seed_data: true`, all `third_party_stubs` stubbed
+
+If eligibility fails → write `.recursive-probe-skipped.yaml` and continue to 2b-3 (no error).
+
+**Bash invocation:**
+
+```bash
+RECURSION_MODE="${RECURSION_MODE:-light}"           # light|deep|exhaustive
+PROBE_MODE="${PROBE_MODE:-auto}"                    # auto|manual|hybrid
+TARGET_ENV="${TARGET_ENV:-sandbox}"                 # local|sandbox|staging|prod
+SKIP_REASON="${SKIP_RECURSIVE_PROBE:-}"             # populated only if user supplied --skip-recursive-probe
+
+ARGS=( --phase-dir "$PHASE_DIR" --mode "$RECURSION_MODE" --probe-mode "$PROBE_MODE" --target-env "$TARGET_ENV" )
+if [[ -n "$SKIP_REASON" ]]; then
+  ARGS+=( --skip-recursive-probe "$SKIP_REASON" )
+fi
+if [[ "${VG_NON_INTERACTIVE:-0}" == "1" ]]; then
+  ARGS+=( --non-interactive )
+fi
+
+python scripts/spawn_recursive_probe.py "${ARGS[@]}"
+```
+
+**Argparse forwarding (entry point of /vg:review):**
+
+```bash
+# /vg:review accepts these flags and forwards them to spawn_recursive_probe.py:
+#   --recursion={light,deep,exhaustive}     → RECURSION_MODE
+#   --probe-mode={auto,manual,hybrid}       → PROBE_MODE
+#   --target-env={local,sandbox,staging,prod} → TARGET_ENV (default sandbox)
+#   --skip-recursive-probe="<reason>"       → SKIP_RECURSIVE_PROBE (logs OVERRIDE-DEBT)
+#   --non-interactive                       → VG_NON_INTERACTIVE=1 (CI; suppress stdin prompt)
+```
+
+**Manual mode (`PROBE_MODE=manual`):**
+
+The dispatcher writes prompt files to `${PHASE_DIR}/recursive-prompts/MANIFEST.md` and pauses. Operator runs each prompt against their preferred CLI agent (gemini/codex/claude), drops artifacts back into `${PHASE_DIR}/runs/<tool>/`, then resumes the pipeline. The verifier runs automatically when the user signals completion:
+
+```bash
+if [[ "$PROBE_MODE" == "manual" ]]; then
+  echo "Manual prompts written. Follow ${PHASE_DIR}/recursive-prompts/MANIFEST.md, drop artifacts in runs/, then press Enter."
+  if [[ "${VG_NON_INTERACTIVE:-0}" != "1" ]]; then
+    read -r _
+  fi
+  python scripts/verify_manual_run_artifacts.py --phase-dir "$PHASE_DIR" || exit 1
+fi
+```
+
+**Hybrid mode:** dispatcher routes per-lens to auto vs manual based on `vg.config.md → review.recursive_probe.hybrid_routing`. See [vg:_shared:config-loader] for resolution.
+
+**Aggregation (single-writer, end of 2b-2.5):**
+
+```bash
+python scripts/aggregate_recursive_goals.py --phase-dir "$PHASE_DIR" --mode "$RECURSION_MODE"
+# Writes TEST-GOALS-DISCOVERED.md (G-RECURSE-* level-3 entries) + recursive-goals-overflow.json.
+```
+
+**Idempotency:** Re-running 2b-2.5 reuses existing `runs/` artifacts; canonical-key dedup in aggregator prevents duplicate goal stubs.
+
+**Failure semantics:** Eligibility fail → skip block (continue). Worker fail → recorded in `runs/INDEX.json`, does not abort pipeline. Manual mode timeout → operator re-runs; no automatic retry.
+
 #### 2b-3: Collect, Cross-Check, Fill Gaps (Opus, no browser)
 
 ```
