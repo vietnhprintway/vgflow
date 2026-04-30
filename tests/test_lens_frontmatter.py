@@ -84,3 +84,28 @@ def test_idor_lens_has_probe_only_contract():
     objective_pos = text.find("## Objective")
     assert contract_pos < objective_pos, \
         "Probe-only contract must precede Objective section"
+
+
+def test_authz_negative_lens_specific():
+    """lens-authz-negative.md must use authz bug class and apply to mutation_button."""
+    lens = LENS_DIR / "lens-authz-negative.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-authz-negative"
+    assert fm["bug_class"] == "authz"
+    assert "mutation_button" in fm["applies_to_element_classes"]
+
+
+def test_tenant_boundary_lens_specific():
+    """lens-tenant-boundary.md must use authz bug class."""
+    lens = LENS_DIR / "lens-tenant-boundary.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-tenant-boundary"
+    assert fm["bug_class"] == "authz"
+
+
+def test_bfla_lens_specific():
+    """lens-bfla.md must use authz bug class."""
+    lens = LENS_DIR / "lens-bfla.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-bfla"
+    assert fm["bug_class"] == "authz"
