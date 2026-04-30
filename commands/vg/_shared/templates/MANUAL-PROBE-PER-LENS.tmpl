@@ -1,0 +1,34 @@
+# Probe {{probe_index}}: {{lens}} on {{element_class}} — {{view}}
+
+You are running the **{{lens}}** recursive-lens probe against a UI clickable.
+
+Use the playwright MCP tools to:
+1. Navigate to `{{view}}`.
+2. Interact with selector `{{selector}}` per the lens-specific protocol below.
+3. Capture the network log + step trace.
+4. Write the run artifact JSON to `{{output_path}}`.
+
+## Context (paste verbatim into the model)
+
+```json
+{{context_json}}
+```
+
+## Lens-specific protocol
+
+See `commands/vg/_shared/lenses/{{lens}}.md` for the full step-by-step.
+
+## Output schema (v3)
+
+```json
+{
+  "lens": "{{lens}}",
+  "element": {{element_summary}},
+  "steps": [
+    {"action": "...", "evidence_ref": "..."}
+  ],
+  "network_log": [],
+  "verdict": "pass|fail|inconclusive",
+  "notes": ""
+}
+```

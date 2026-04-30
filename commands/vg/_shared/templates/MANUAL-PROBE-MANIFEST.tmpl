@@ -1,0 +1,17 @@
+# Manual Probe Session — {{phase_name}}
+
+You are pasting this into an interactive LLM CLI session (Gemini CLI / Codex CLI / Claude Code) with playwright MCP available.
+
+## Step 1: Verify MCP availability
+Run `mcp list`. Expect at least 1 playwright MCP server.
+
+## Step 2: For each probe below, paste-execute in order
+
+{{probe_list}}
+
+## Step 3: After all probes complete
+
+Run `python scripts/verify_manual_run_artifacts.py --phase-dir {{phase_dir}}`
+This validates all {{probe_count}} expected outputs exist and are well-formed.
+
+## Minimum required (for {{mode}} mode): {{min_required}} probes
