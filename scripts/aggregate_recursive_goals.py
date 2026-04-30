@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,15 +36,17 @@ def canonical_key(g: dict) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:12]
 
 
-def render_goal_md(g: dict) -> str:
+def render_goal_md(g: dict, key: str) -> str:
+    # Level-3 heading: nests under the level-2 auto-emitted section,
+    # and is visually distinct from manual level-2 sections.
     return (
-        f"## G-RECURSE-{g['_canonical']}\n"
+        f"### G-RECURSE-{key}\n"
         f"- source: review.recursive_probe\n"
         f"- depth: {g.get('depth', 1)}\n"
         f"- lens: {g.get('lens', '')}\n"
         f"- view: {g.get('view', '')}\n"
-        f"- element_class: {g.get('element_class')}\n"
-        f"- selector_hash: {g.get('selector_hash')}\n"
+        f"- element_class: {g.get('element_class') or 'unknown'}\n"
+        f"- selector_hash: {g.get('selector_hash') or 'unknown'}\n"
         f"- resource: {g.get('resource', '')}\n"
         f"- parent_goal_id: {g.get('parent_goal_id', 'null')}\n"
         f"- priority: {g.get('priority', 'medium')}\n"
@@ -87,45 +90,57 @@ def main() -> int:
             if not isinstance(g, dict):
                 continue
             k = canonical_key(g)
-            g["_canonical"] = k
             if k not in seen:
-                seen[k] = g
+                seen[k] = g  # no mutation: canonical key passed downstream as param
 
     cap = MODE_CAPS[args.mode]
-    deduped = list(seen.values())
-    main_goals = deduped[:cap]
-    overflow_goals = deduped[cap:]
+    deduped_pairs = list(seen.items())
+    main_pairs = deduped_pairs[:cap]
+    overflow_pairs = deduped_pairs[cap:]
 
     output = Path(args.output) if args.output else (phase_dir / "TEST-GOALS-DISCOVERED.md")
     overflow_path = Path(args.overflow) if args.overflow else (phase_dir / "recursive-goals-overflow.json")
 
     section_header = "## Auto-emitted recursive probe goals"
-    rendered = "\n".join(render_goal_md(g) for g in main_goals)
-    new_section = f"\n\n{section_header}\n\n{rendered}" if rendered else f"\n\n{section_header}\n"
+    end_marker = "<!-- end: auto-emitted recursive probe goals -->"
+    if main_pairs:
+        rendered = "\n".join(render_goal_md(g, k) for k, g in main_pairs)
+        new_section = f"\n\n{section_header}\n\n{rendered}\n{end_marker}\n"
+    else:
+        new_section = f"\n\n{section_header}\n\n{end_marker}\n"
 
     existing = output.read_text(encoding="utf-8") if output.is_file() else ""
     if section_header not in existing:
         output.write_text(existing + new_section, encoding="utf-8")
     else:
-        # Replace existing auto-emitted section, preserving any prior manual content.
-        before, _, _ = existing.partition(section_header)
-        output.write_text(before.rstrip() + new_section, encoding="utf-8")
+        # Replace only the auto-emitted section, bounded by:
+        #   start: `## Auto-emitted recursive probe goals`
+        #   end: `<!-- end: auto-emitted recursive probe goals -->` (if present)
+        # If the end marker is absent (legacy file pre-marker), fall back to the
+        # next level-2 heading that is NOT a script-emitted G-RECURSE entry.
+        before, _, after = existing.partition(section_header)
+        if end_marker in after:
+            _, _, trailing = after.partition(end_marker)
+        else:
+            # Legacy fallback: skip past any contiguous old G-RECURSE entries
+            # (whether emitted as level-2 in v2.40.0-rc1 or level-3 thereafter)
+            # by locating the next level-2 heading whose title is not G-RECURSE-.
+            m = re.search(r"\n## (?!#)(?!G-RECURSE-)", after)
+            trailing = after[m.start():] if m else ""
+        output.write_text(before.rstrip() + new_section + trailing, encoding="utf-8")
 
     overflow_payload = {
         "mode": args.mode,
         "cap": cap,
-        "total": len(deduped),
-        "in_main": len(main_goals),
-        "goals": [
-            {k: v for k, v in g.items() if k != "_canonical"}
-            for g in overflow_goals
-        ],
+        "total": len(deduped_pairs),
+        "in_main": len(main_pairs),
+        "goals": [g for _, g in overflow_pairs],
     }
     overflow_path.write_text(json.dumps(overflow_payload, indent=2), encoding="utf-8")
 
     print(
-        f"Aggregated {len(deduped)} unique goals: "
-        f"{len(main_goals)} -> main, {len(overflow_goals)} -> overflow"
+        f"Aggregated {len(deduped_pairs)} unique goals: "
+        f"{len(main_pairs)} -> main, {len(overflow_pairs)} -> overflow"
     )
     return 0
 
