@@ -1,24 +1,55 @@
 # Changelog
 
-## v2.41.5 — surface-probe heading format tolerance + api endpoint fallback chain
+## v2.42.0 — HARD env+mode+scanner gate + 5 dogfood-driven fixes (PRs #58–#63)
 
-External dogfood (PrintwayV3) hit two surface-probe failures during `/vg:review` on a backend-heavy phase (14/21 backend goals routed through `surface-probe.sh`):
+External dogfood (@vietnhprintway, PrintwayV3) shipped 7 PRs in 24 hours after v2.41.4 — bundling 1 major review-flow gate change + 4 bug fixes + 2 features. v2.42.0 absorbs all of them.
 
-### Fixed
-- **`_surface_probe_get_goal_block` strict format** — pre-fix matched only `^## Goal G-XX:` (vgflow canonical). Real-world `TEST-GOALS.md` files written from older templates use `## G-XX —` (em-dash, "Goal" word omitted) or `## G-XX -` (ASCII hyphen). Helper returned empty block → every backend goal classified `SKIPPED|goal_block_not_found` → review fell through to `NOT_SCANNED` → 4c-pre intermediate gate hard-blocked phase even though probes would have passed. Now matches `^## (Goal )?G-XX[^A-Za-z0-9_]` (optional "Goal " word, any non-word separator).
-- **`probe_api` regex too narrow for natural-language criteria** — pre-fix required explicit `<METHOD> <path>` pattern (e.g. `POST /api/v1/foo`) inside the goal's success-criteria bullet list. Real criteria are written in prose: "Endpoint /api/v1/credits/grant tạo credit" (path only) or "Backend trả về 403 với mã credit-overdue" (no endpoint at all). Both cases returned `SKIPPED|no_endpoint_pattern_in_criteria`. Now adds two fallbacks before SKIP:
-  - **Fallback 1** — extract path-only pattern (`/api/...`, `/internal/...`, `/public/...`) from criteria when method is absent. Synthesize `ANY <path>` so downstream frag-extraction stays unchanged.
-  - **Fallback 2** — when criteria has no path either, cross-reference `${phase_dir}/API-CONTRACTS.md` for lines mentioning the goal id (`-B2 -A4` window) and pick the first method+path emitted there. Most projects already declare endpoints in the contract artifact and reference goals by id in surrounding prose.
-- **Dispatcher signature** — `run_surface_probe` now forwards `phase_dir` to `probe_api` (was already forwarding to `probe_integration`); needed so Fallback 2 can locate `API-CONTRACTS.md`.
+### Major: HARD env+mode+scanner gate (PR #58)
 
-### Behavior
-- Fully backward-compatible: existing strict-pattern criteria still match in the same code path; fallbacks only fire when the strict regex returns empty. Existing READY/BLOCKED outcomes unchanged.
-- New SKIP message: `SKIPPED|no_endpoint_in_criteria_or_contracts` (was `SKIPPED|no_endpoint_pattern_in_criteria`) — emitted only after all three layers fail.
+Closes the silent-default gap on `/vg:review`. Pre-v2.42, review used `config.step_env.verify` silently — phases needed 2-3 review re-runs because env wasn't pinned and PIPELINE-STATE.json never recorded the choice. v2.41.2 added `<MANDATORY_GATE>` narrative; AI agents observably skipped it because the marker contract was `severity: warn`. v2.42.0 makes this a HARD `severity: block` gate with required telemetry event, closing the loophole.
+
+- New step `<step name="0a_env_mode_gate">` with single batched `AskUserQuestion` 3-question payload: env (local/sandbox/staging/prod), mode (full/delta/regression/schema-verify/link-check/infra-smoke), scanner (haiku-only/codex-supplement/gemini-supplement/council-all).
+- `must_touch_markers`: `0a_env_mode_gate` (default block severity, waiver `--non-interactive`).
+- `must_emit_telemetry`: `review.env_mode_confirmed` required unless `--non-interactive` or all 3 axes on CLI.
+- CLI flags: `--target-env=`, `--mode=`, `--scanner=` (and shortcuts `--local`/`--sandbox`/`--staging`/`--prod`).
+- PIPELINE-STATE.json audit trail: `steps.review.{env, mode, scanner, profile, last_invoked_at, last_args}`.
+- Banner echoes choices at start of `phase1_code_scan` so user sees `--scanner` honored.
+
+### Major: Strict per-phase mockup gate (PR #59)
+
+`/vg:blueprint` previously passed scaffold check whenever ANY shared/legacy manifest existed (e.g. `.vg/design-normalized/manifest.json` from initial Phase 1 design extract). Silent-passed every subsequent phase → builds shipped with AI-imagined UI. Now requires per-phase mockups by default; legitimate cross-phase reuse needs `--allow-shared-mockup-reuse`.
+
+### Fixed (PR #60) — surface-probe heading format tolerance + api endpoint fallback chain
+
+Backend-heavy phase hit `surface-probe.sh` regressions during `/vg:review` Phase 4a — every backend goal classified `NOT_SCANNED`, 4c-pre gate hard-blocked phase even though probes would have validated.
+
+- `_surface_probe_get_goal_block`: matches `^## (Goal )?G-XX[^A-Za-z0-9_]` (optional "Goal " word + em-dash/hyphen). Pre-fix only matched canonical `## Goal G-XX:`; older template files using `## G-XX —` returned empty block → SKIPPED.
+- `probe_api`: 3-layer endpoint extraction — strict `METHOD path` → path-only fallback (synthesize `ANY <path>`) → API-CONTRACTS.md cross-reference by goal id. Pre-fix required explicit `POST /api/v1/foo` in criteria bullet; natural prose like "Endpoint /api/v1/credits/grant tạo credit" returned SKIPPED.
+- New SKIP message: `SKIPPED|no_endpoint_in_criteria_or_contracts` (only after all 3 layers fail).
+
+### Fixed (PR #61) — orphan-run legacy fallback in read/clear_active_run
+
+`run-status` / `run-complete` symmetry break: bash subshell wrote active run with `sid="unknown"` (no `CLAUDE_SESSION_ID` inherited), then Stop hook fired `run-complete` with the real session id and got `⛔ No active run to complete.`. Now `read_active_run` falls back to legacy snapshot when sid mismatches AND the legacy entry has the "unknown" sentinel — Stop hook can clean up orphan runs using the real session id.
+
+### Fixed (PR #62) — zsh wordsplit shim for bash blocks under Claude Code
+
+Claude Code runs bash via `/bin/zsh` on macOS (and Linux when zsh is the user's shell). zsh leaves unquoted `$VAR` unsplit by default — canonical bash patterns like `for a in $REQUIRED; do ...` (whitespace-split string) iterated ONCE with `$a` set to the entire string. 45+ skill bash blocks affected. New `commands/vg/_shared/lib/zsh-compat.sh` enables `setopt SH_WORD_SPLIT` (no-op under bash). Sourced by `block-resolver.sh`, `inject-rule-cards.sh`, `override-debt.sh`, `phase-profile.sh`.
+
+### Feature (PR #63) — `enrich-env-question.py` DEPLOY-STATE-aware option decorator
+
+New helper at `scripts/enrich-env-question.py` (262 lines). Future skill bodies (review/test/roam/accept) call it before their env+mode+scanner `AskUserQuestion` to decorate per-env labels + descriptions with evidence pulled from `${PHASE_DIR}/DEPLOY-STATE.json`. SUGGESTION ONLY — user still picks. 3-signal recommendation (per-phase preference > deploy freshness > profile heuristic).
+
+### Triage
+- Closed PR #57 as duplicate of #56 (already in v2.41.4).
 
 ### Internal
-- Smoke-tested with all three heading formats (`## Goal G-XX:`, `## G-XX —`, `## G-XX -`); block-boundary detection between adjacent goals verified.
-- Smoke-tested both fallback chains with synthetic phases (path-only criteria + API-CONTRACTS cross-ref).
-- Credit: external dogfood report from @vietnhprintway (PrintwayV3 phase 03.4b-merchant-credit, 14 backend goals all SKIPPED before fix).
+- 234 tests pass.
+- All 6 PRs from external dogfood reporter (@vietnhprintway, PrintwayV3) — same week as #53/#55 reports. Strong signal-to-noise.
+
+### Backward compatibility
+- Existing `/vg:review` flags (`--skip-scan`, `--skip-discovery`, `--non-interactive`, etc.) unchanged.
+- Phases that already pass all 3 env-mode-scanner axes on CLI (or use `--non-interactive`) skip the prompt — no behavior change for scripted/CI use.
+- `--scanner=codex-supplement|gemini-supplement|council-all` records the choice in PIPELINE-STATE.json + emits banner; actual `codex exec` / `gemini` / Claude CLI dispatch wires in v2.42.1 (next iter).
 
 ## v2.41.4 — Headed-mode preservation in playwright MCP repair (closes PR #56)
 
