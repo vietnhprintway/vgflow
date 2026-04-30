@@ -442,8 +442,9 @@ def _build_argparser() -> argparse.ArgumentParser:
                     default="light",
                     help="Worker-cap envelope (light=15, deep=40, exhaustive=100).")
     ap.add_argument("--probe-mode", choices=["auto", "manual", "hybrid"],
-                    default="auto",
-                    help="Spawn strategy (Task 19+).")
+                    default=None,
+                    help="Spawn strategy. When omitted: --non-interactive uses "
+                         "'auto'; interactive mode prompts the operator on stdin.")
     ap.add_argument("--skip-recursive-probe", default=None,
                     metavar="REASON",
                     help="Override reason; logs OVERRIDE-DEBT critical.")
@@ -531,6 +532,38 @@ def main(argv: list[str] | None = None) -> int:
     if not phase_dir.is_dir():
         sys.stderr.write(f"phase dir not found: {phase_dir}\n")
         return 2
+
+    # Task 26g — interactive probe-mode prompt. Resolution order:
+    #   1. --probe-mode CLI flag (if supplied) wins.
+    #   2. --non-interactive (or env VG_NON_INTERACTIVE=1) → 'auto'.
+    #   3. Otherwise prompt on stdin: [a]uto / [m]anual / [h]ybrid / [s]kip?
+    #      Default 'a' on Enter. 's' = treat as --skip-recursive-probe with
+    #      reason "interactive: operator chose skip".
+    non_interactive = bool(args.non_interactive) or \
+        os.environ.get("VG_NON_INTERACTIVE") == "1"
+    if args.probe_mode is None:
+        if non_interactive:
+            args.probe_mode = "auto"
+        else:
+            sys.stderr.write("Phase 2b-2.5 probe mode? [a]uto / [m]anual / [h]ybrid / [s]kip [a]: ")
+            sys.stderr.flush()
+            try:
+                choice = (sys.stdin.readline() or "").strip().lower()
+            except (OSError, KeyboardInterrupt):
+                choice = ""
+            mapping = {"": "auto", "a": "auto", "m": "manual",
+                       "h": "hybrid", "s": "skip"}
+            picked = mapping.get(choice, "auto")
+            if picked == "skip":
+                # Surface as override so the rest of the pipeline + audit trail
+                # uniformly handle "operator opted out".
+                args.skip_recursive_probe = (
+                    args.skip_recursive_probe
+                    or "interactive: operator chose skip"
+                )
+                args.probe_mode = "auto"  # placeholder; eligibility will short-circuit
+            else:
+                args.probe_mode = picked
 
     # Task 26f — resolve target_env via CLI → config → default chain BEFORE
     # the prod-safety gate so operators get a single coherent picture.
