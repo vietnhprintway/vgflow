@@ -383,6 +383,15 @@ def main() -> int:
                     help="Min elements per view that triggers required enrichment (default 3)")
     ap.add_argument("--validate-only", action="store_true",
                     help="Exit 1 if any view has elements >= threshold but TEST-GOALS-DISCOVERED has no goals for that view")
+    ap.add_argument("--merge-recursive", action="store_true",
+                    help="After writing G-AUTO-* stubs, append G-RECURSE-* stubs from "
+                         "runs/goals-*.partial.yaml via aggregate_recursive_goals.py "
+                         "(v2.40 Phase 2b-2.5 back-flow). Existing G-AUTO-* are preserved.")
+    ap.add_argument("--recurse-mode", choices=["light", "deep", "exhaustive"],
+                    default="light",
+                    help="Forwarded to aggregate_recursive_goals.py --mode "
+                         "(controls per-mode cap on G-RECURSE-* count). Ignored "
+                         "unless --merge-recursive is set.")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
@@ -429,15 +438,52 @@ def main() -> int:
     tmp_path.write_text(body, encoding="utf-8")
     tmp_path.replace(out_path)
 
+    # ---------- Task 24: optional G-RECURSE-* merge ----------
+    # Aggregator preserves existing content (auto-emitted recursive section is
+    # bounded by ## Auto-emitted recursive probe goals + end marker), so it
+    # appends to the file rather than overwriting Haiku-discovered G-AUTO-*.
+    recurse_summary: dict | None = None
+    if args.merge_recursive:
+        runs_dir = phase_dir / "runs"
+        agg = REPO_ROOT / "scripts" / "aggregate_recursive_goals.py"
+        if not agg.is_file():
+            if not args.quiet:
+                print("⚠ aggregate_recursive_goals.py not found; skipping G-RECURSE-* merge",
+                      file=sys.stderr)
+        elif not runs_dir.is_dir():
+            if not args.quiet:
+                print(f"⚠ no runs/ subdir at {runs_dir}; skipping G-RECURSE-* merge",
+                      file=sys.stderr)
+        else:
+            import subprocess as _sp
+            r = _sp.run(
+                [sys.executable, str(agg),
+                 "--phase-dir", str(phase_dir),
+                 "--mode", args.recurse_mode,
+                 "--output", str(out_path)],
+                capture_output=True, text=True,
+            )
+            recurse_summary = {
+                "exit_code": r.returncode,
+                "stdout": r.stdout.strip(),
+                "stderr": r.stderr.strip(),
+            }
+            if r.returncode != 0 and not args.quiet:
+                print(f"⚠ aggregate_recursive_goals.py exit={r.returncode}: "
+                      f"{r.stderr.strip()}", file=sys.stderr)
+
     if args.json:
-        print(json.dumps({
+        payload = {
             "out_path": str(out_path.relative_to(REPO_ROOT).as_posix()) if str(out_path).startswith(str(REPO_ROOT)) else str(out_path),
             "auto_goals": len(all_stubs),
             "existing_goals": len(existing_ids),
             "runtime_views": runtime_views,
             "scans_processed": len(scans),
             "per_view_counts": per_view_stub_count,
-        }, indent=2))
+        }
+        if recurse_summary is not None:
+            payload["recurse_merge"] = recurse_summary
+        print(json.dumps(payload, indent=2))
     elif not args.quiet:
         print(f"✓ TEST-GOALS-DISCOVERED.md written")
         print(f"  Existing goals (TEST-GOALS.md): {len(existing_ids)}")
