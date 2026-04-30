@@ -199,3 +199,21 @@ def test_info_disclosure_lens_specific():
     assert fm["name"] == "lens-info-disclosure"
     assert fm["bug_class"] == "server-side"
     assert "error_response" in fm["applies_to_element_classes"]
+
+
+def test_modal_state_lens_specific():
+    """lens-modal-state.md must use ui-mechanic bug class and apply to modal_trigger."""
+    lens = LENS_DIR / "lens-modal-state.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-modal-state"
+    assert fm["bug_class"] == "ui-mechanic"
+    assert "modal_trigger" in fm["applies_to_element_classes"]
+
+
+def test_open_redirect_lens_specific():
+    """lens-open-redirect.md must use redirect bug class and apply to redirect_url_param."""
+    lens = LENS_DIR / "lens-open-redirect.md"
+    fm = parse_frontmatter(lens.read_text(encoding="utf-8"))
+    assert fm["name"] == "lens-open-redirect"
+    assert fm["bug_class"] == "redirect"
+    assert "redirect_url_param" in fm["applies_to_element_classes"]
