@@ -6,15 +6,42 @@ This kit applies to resources where `kit: crud-roundtrip` is declared in `CRUD-S
 
 ---
 
+## TOOL USAGE IS MANDATORY
+
+You are a Gemini Flash worker driving a real browser via MCP. You MUST call playwright tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_network_requests`) to complete this task. Text-only responses describing what you "would" do are INVALID and will fail the run.
+
+For every step below, your response MUST include exactly one tool invocation. Do not describe actions; perform them.
+
+If `base_url` in your context block is null/empty, do NOT fabricate a URL. Instead, write the run artifact with `steps[].status: "blocked"` and `reason: "missing_base_url"` and exit.
+
+---
+
 ## Worker invocation contract
 
-You are a worker spawned per `(resource × role)` pair. You will receive:
+You are a worker spawned per `(resource × role)` pair. You will receive a `CONTEXT` JSON block (appended to this prompt) with these top-level keys:
 
-- **Resource context** — `name`, `route_list`, `route_create`, `route_detail`, `route_update`, `route_delete`, `form.fields[]`, `table.columns[]`, `scope` (`global` | `owner-only` | `tenant-scoped` | `self-service`)
-- **Role context** — `role_name`, `auth_token`, `expected_behavior` matrix per operation
-- **Forbidden side-effects list** — endpoints that MUST NOT be called for this operation
-- **Output path** — where to write the run artifact JSON
-- **Run ID** — unique identifier for this workflow run (used for unique payload generation, evidence refs, cleanup)
+- **`resource`** — resource name (string) and **`scope`** (`global` | `owner-only` | `tenant-scoped` | `self-service`)
+- **`role`** — current role name (string) and **`auth_token`**, **`actor`** (`{user_id, tenant_id, ...}`)
+- **`base_url`** — origin to prepend to every route (e.g. `http://localhost:5555`)
+- **`platforms_web`** — UI surface descriptor (nested):
+    - `platforms_web.list.route` — list route (e.g. `/notes`)
+    - `platforms_web.list.table.columns[]` — list table columns
+    - `platforms_web.form.create_route` — create route (e.g. `/notes/new`)
+    - `platforms_web.form.update_route` — update route (e.g. `/notes/:id/edit`)
+    - `platforms_web.form.fields[]` — form field names
+    - `platforms_web.delete.confirm_dialog` — bool, dialog presence expectation
+- **`platforms_backend`** — backend endpoint descriptor (nested):
+    - `platforms_backend.list_endpoint.path` — e.g. `GET /api/notes`
+    - `platforms_backend.mutation.paths[]` — e.g. `[POST /api/notes, PATCH /api/notes/{id}, DELETE /api/notes/{id}]`
+- **`expected_behavior`** — per-operation status code matrix for this role
+- **`forbidden_side_effects[]`** — endpoints that MUST NOT be called for this operation
+- **`delete_policy`** — `{confirm, reversible_policy, audit_log}` from CRUD-SURFACES base
+- **`lifecycle_states[]`** — state list for record-state auth checks
+- **`object_level_auth`** — IDOR/tenant-leak expectation map
+- **`output_path`** — where to write the run artifact JSON
+- **`run_id`** — unique identifier for this workflow run (used for unique payload generation, evidence refs, cleanup)
+
+Always construct full URLs as `${base_url}${platforms_web.list.route}` (etc.). Never call `browser_navigate` with a relative or `null/...` URL.
 
 You have access to the Playwright MCP server for browser interaction. Use it for every step that touches the UI.
 
@@ -26,7 +53,7 @@ For each step, observe the actual response, compare to expected behavior for thi
 
 ### Step 1 — Read list (baseline)
 
-- Navigate to `route_list` with `auth_token`.
+- Navigate to `${base_url}${platforms_web.list.route}` with `auth_token` (use `browser_navigate`).
 - Capture: row count, column headers, sample row values, filter UI presence.
 - Expected for role:
   - `admin` (global scope): 200, full row count
@@ -44,14 +71,14 @@ For each step, observe the actual response, compare to expected behavior for thi
 - Generate payload with **per-run unique values** to avoid collisions:
   - `name: "vg-review-{run_id}-create"`
   - `email: "vg-review-{run_id}@test.local"`
-  - other fields: minimal valid values from `form.fields[].default_test_value` if declared, else type-appropriate fixtures
+  - other fields: minimal valid values from `platforms_web.form.fields[]` (use `default_test_value` if declared, else type-appropriate fixtures)
 - Submit. Capture: response status, redirect target, network calls, screenshot.
 - Track: every API call this step triggered. Cross-reference against `forbidden_side_effects[]`. If any forbidden endpoint hit (e.g. `POST /api/billing/charge` during create of a draft) → emit `high` finding.
 - Capture the created entity ID (from response body, redirect URL, or list refresh).
 
 ### Step 3 — Read list (verify Create persisted)
 
-- Navigate back to `route_list` (force reload, no cache).
+- Navigate back to `${base_url}${platforms_web.list.route}` (force reload, no cache).
 - Verify `row_count == baseline_row_count + 1`.
   - **Caveat**: if the list is filtered/paginated and the new row falls outside view, this assertion is unreliable. Try filtering by the unique payload value (e.g. `name=vg-review-{run_id}-create`) before asserting.
 - Verify the new row contains the submitted values.
@@ -59,7 +86,7 @@ For each step, observe the actual response, compare to expected behavior for thi
 
 ### Step 4 — Read detail
 
-- If `route_detail` declared: navigate to `route_detail` for the created entity.
+- If a detail route is declared (e.g. `platforms_web.detail.route` or derivable from `platforms_web.form.update_route` minus `/edit`): navigate to that detail URL for the created entity.
 - Verify all submitted fields are persisted with submitted values.
 - Capture: detail view structure (which fields shown, edit/delete affordance presence per role).
 - If detail view doesn't exist for this resource: emit `step.status: skipped`, reason `no_detail_view`, continue to Step 5.
