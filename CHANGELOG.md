@@ -1,5 +1,44 @@
 # Changelog
 
+## v2.46.0 — Anti-performative-review enforcement + 3 dogfood-found bugs (PR #74 + Issues #76, #77, #78)
+
+Bundles PR #74 (4050 lines, 35 files — anti-performative-review enforcement) plus 3 dogfood-discovered bug fixes. PrintwayV3 Phase 3.5 + 3.2 dogfood arc.
+
+### Major (PR #74) — Anti-performative-review enforcement
+
+External dogfood reported a critical pattern: scanner CSRF-blocked-then-classified-as-"expected-security" → goal `passed` → matrix passed → `/vg:test` reads passed → bug ships. Phase 3.2: 5 goals (G-31, G-34, G-35, G-44, G-52) marked passed when `goal_sequences.steps[]` had no submit click. Performative review.
+
+**Root cause:** Scanner in `/vg:review` (vg-haiku-scanner) defaulted to Cancel modals to avoid mutating sandbox data. But sandbox declares `disposable_seed_data: true` — that's the ENVIRONMENT to mutate. Scanner refused to submit → never tested happy path → CSRF/auth/idempotency bugs slip through.
+
+**4 enforcement layers added:**
+1. `scanner-report-contract.md` — banned vocabulary: "expected security", "as designed", "expected behavior", "working as intended", "cancel" (when explaining mutation goal).
+2. New validators (8): `verify-decisions-to-tasks`, `verify-decisions-trace`, `verify-goal-traceability`, `verify-mutation-actually-submitted`, `verify-rcrurd-depth`, `verify-replay-evidence`, `verify-scanner-business-alignment`, `verify-test-traces-to-rule`.
+3. Scanner workflow updates: roam.md + vg-haiku-scanner SKILL.md now enforce mutation submit when phase has `disposable_seed_data: true`.
+4. Decision/goal traceability gates wired into review.md late stages.
+
+### Fixed (Issue #76) — `vg_commit_with_files` msg-first misuse detection
+- Reporter found 4+ subagents in /vg:build session got wrong invocation: `vg_commit_with_files "feat(10-02): subject" file1 file2` (Conventional Commit subject as first arg) instead of `vg_commit_with_files <task_id> <max_wait_secs> <msg_file_path> <file>...`. Each agent had to soft-reset + retry after helper returned usage error.
+- Fix: helper now detects Conventional Commit subjects in `task_id` arg (case match on `feat(...`, `fix(...`, `docs(...`, etc.) and emits a targeted error explaining the correct shape with example. Generic "missing args" message no longer hides the real misuse pattern.
+
+### Fixed (Issue #77) — Untracked source files at end of /vg:build
+- PrintwayV3 Phase 3.5 Wave 8: build executor created 2 source files (~920 LOC total: `apps/api/src/workers/queues/receipt-generation.queue.ts` + `apps/api/src/workers/receipt-generation.worker.ts`), forgot `git add` for both. Local typecheck PASSED (files in fs), 3 import sites referenced them via `.js` paths, sandbox `git pull` only saw committed files → `pnpm turbo run build` failed with TS2307 "Cannot find module" for all 3 import sites.
+- Fix: NEW `scripts/validators/verify-no-untracked-source.py` — walks working tree, finds files matching source extensions (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`, `.rb`, `.go`, `.rs`, `.java`, `.kt`, `.swift`, `.sql`, `.graphql`, `.prisma`), checks each via `git status --porcelain`, BLOCKs if any source file is untracked. Default excludes for `node_modules/`, `dist/`, `build/`, `.claude/`, `.codex/`, `.vg/`, test/spec scaffolding, build caches.
+- Validator runs at end of `/vg:build` (caller wires it before sandbox push).
+
+### Fixed (Issue #78) — CrossAI subtask letter naming false-positives
+- CrossAI `/vg:build` verification at iter1: extracted task IDs from PLAN.md as `\d+`, stripped letter suffixes ("3b" → "3" duplicate of Task 3), counted unique numeric IDs → reported phantom missing tasks ("tasks 31-36 missing" — those numbers don't exist; engine confused subtask letters with high task IDs).
+- Phase 3.5 actual subtask IDs that triggered: `3b`, `11b`, `11c`, `15a`, `15b`, `22b`. Also flagged: commit subjects starting with `test(` or `docs(` (valid Conventional Commits) treated as wrong type.
+- Fix: prompt brief in `scripts/vg-build-crossai-loop.py` now explicitly tells the LLM verifier to (a) accept letter suffixes as parent-task variants (`3b` and `3` are the same parent), (b) accept any of `feat | fix | docs | style | refactor | perf | test | chore | revert | build | ci` as Conventional Commit prefix.
+
+### Internal
+- 243 tests pass.
+- 70 codex skills.
+- `VGFLOW-VERSION` + `VERSION` synced to 2.46.0 (minor — additive enforcement layer + new validator).
+- Credit: PR #74 + 3 issues all from @vietnhprintway (PrintwayV3 Phase 3.2 + 3.5 dogfood arc — same week as #57–#73).
+
+### Defensive note
+- 8 new validators from PR #74 not auto-wired into all phases; caller must invoke each at the appropriate gate. Registry entries added; explicit step wiring is follow-up work.
+
 ## v2.45.1 — Windows VN-locale subprocess fix + AI semantic UI scope detection (Issue #72 + PR #73)
 
 ### Fixed (Issue #72) — `design-normalize.py` Windows VN-locale `subprocess.run`

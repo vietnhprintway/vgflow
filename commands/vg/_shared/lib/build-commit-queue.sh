@@ -254,6 +254,28 @@ vg_commit_with_files() {
     return 2
   fi
 
+  # v2.46.0 (Issue #76) — detect the common msg-first misuse:
+  #   vg_commit_with_files "feat(10-02): subject" file1 file2 ...
+  # When task_id looks like a Conventional Commit subject, the caller almost
+  # certainly conflated this helper with `git commit -m`. Emit a targeted
+  # error before letting the malformed call fall through to the file-not-found
+  # branch (which produces a confusing message).
+  case "$task_id" in
+    feat\(*|fix\(*|docs\(*|style\(*|refactor\(*|perf\(*|test\(*|chore\(*|build\(*|ci\(*|revert\(*|feat:\ *|fix:\ *|docs:\ *|chore:\ *)
+      cat >&2 <<EOF
+⛔ vg_commit_with_files: detected msg-as-first-arg misuse.
+   You called: vg_commit_with_files "$task_id" ...
+   Correct shape: vg_commit_with_files <task_id> <max_wait_secs> <msg_file_path> <file>...
+     - task_id is a SHORT identifier (e.g. "task-10-02"), NOT the commit subject
+     - msg_file is a PATH to a file containing the commit message (e.g. /tmp/msg-10-02.txt)
+   Example (from commands/vg/_shared/vg-executor-rules.md):
+     echo "feat(10-02): subject\\n\\nBody" > /tmp/msg-10-02.txt
+     vg_commit_with_files "task-10-02" 180 /tmp/msg-10-02.txt path/to/file.ts
+EOF
+      return 2
+      ;;
+  esac
+
   if [ ! -f "$msg_file" ]; then
     echo "⛔ vg_commit_with_files: msg_file not found: $msg_file" >&2
     return 2

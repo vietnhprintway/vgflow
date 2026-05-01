@@ -166,8 +166,16 @@ artifacts below. This is NOT a generic code review. Check specifically:
 3. **Every decision D-XX in CONTEXT.md** is honored by code patterns. E.g.
    if D-09 says "CORS allowlist explicit", check cors.ts actually does that.
    Decision violated → BLOCK.
-4. **Every task in PLAN.md** has a matching `feat({phase_num}-NN):` commit. Task
-   not committed (or committed without the right files touched) → BLOCK.
+4. **Every task in PLAN.md** has a matching commit. Task ID matching rules:
+   - Numeric task IDs: `feat({phase_num}-NN):`, `feat({phase_num}-NNa):`, `feat({phase_num}-NNb):`, etc.
+     A subtask letter suffix (`3b`, `11c`, `15a`, `22b`) means the parent task was split into
+     multiple commits — a covering commit for the parent base ID OR a covering commit per
+     letter variant satisfies the task. Do NOT report a task as "missing" just because its
+     letter suffix differs from a numeric base; treat `3b` and `3` as the same parent.
+   - Allowed Conventional Commit prefixes (any of these counts as a "task commit"):
+     `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `revert`,
+     `build`, `ci`. Do NOT report `test(...)` or `docs(...)` commits as wrong-type.
+   Task not committed (or committed without the right files touched) → BLOCK.
 
 Style issues, optimization suggestions, refactoring opinions → MEDIUM/LOW
 severity, NOT BLOCK. BLOCK is reserved for literal contract gaps.
