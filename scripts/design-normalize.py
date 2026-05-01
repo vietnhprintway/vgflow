@@ -218,7 +218,19 @@ def handler_playwright_render(input_path: Path, output_dir: Path, slug: str,
 
     # Timeout (plus overhead) for Playwright launch + render
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        # v2.45.1 (Issue #72) — without explicit encoding, Python on Windows
+        # defaults to locale.getpreferredencoding() (cp1258 on VN, cp1252 on
+        # other Western locales). UTF-8 bytes ≥ 0x80 emitted by Playwright
+        # stdout (em-dash, smart quotes, etc.) crash the reader thread with
+        # UnicodeDecodeError → result.stdout becomes None → manifest aggregator
+        # marks all assets as 'failed' with AttributeError 'NoneType' has no
+        # attribute strip — even when PNG screenshots + structural refs DID
+        # render successfully on disk. Same class of bug fixed in vg_update.py
+        # for v2.41.3 (Issue #53 Bug #1).
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=90,
+            encoding="utf-8", errors="replace",
+        )
     except subprocess.TimeoutExpired:
         return {
             'slug': slug, 'handler': 'playwright_render',

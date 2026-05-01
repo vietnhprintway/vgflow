@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.45.1 — Windows VN-locale subprocess fix + AI semantic UI scope detection (Issue #72 + PR #73)
+
+### Fixed (Issue #72) — `design-normalize.py` Windows VN-locale `subprocess.run`
+- `scripts/design-normalize.py:221` `subprocess.run(text=True)` was missing `encoding=`. On Windows VN locale (cp1258) and other non-Western locales, default codec couldn't decode UTF-8 bytes ≥ 0x80 emitted by Playwright stdout (em-dash, smart quotes) → `UnicodeDecodeError` → `result.stdout` becomes `None` → manifest aggregator marks all assets as `failed` with `AttributeError 'NoneType' has no attribute strip`, even when PNG screenshots + structural refs DID render successfully on disk.
+- Fix: add `encoding="utf-8", errors="replace"` (same pattern as v2.41.3's `vg_update.py` fix for Issue #53 Bug #1).
+- Affects: blueprint step `0_design_discovery` for entire UI phase pipeline on any Windows non-en locale (vi, zh, ja, etc.).
+
+### Added (PR #73) — AI semantic UI scope detection (replaces grep heuristic)
+- `/vg:blueprint` step `0_design_discovery` previously used keyword grep on SPECS+CONTEXT to decide `has_ui`, gating downstream UI steps (`2b6_ui_spec` / `2b6b_ui_map` / `2b6c_view_decomposition`). Three failure modes: (1) false-positive on exclusion clauses ("CHỈ build backend, UI Ở Phase 6/7/8" matched `UI` literally), (2) false-positive from PLAN residue, (3) silent UI gap when SPECS describes UI in prose but planner spawned 0 FE tasks.
+- NEW `scripts/preflight/detect-ui-scope.py` — Haiku 4.5 reads SPECS+CONTEXT, outputs structured JSON `{has_ui, confidence, evidence, deferred_to, ui_kinds}`. Distinguishes scope-INCLUSION from scope-EXCLUSION clauses.
+- Confidence routing (matches `goal-classifier.sh` pattern): ≥0.8 auto-apply + cache `.ui-scope.json`; 0.5–0.8 tie-break (adversarial AI or AskUserQuestion); <0.5 BLOCK unless `--allow-ui-scope-uncertain`.
+- NEW `scripts/validators/verify-ui-scope-coherence.py` — gate UI-bearing scope vs PLAN.md FE task presence.
+
+### Internal
+- 243 tests pass.
+- 70 codex skills.
+- `VGFLOW-VERSION` + `VERSION` synced to 2.45.1 (patch — issue fix + targeted feature).
+- Credit: Issue #72 auto-reported via vg-bug-reporter (Windows VN dogfood). PR #73 from @vietnhprintway (continued PrintwayV3 dogfood arc).
+
+### Defensive note
+- Other `subprocess.run(text=True)` sites in repo were NOT swept for the same encoding bug (would be scope creep). Same pattern likely affects `bootstrap-test-runner.py`, `build-caller-graph.py`, `design-reverse.py`, etc. — open separate issues if hit on Windows non-en locales.
+
 ## v2.45.0 — `/vg:debug` skill + scanner Tier A-G + fail-closed validators + multi-session race fix (PRs #68–#71)
 
 Bundles 4 dogfood-driven PRs from @vietnhprintway into a single minor release: 2957 insertions, 73 deletions, 22 files. PRs shipped within ~1 hour after v2.44.0 hit `latest`.
