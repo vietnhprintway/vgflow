@@ -29,6 +29,8 @@ Scanner output **MUST NOT** contain any of these tokens (case-insensitive). They
 | `fix`, `repair`, `patch` | Action recommendation | report observation, let commander prescribe |
 | `correct`, `correctly`, `properly` | Implies right/wrong judgment | `expected_per_lens: <spec>` vs `observed: <fact>` |
 | `obviously`, `clearly`, `apparently` | Speculation, not observation | drop the qualifier; state observation directly |
+| `expected security`, `as designed`, `expected behavior`, `working as intended` | Self-rationalization that hides bugs (e.g., scanner sees CSRF block on legit user flow → calls it "expected security check" → marks goal passed → real bug ships). Scanner CANNOT classify mismatch as expected — that's commander's call after cross-referencing TEST-GOALS success_criteria. | `expected_per_lens: 200 + ledger commit; observed: 403 AUTH_CSRF_MISSING; match: no` |
+| `cancel`, `cancelled`, `canceled` (when describing why mutation goal not submitted) | Performative review pattern — scanner avoids destructive action by Cancel-only path → never tests happy path → CSRF/auth/idempotency bugs slip through. Sandbox env exists FOR mutation; if disposable_seed_data declared, scanner MUST submit. | If goal has `mutation_evidence` declared: submit + capture full network chain. If commander truly wants Cancel-only path, scanner records `match: unknown, observed: scanner_skipped_submit_per_orchestrator_directive` — NEVER `match: yes`. |
 
 **Allowed words:**
 - `expected_per_lens`, `observed`, `match`, `mismatch`, `partial`, `unknown`
@@ -36,6 +38,60 @@ Scanner output **MUST NOT** contain any of these tokens (case-insensitive). They
 - `elapsed`, `timeout`, `retry`, `step`, `anomaly`, `query`, `blocker`
 
 **Validator:** post-write grep on scanner output files. Hits in banned list → reject report + log to scanner's quarantine list. Commander still reads, but tags the report `vocabulary_violation: true` for trust calibration.
+
+---
+
+## Section 1.5 — RCRURD Lifecycle Protocol (v2.46+)
+
+Closes "scanner stops at form-opened" gap. Every mutation goal MUST follow Read-Create-Read-Update-Read-Delete-Read pattern (or class-specific subset). Scanners that mark `result=passed` with insufficient steps fail downstream validators (`verify-rcrurd-depth.py`, `verify-mutation-actually-submitted.py`).
+
+### Step depth thresholds per goal_class
+
+| goal_class | Min steps | Pattern |
+|---|---|---|
+| `readonly` | 3 | navigate → snapshot → assert criteria |
+| `webhook` | 4 | trigger → wait → query downstream → assert |
+| `mutation` | 6 | pre-snapshot → click submit → post-wait → refresh → re-read → diff |
+| `approval` | 8 | read pending → drawer → click approve → confirm modal → submit → wait → refresh → assert status flip |
+| `wizard` | 10 | step1 fill → next → step2 fill → next → ... → submit final → re-read |
+| `crud-roundtrip` | 14 | Read empty → Create (open form, fill, submit, wait) → Read populated → Update (open edit, change, submit, wait) → Read updated → Delete (open delete, confirm, wait) → Read empty |
+
+Scanner output `goal_sequences[gid].steps[]` length below threshold = AUTOMATIC `match: no`. NEVER `match: yes` with < min_steps.
+
+### Banned scanner stopping points (in addition to Section 1 vocabulary)
+
+- "form is visible" / "modal opened" / "page loads correctly" — when this is the ONLY evidence for a mutation goal
+- "Step X not yet visible" / "form not reached" — without 3-second wait + 3 snapshot retries + DOM evaluate + console capture
+- "Cannot test [X] without [Y]" — sandbox declares `disposable_seed_data: true`; scanner MUST create Y first
+
+### Required scanner behaviors
+
+1. **Wait + retry**: when expected element absent, wait ≥3s + retry browser_snapshot ≥3 times before marking absent
+2. **Capture verbatim**: console errors + network 4xx/5xx recorded with EXACT message text, NEVER paraphrased
+3. **Try alternative paths**: if first sequence fails, try refresh + different click order + JS evaluate before giving up
+4. **Cascade documentation**: when 1 step fails, output `cascade_blocked_by: ["G-XX step Y"]` listing all downstream actions blocked. Scanner does NOT just stop — it records the blocked downstream path.
+5. **Verbatim assertion quote**: every mutation step records `asserted_quote: <verbatim text from BR-NN>` and `asserted_rule: BR-NN`. Validator (`verify-asserted-rule-match.py`) cross-checks this matches goal `expected_assertion` ≥0.5 Jaccard similarity.
+
+### "No early stop" rule
+
+If scanner believes goal cannot be tested (data unavailable, environment issue, feature missing), output `result: blocked` with EXPLICIT reason — NEVER `result: passed` based on partial observation.
+
+### Output schema additions (mutation steps)
+
+```jsonc
+{
+  "step_idx": 4,
+  "do": "click",
+  "target": "button#approve-submit",
+  "label": "Approve",
+  "asserted_rule": "BR-S-01",
+  "asserted_quote": "Approve action requires admin role + ledger commit DR merchant_wallet / CR platform_cash",
+  "observed": "POST /api/v1/admin/topup-requests/.../approve returned 200, status flip pending→approved verified via refresh",
+  "match": "yes",
+  "evidence": { ... },
+  "cascade_blocked_by": null   // populated if THIS step blocks downstream
+}
+```
 
 ---
 
