@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.46.1 — Recovery paths + autonomous fix loop + matrix-staleness gate (PR #79)
+
+3-wave companion to v2.46.0 (anti-performative-review). Closes additional dogfood gaps surfaced while running `/vg:review 3.2` on PrintwayV3. 1274 insertions, 7 deletions, 8 files.
+
+### Added (wave-3) — Recovery paths per violation type
+When a validator BLOCKs, orchestrator now prints **concrete recovery commands per violation type** (RECOMMENDED + override + workflow alternatives) instead of dead-ending with `[validator:foo] failed`. 11 violation types covered.
+- NEW `scripts/vg-orchestrator/recovery_paths.py` — lookup table + builder for recovery hints.
+- NEW `scripts/vg-recovery.py` — interactive picker (used by `/vg:doctor recovery`).
+- `scripts/vg-orchestrator/__main__._format_block_message` enriched with recovery section.
+
+### Added (wave-3.1) — Autonomous fix loop in Stop hook
+- `scripts/vg-verify-claim.py` Stop hook now tries safe recovery paths **automatically before printing BLOCK**.
+- Only `auto_executable: True` paths run — override-flag style, NEVER destructive `--retry-failed` reruns or other side-effecting paths.
+- If recovery succeeds: hook re-attempts orchestrator `run-complete` and emits approve event with telemetry. Reduces "human stuck on trivial gate" friction.
+
+### Added (wave-3.2) — Matrix-staleness gate (`verify-matrix-staleness.py`)
+Phase 3.2 dogfood verdict=PASS with 65 READY / 67 goals, but real sandbox testing showed approve/reject buttons systematically failing. The gate didn't catch because matrix said READY based on stale prior runs.
+- NEW `scripts/validators/verify-matrix-staleness.py` cross-checks `goal_sequences[].steps[]` against TEST-GOALS.md `mutation_evidence`.
+- Marks goal SUSPECTED if matrix=READY AND (no_sequence | no_submit_step | submit_no_2xx).
+- Runs at review entry (`--apply-status-update` mutates matrix → SUSPECTED so `--retry-failed` picks them up) and again at review-complete (catches new staleness from current run).
+
+### Internal
+- 243 tests pass.
+- 70 codex skills.
+- `VGFLOW-VERSION` + `VERSION` synced to 2.46.1 (patch — additive recovery + new validator).
+- Credit: PR #79 from @vietnhprintway (continued PrintwayV3 Phase 3.2 dogfood arc, same week as #74).
+
 ## v2.46.0 — Anti-performative-review enforcement + 3 dogfood-found bugs (PR #74 + Issues #76, #77, #78)
 
 Bundles PR #74 (4050 lines, 35 files — anti-performative-review enforcement) plus 3 dogfood-discovered bug fixes. PrintwayV3 Phase 3.5 + 3.2 dogfood arc.
