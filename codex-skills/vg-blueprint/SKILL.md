@@ -15,7 +15,7 @@ Codex use the same workflow contracts, but their orchestration primitives differ
 
 | Claude Code concept | Codex-compatible pattern | Notes |
 |---|---|---|
-| AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it. |
+| AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it; prefer Codex-native options such as `codex-inline` when the source prompt distinguishes providers. |
 | Agent(...) / Task | Prefer `commands/vg/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
 | TaskCreate / TaskUpdate / TodoWrite | Markdown progress + step markers | Do not rely on Claude's persistent task tail UI. |
 | Playwright MCP | Main Codex orchestrator MCP tools, or smoke-tested subagents | If an MCP-using subagent cannot access tools in a target environment, fall back to orchestrator-driven/inline scanner flow. |
@@ -57,6 +57,12 @@ Codex hook parity is evidence-based: `.vg/events.db`, step markers,
 `must_emit_telemetry`, and `run-complete` output are authoritative. A Codex
 run is not complete just because the model says it is complete.
 
+Before executing command bash blocks from a Codex skill, export
+`VG_RUNTIME=codex`. This is an adapter signal, not a source replacement:
+Claude/unknown runtime keeps the canonical `AskUserQuestion` + Haiku path,
+while Codex maps only the incompatible orchestration primitives to
+Codex-native choices such as `codex-inline`.
+
 ### Codex spawn precedence
 
 When the source workflow below says `Agent(...)` or "spawn", Codex MUST
@@ -66,7 +72,7 @@ apply this table instead of treating the Claude syntax as executable:
 |---|---|---|---|---|
 | `/vg:build` wave executor, `model="${MODEL_EXECUTOR}"` | Write one prompt file per task, run `codex-spawn.sh --tier executor`; parallelize independent tasks with background processes and `wait`, serialize dependency groups | `VG_CODEX_MODEL_EXECUTOR`; leave unset to use Codex config default. Set this to the user's strongest coding model when they want Sonnet-class build quality. | `workspace-write` | child output, stdout/stderr logs, changed files, verification commands, task-fidelity prompt evidence |
 | `/vg:blueprint`, `/vg:scope`, planner/checker agents | Run `codex-spawn.sh --tier planner` or inline in the main orchestrator if the step needs interactive user answers | `VG_CODEX_MODEL_PLANNER` | `workspace-write` for artifact-writing planners, `read-only` for pure checks | requested artifacts or JSON verdict |
-| `/vg:review` navigator/scanner, `Agent(model="haiku")` | Do NOT blindly spawn `codex exec` for Playwright/Maestro work. Main Codex orchestrator owns MCP/browser/device actions. Use `codex-spawn.sh --tier scanner --sandbox read-only` only for non-MCP classification over captured snapshots/artifacts. | `VG_CODEX_MODEL_SCANNER`; set this to a cheap/fast model for review map/scanner work | `read-only` unless explicitly generating scan files from supplied evidence | same `scan-*.json`, `RUNTIME-MAP.json`, `GOAL-COVERAGE-MATRIX.md`, and `review.haiku_scanner_spawned` telemetry event semantics |
+| `/vg:review` navigator/scanner, `Agent(model="haiku")` | Use `--scanner=codex-inline` by default. Do NOT ask to spawn Haiku or blindly spawn `codex exec` for Playwright/Maestro work. Main Codex orchestrator owns MCP/browser/device actions. Use `codex-spawn.sh --tier scanner --sandbox read-only` only for non-MCP classification over captured snapshots/artifacts. | `VG_CODEX_MODEL_SCANNER`; set this to a cheap/fast model for review map/scanner work | `read-only` unless explicitly generating scan files from supplied evidence | same `scan-*.json`, `RUNTIME-MAP.json`, `GOAL-COVERAGE-MATRIX.md`, and `review.haiku_scanner_spawned` telemetry event semantics |
 | `/vg:review` fix agents and `/vg:test` codegen agents | Use `codex-spawn.sh --tier executor` because they edit code/tests | `VG_CODEX_MODEL_EXECUTOR` or explicit `--model` if the command selected a configured fix model | `workspace-write` | changed files, tests run, unresolved risks |
 | Rationalization guard, reflector, gap hunters | Use `codex-spawn.sh --tier scanner` for read-only classification, or `--tier adversarial` for independent challenge/review | `VG_CODEX_MODEL_SCANNER` or `VG_CODEX_MODEL_ADVERSARIAL` | `read-only` by default | compact JSON/markdown verdict; fail closed on empty/unparseable output |
 
@@ -3651,6 +3657,95 @@ if [ -d ".vg/bootstrap" ]; then
   # Spawn Agent with vg-reflector skill (see reflection-trigger.md)
   # Interactive y/n/e/s prompt for each candidate, delegate to /vg:learn --promote
 fi
+```
+</step>
+
+<step name="2f_test_type_coverage_gate">
+## Sub-step 2f: D18 test_type coverage gate (RFC v9 tester pro)
+
+Validate every mutation goal in `TEST-GOALS.md` declares a `**Test type:**`
+field, AND that aggregate coverage meets thresholds from `TEST-STRATEGY.md`
+(D17). Closes the "AI bịa goal" gap — without explicit test_type per goal,
+/vg:test cannot dispatch the correct verification strategy
+(api_contract → recipe_executor, ui_ux → browser scan, security → lens prompt).
+
+```bash
+TESTER_PRO_CLI="${REPO_ROOT}/.claude/scripts/tester-pro-cli.py"
+[ -f "$TESTER_PRO_CLI" ] || TESTER_PRO_CLI="${REPO_ROOT}/scripts/tester-pro-cli.py"
+if [ -f "$TESTER_PRO_CLI" ]; then
+  echo "━━━ Sub-step 2f — D18 test_type coverage gate ━━━"
+
+  # Pre-2026-05-01 phases get WARN grandfather; new phases default BLOCK.
+  # Phase creation date = git log first commit on TEST-GOALS.md.
+  GOALS_FIRST_COMMIT_TS=$(git log --reverse --format=%ct -- \
+    "${PHASE_DIR}/TEST-GOALS.md" 2>/dev/null | head -1)
+  GRANDFATHER_CUTOFF=$(date -u -j -f "%Y-%m-%d" "2026-05-01" +%s 2>/dev/null \
+    || date -u -d "2026-05-01" +%s 2>/dev/null || echo "0")
+  if [ -n "$GOALS_FIRST_COMMIT_TS" ] && [ "$GOALS_FIRST_COMMIT_TS" -lt "$GRANDFATHER_CUTOFF" ]; then
+    D18_SEVERITY="warn"
+    echo "  Pre-2026-05-01 phase — D18 in WARN mode (grandfathered)"
+  else
+    D18_SEVERITY="block"
+  fi
+
+  D18_OUT=$("${PYTHON_BIN:-python3}" "$TESTER_PRO_CLI" \
+    validate-test-types --phase "${PHASE_NUMBER}" --severity "$D18_SEVERITY" 2>&1)
+  D18_RC=$?
+  echo "$D18_OUT" | sed 's/^/  D18: /'
+  if [ "$D18_RC" -eq 1 ]; then
+    echo "⛔ D18 BLOCK: TEST-GOALS missing test_type or coverage gaps."
+    echo "   Fix path: add `**Test type:** {smoke|happy|edge|negative|security|perf|integration}` to each mutation goal in TEST-GOALS.md."
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.d18_test_type_blocked" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+fi
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2f_test_type_coverage_gate 2>/dev/null || true
+```
+</step>
+
+<step name="2g_goal_grounding_gate">
+## Sub-step 2g: PR-F goal_grounding gate (3-class verification dispatch)
+
+Validate every goal declares `goal_grounding ∈ {api, flow, presentation}`.
+Drives /vg:test verification strategy dispatch — without grounding,
+test cannot pick the correct proof shape:
+
+- **api**          → recipe_executor + openapi.json + lifecycle.post_state
+- **flow**         → flow-runner walks FLOW-SPEC checkpoints
+- **presentation** → screenshot diff + display-computation check
+
+Closes the "API = nghiệp vụ, UI = thin client" simplification — true for
+B2B billing (most PrintwayV3 phases) but NOT for onboarding wizards
+(flow IS business) or dashboards (UI computes display from API raw data).
+
+```bash
+GROUNDING_VAL=".claude/scripts/validators/verify-goal-grounding.py"
+if [ -f "$GROUNDING_VAL" ] && [ -f "${PHASE_DIR}/TEST-GOALS.md" ]; then
+  echo "━━━ Sub-step 2g — PR-F goal_grounding gate ━━━"
+
+  # Pre-2026-05-01 phases grandfathered to WARN; new phases BLOCK.
+  GOALS_FIRST_COMMIT_TS=$(git log --reverse --format=%ct -- \
+    "${PHASE_DIR}/TEST-GOALS.md" 2>/dev/null | head -1)
+  GRANDFATHER_CUTOFF=$(date -u -j -f "%Y-%m-%d" "2026-05-01" +%s 2>/dev/null \
+    || date -u -d "2026-05-01" +%s 2>/dev/null || echo "0")
+  if [ -n "$GOALS_FIRST_COMMIT_TS" ] && [ "$GOALS_FIRST_COMMIT_TS" -lt "$GRANDFATHER_CUTOFF" ]; then
+    GROUNDING_SEVERITY="warn"
+  else
+    GROUNDING_SEVERITY="block"
+  fi
+  ${PYTHON_BIN:-python3} "$GROUNDING_VAL" \
+    --phase "${PHASE_NUMBER}" --severity "$GROUNDING_SEVERITY" 2>&1 | \
+    sed 's/^/  PR-F: /'
+  GROUND_RC=$?
+  if [ "$GROUND_RC" -eq 1 ] && [ "$GROUNDING_SEVERITY" = "block" ]; then
+    echo "⛔ PR-F BLOCK: goals missing goal_grounding declaration."
+    echo "   Fix: add `**Goal grounding:** api|flow|presentation` to each goal."
+    echo "   Pre-2026-05-01 phases get WARN grandfather (grounding inferred)."
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.goal_grounding_blocked" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+fi
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2g_goal_grounding_gate 2>/dev/null || true
 ```
 </step>
 

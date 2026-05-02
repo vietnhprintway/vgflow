@@ -44,9 +44,14 @@ def _read(p: Path) -> str:
 
 def parse_goals(text: str) -> list[dict]:
     goals = []
+    # Accept any of these heading styles (varies across phase generations):
+    #   ## Goal G-01: title       (legacy template)
+    #   ### Goal G-01 — title     (phase 3.3 nested)
+    #   ## G-01 — title           (phase 3.4a/b shorthand)
+    # Stop pattern: next heading at SAME-or-shallower depth, OR end of file.
     for m in re.finditer(
-        r"^##\s+Goal\s+(G-[\w.-]+):?\s*(.*?)$"
-        r"(?P<body>(?:(?!^##\s+Goal\s+).)*)",
+        r"^#{2,4}\s+(?:Goal\s+)?(G-[\w.-]+)(?:[:\s—–-]+)\s*(.*?)$"
+        r"(?P<body>(?:(?!^#{2,4}\s+(?:Goal\s+)?G-).)*)",
         text,
         re.MULTILINE | re.DOTALL,
     ):
@@ -166,6 +171,14 @@ def main() -> None:
     )
     parser.add_argument("--phase", required=True)
     parser.add_argument("--severity", choices=["block", "warn"], default="block")
+    parser.add_argument(
+        "--allow-legacy-surface-probe",
+        action="store_true",
+        help="Accept goals listed in .legacy-surface-probe.json (pre-RFC v9 "
+             "phases that achieved READY/MANUAL via static handler-grep, "
+             "before the replay-evidence requirement landed). Use after "
+             "running scripts/migrate-backend-surface-probe.py --apply.",
+    )
     args = parser.parse_args()
 
     out = Output(validator="backend-mutation-evidence")
@@ -188,12 +201,29 @@ def main() -> None:
             emit_and_exit(out)
         sequences = runtime.get("goal_sequences") or {}
 
+        # Codex-RFCv9 fix: load legacy-surface-probe manifest if present
+        legacy_exempt: set[str] = set()
+        manifest_path = phase_dir / ".legacy-surface-probe.json"
+        if args.allow_legacy_surface_probe and manifest_path.exists():
+            try:
+                manifest = json.loads(_read(manifest_path))
+                legacy_exempt = {
+                    g.get("goal_id") for g in manifest.get("goals") or []
+                    if isinstance(g, dict) and g.get("goal_id")
+                }
+            except json.JSONDecodeError:
+                pass
+
         all_errors: list[dict] = []
         backend_count = 0
+        legacy_skipped = 0
         for goal in goals:
             if not goal["needs_replay"]:
                 continue
             backend_count += 1
+            if goal["id"] in legacy_exempt:
+                legacy_skipped += 1
+                continue
             seq = sequences.get(goal["id"])
             if not isinstance(seq, dict):
                 all_errors.append({
@@ -234,7 +264,11 @@ def main() -> None:
         out.add(
             Evidence(
                 type="backend_summary",
-                message=f"{backend_count} backend mutation goals checked, {len(all_errors)} errors",
+                message=(
+                    f"{backend_count} backend mutation goals "
+                    f"({legacy_skipped} legacy-surface-probe exempt), "
+                    f"{len(all_errors)} errors"
+                ),
             ),
             escalate=False,
         )

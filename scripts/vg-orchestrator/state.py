@@ -47,6 +47,18 @@ def _safe_session_filename(sid: str) -> str:
     return safe or "unknown"
 
 
+def _is_unknown_orphan_session(sid: str | None) -> bool:
+    """Return True for synthetic no-session run ids.
+
+    `run-start` tags no-env callers as `session-unknown-{run_id_prefix}`.
+    Later subprocesses still have no session env, so they resolve as
+    `unknown`; treat the synthetic id as compatible with that orphan reader.
+    """
+    return sid == "unknown" or (
+        isinstance(sid, str) and sid.startswith("session-unknown-")
+    )
+
+
 def _active_run_path(session_id: str) -> Path:
     return ACTIVE_RUNS_DIR / f"{_safe_session_filename(session_id)}.json"
 
@@ -67,6 +79,10 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def _has_run_id(run: dict | None) -> bool:
+    return bool(isinstance(run, dict) and run.get("run_id"))
+
+
 # ─── Per-session API (v2.28.0+) ────────────────────────────────────────────
 
 
@@ -79,7 +95,8 @@ def read_active_run(session_id: str | None = None) -> dict | None:
          file is missing AND the legacy snapshot is compatible:
             - legacy has no session_id (pre-v2.24 install), OR
             - legacy session_id matches `sid` exactly, OR
-            - legacy session_id is the "unknown" sentinel (orphan run
+            - legacy session_id is the "unknown" sentinel or synthetic
+              "session-unknown-*" id (orphan run
               written by a subshell with no CLAUDE_SESSION_ID; the Stop
               hook must still be able to read + clean it up using the
               real session_id).
@@ -88,7 +105,7 @@ def read_active_run(session_id: str | None = None) -> dict | None:
     sid = session_id or _session_id_from_env() or "unknown"
 
     run = _read_json(_active_run_path(sid))
-    if run:
+    if _has_run_id(run):
         return run
 
     # The pre-v2.28 guard `if not ACTIVE_RUNS_DIR.exists()` was too strict:
@@ -103,10 +120,24 @@ def read_active_run(session_id: str | None = None) -> dict | None:
     # cleanup. Drop the directory guard; rely on the per-session lookup
     # at line 85 to take precedence whenever the per-session file exists.
     legacy = _read_json(LEGACY_CURRENT_RUN)
-    if legacy:
+    if _has_run_id(legacy):
         legacy_sid = legacy.get("session_id")
-        if not legacy_sid or legacy_sid == sid or legacy_sid == "unknown":
+        if not legacy_sid or legacy_sid == sid or _is_unknown_orphan_session(legacy_sid):
             return legacy
+
+    # No-env callers read as sid="unknown", while run-start stores them under
+    # a synthetic per-session file named session-unknown-{run_id_prefix}. If
+    # the legacy mirror is temporarily unavailable or belongs to a self-test
+    # session, still recover the active no-env run from active-runs/.
+    if _is_unknown_orphan_session(sid) and ACTIVE_RUNS_DIR.exists():
+        candidates = []
+        for f in sorted(ACTIVE_RUNS_DIR.glob("*.json")):
+            r = _read_json(f)
+            if _has_run_id(r) and _is_unknown_orphan_session(r.get("session_id")):
+                candidates.append(r)
+        if candidates:
+            candidates.sort(key=lambda r: r.get("started_at") or "")
+            return candidates[-1]
 
     return None
 
@@ -137,18 +168,19 @@ def clear_active_run(session_id: str | None = None) -> None:
     legacy = _read_json(LEGACY_CURRENT_RUN)
     if legacy:
         legacy_sid = legacy.get("session_id")
-        if not legacy_sid or legacy_sid == sid or legacy_sid == "unknown":
+        if not legacy_sid or legacy_sid == sid or _is_unknown_orphan_session(legacy_sid):
             try:
                 LEGACY_CURRENT_RUN.unlink()
             except FileNotFoundError:
                 pass
-            # Best-effort: orphan run also lives under active-runs/unknown.json
-            # if the per-session writer used "unknown" as sid. Clear it too.
-            if legacy_sid == "unknown" and sid != "unknown":
-                try:
-                    _active_run_path("unknown").unlink()
-                except FileNotFoundError:
-                    pass
+            # Best-effort: orphan run may also live under active-runs/unknown.json
+            # or active-runs/session-unknown-*.json depending on writer version.
+            for orphan_sid in {"unknown", legacy_sid}:
+                if orphan_sid and orphan_sid != sid:
+                    try:
+                        _active_run_path(orphan_sid).unlink()
+                    except FileNotFoundError:
+                        pass
 
 
 def list_active_runs() -> list[dict]:
@@ -162,12 +194,12 @@ def list_active_runs() -> list[dict]:
     if ACTIVE_RUNS_DIR.exists():
         for f in sorted(ACTIVE_RUNS_DIR.glob("*.json")):
             r = _read_json(f)
-            if r:
+            if _has_run_id(r):
                 runs.append(r)
         return runs
 
     legacy = _read_json(LEGACY_CURRENT_RUN)
-    if legacy:
+    if _has_run_id(legacy):
         runs.append(legacy)
     return runs
 

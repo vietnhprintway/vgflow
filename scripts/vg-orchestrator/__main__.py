@@ -638,6 +638,30 @@ def cmd_run_start(args) -> int:
         except Exception:
             lock_token = None
 
+    # OHOK-9 fix (2026-05-02): when CLAUDE_SESSION_ID env var missing,
+    # the run was previously stored with session_id=null which caused
+    # Stop hook in OTHER parallel sessions to mistake it for their own
+    # run and BLOCK with infinite contract-violation loop. Synthesize
+    # a placeholder session_id so cross-session detection always works.
+    # Format: "session-unknown-{run_id_prefix}" — distinguishable from
+    # real Claude Code session_ids (UUIDs without "unknown-" prefix).
+    if not session_id:
+        session_id = f"session-unknown-{run_id[:8]}"
+        print(
+            f"⚠ run-start: CLAUDE_SESSION_ID env var missing — tagged "
+            f"run_id={run_id[:12]} with synthetic session={session_id}. "
+            f"Cross-session detection still works, but parent caller "
+            f"should propagate CLAUDE_SESSION_ID via env for full audit.",
+            file=sys.stderr,
+        )
+        try:
+            db.update_run_session(run_id, session_id)
+        except Exception:
+            # State file remains authoritative for active-run routing. The DB
+            # backfill is audit metadata; do not fail a valid run-start if the
+            # ledger is temporarily locked.
+            pass
+
     current_run_entry = {
         "run_id": run_id,
         "command": args.command,
@@ -708,22 +732,31 @@ def cmd_run_status(_args) -> int:
     )
     current = state_mod.read_active_run(session_id)
     all_active = state_mod.list_active_runs()
+    current_run_id = current.get("run_id") if current else None
 
     other_sessions = [
         r for r in all_active
-        if r.get("session_id") and r.get("session_id") != session_id
+        if r.get("run_id") != current_run_id
+        and r.get("session_id")
+        and r.get("session_id") != session_id
     ]
 
     if not current and not other_sessions:
         print("no-active-run")
         return 0
 
-    run_row = db.get_run(current["run_id"]) if current else None
+    state_warnings = []
+    if current and not current_run_id:
+        state_warnings.append("current active-run state is missing run_id")
+
+    run_row = db.get_run(current_run_id) if current_run_id else None
     payload = {
         "this_session": session_id,
         "current_run": current,
         "run_row": run_row,
     }
+    if state_warnings:
+        payload["state_warnings"] = state_warnings
     if other_sessions:
         payload["other_sessions_active"] = [
             {"session_id": (r.get("session_id") or "")[:12],

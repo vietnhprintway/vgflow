@@ -1,7 +1,7 @@
 ---
 name: vg:review
 description: Post-build review — code scan + browser discovery + fix loop + goal comparison → RUNTIME-MAP
-argument-hint: "<phase> [--target-env=local|staging|sandbox|prod | --local | --sandbox | --staging | --prod] [--mode=full|delta|regression|schema-verify|link-check|infra-smoke] [--scanner=haiku-only|codex-supplement|gemini-supplement|council-all] [--with-deepscan] [--non-interactive] [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--re-scan-goals=G-XX,G-YY] [--dogfood] [--full-scan] [--allow-no-crud-surface]"
+argument-hint: "<phase> [--target-env=local|staging|sandbox|prod | --local | --sandbox | --staging | --prod] [--mode=full|delta|regression|schema-verify|link-check|infra-smoke] [--scanner=haiku-only|codex-inline|codex-supplement|gemini-supplement|council-all] [--with-deepscan] [--non-interactive] [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--re-scan-goals=G-XX,G-YY] [--dogfood] [--full-scan] [--allow-no-crud-surface]"
 allowed-tools:
   - Read
   - Write
@@ -22,6 +22,14 @@ runtime_contract:
   must_write:
     - "${PHASE_DIR}/RUNTIME-MAP.json"
     - "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md"
+    # v2.47.2 — mandatory API precheck before browser discovery. This must
+    # be created by the CURRENT run so force-review cannot reuse a stale
+    # probe/report from an earlier Codex session.
+    - path: "${PHASE_DIR}/api-contract-precheck.txt"
+      content_min_bytes: 60
+      required_unless_flag: "--skip-discovery"
+      must_be_created_in_run: true
+      check_provenance: true
     # CrossAI review evidence. Review sets LABEL="review-check" and the
     # shared invoker writes `${OUTPUT_DIR}/${LABEL}.xml`. This must be
     # specific to review-check so stale blueprint result-*.xml files cannot
@@ -47,7 +55,7 @@ runtime_contract:
       severity: "warn"
     - name: "create_task_tracker"
       severity: "warn"
-    # v2.42.1 — env+mode+scanner gate: HARD block. AI MUST run AskUserQuestion
+    # v2.42.1 — env+mode+scanner gate: HARD block. AI MUST run provider-native prompt
     # for env/mode/scanner before proceeding. Closes silent-default gap on phases
     # 3.3/3.4a/3.4b where review ran without user choosing env or scanner depth.
     # Waiver: --non-interactive flag OR (--target-env + --mode + --scanner all on CLI).
@@ -75,6 +83,9 @@ runtime_contract:
       severity: "warn"
     - name: "phase1_5_ripple_and_god_node"
       severity: "warn"
+    - name: "phase2a_api_contract_probe"
+      severity: "warn"
+      required_unless_flag: "--skip-discovery"
     - name: "phase2_browser_discovery"
       severity: "warn"
     - name: "phase2_5_recursive_lens_probe"
@@ -119,6 +130,9 @@ runtime_contract:
     - event_type: "review.env_mode_confirmed"
       phase: "${PHASE_NUMBER}"
       required_unless_flag: "--non-interactive"
+    - event_type: "review.api_precheck_completed"
+      phase: "${PHASE_NUMBER}"
+      required_unless_flag: "--skip-discovery"
     - event_type: "review.completed"
       phase: "${PHASE_NUMBER}"
     - event_type: "crossai.verdict"
@@ -544,18 +558,27 @@ fi
 
 ### ⛔ MANDATORY FIRST ACTION (before ANY other tool call in this step)
 
-**STOP. The very first thing you do in step `0a_env_mode_gate` is invoke `AskUserQuestion`** with the 3-question payload below — no exceptions other than the documented waivers.
+**STOP. The very first thing you do in step `0a_env_mode_gate` is run the provider-native user prompt** with the payload below — no exceptions other than the documented waivers.
 
-**Skip AskUserQuestion ONLY when:**
+Provider-native prompt means:
+- **Claude Code:** invoke `AskUserQuestion` with the structured payload below.
+- **Codex:** ask the same concise questions in the main Codex thread, or use the closest available Codex user-input UI. Do not literally ask for `AskUserQuestion`; Codex does not expose that Claude primitive inside generated skills.
+
+Runtime rule: Claude remains the canonical source path. If runtime is Claude
+or unknown, keep `AskUserQuestion` + `haiku-only`. Only when
+`VG_RUNTIME=codex` (set by the Codex adapter) or Codex runtime is detected
+does this step map to main-thread prompt + `codex-inline`.
+
+**Skip the provider-native prompt ONLY when:**
 - `$ARGUMENTS` contains `--non-interactive` flag, OR
 - `VG_NON_INTERACTIVE=1` env var is set, OR
 - `$ARGUMENTS` contains ALL THREE: `--target-env=<v>` (or `--sandbox`/`--local`/`--staging`/`--prod`), `--mode=<v>`, and `--scanner=<v>`
 
-If ANY of the 3 axes is missing on CLI and not waived → AskUserQuestion is REQUIRED. Do NOT silently default. Do NOT run the bash block below before the AskUserQuestion call returns.
+If ANY of the 3 axes is missing on CLI and not waived → provider-native prompt is REQUIRED. Do NOT silently default. Do NOT run the bash block below before the prompt returns.
 
 **Why HARD gate (v2.42.1):** AI agents have a strong pull to silent-default in `warn` severity contracts. Phases 3.3/3.4a/3.4b confirmed this. Block severity + telemetry-required closes the gap.
 
-### AskUserQuestion payload (3 questions, single batched call)
+### Provider prompt payload (3 questions, single batched call on Claude; concise main-thread questions on Codex)
 
 ```
 questions:
@@ -587,37 +610,39 @@ questions:
         description: "Validate links + cross-refs only. Skip UI."
       - label: "infra-smoke — chạy success_criteria bash (infra profile)"
         description: "Parse SPECS bash bullets, run từng cái, ghi kết quả."
-  - question: "Scanner — model nào chạy code-scan + view-scan (deepscan = quét sâu)"
+  - question: "Scanner — model/runtime nào chạy code-scan + view-scan (deepscan = quét sâu)"
     header: "Scanner"
     multiSelect: false
     options:
-      - label: "haiku-only — Haiku scanner mặc định (nhanh nhất)"
-        description: "Phase 1 + Phase 2b-2 dùng Haiku agents qua Task tool. Best ratio depth/cost. Mặc định trừ khi cần deeper sweep. Method axis bên dưới ignored (Haiku spawn qua Task internal, không có manual mode)."
+      - label: "codex-inline — Codex main-orchestrator scan (Codex Recommended)"
+        description: "Codex giữ MCP/browser trong main orchestrator, chạy scanner protocol inline/sequential và vẫn ghi cùng scan artifacts/events. Không spawn Haiku."
+      - label: "haiku-only — Claude Haiku scanner (Claude Code fastest)"
+        description: "Claude Code path: Phase 1 + Phase 2b-2 dùng Haiku agents qua Task tool. Chỉ chọn trên Codex nếu child MCP/subagent path đã smoke-test."
       - label: "codex-supplement — Haiku + Codex CLI deepscan trên surfaces trọng yếu"
-        description: "Sau khi Haiku xong, spawn Codex CLI (gpt-5.5) cross-scan key views. +cost +time, bắt được logic bugs Haiku miss."
+        description: "Claude: Haiku + Codex CLI supplement. Codex: inline scan + optional codex exec read-only classifier over captured snapshots if smoke-tested."
       - label: "gemini-supplement — Haiku + Gemini CLI deepscan"
         description: "Gemini Pro 3.1 cross-scan, focus on UI consistency + a11y. +cost +time."
       - label: "council-all — Haiku + Codex + Gemini + Claude (full council deepscan)"
         description: "Triple cross-AI review. CHỈ dùng khi phase ship-critical (e.g., payment, auth)."
-  - question: "Method — cách chạy scanner: spawn auto subprocess hay manual paste prompt? (chỉ áp dụng khi scanner ≠ haiku-only)"
+  - question: "Method — cách chạy scanner: spawn auto subprocess hay manual paste prompt? (chỉ áp dụng khi scanner cần external CLI)"
     header: "Method"
     multiSelect: false
     options:
       - label: "spawn — VG tự subprocess CLI scanner (Recommended)"
-        description: "Hands-off, tự chạy + tự gom log. Cần CLI authenticated trên máy này (codex / gemini). Cho scanner=haiku-only thì luôn dùng Task tool internal — option này ignored."
+        description: "Hands-off, tự chạy + tự gom log. Cần CLI authenticated trên máy này (codex / gemini). Với codex-inline thì main orchestrator sở hữu MCP/browser."
       - label: "manual — VG sinh prompt files cho user paste"
         description: "Generates per-tool prompts vào `.vg/phases/{phase}/review/prompts/{codex,gemini}/` cho user paste sang CLI desktop / Cursor / web ChatGPT. User tự chạy, drop scan results vào `runs/{tool}/`, VG verify khi user signal continue."
       - label: "hybrid — auto cho high-confidence lenses, manual cho human-judgment"
         description: "Routing per `vg.config review.scanner.hybrid_routing`. Phù hợp khi muốn tốc độ + control selective."
 ```
 
-### After AskUserQuestion returns
+### After provider prompt returns
 
 **Export BEFORE running bash:**
 ```bash
 export VG_ENV="<chosen env>"            # e.g., "local"
 export VG_REVIEW_MODE="<chosen>"        # e.g., "full"
-export VG_SCANNER="<chosen scanner>"    # e.g., "haiku-only"
+export VG_SCANNER="<chosen scanner>"    # e.g., "haiku-only" on Claude, "codex-inline" on Codex
 export VG_METHOD="<chosen method>"      # e.g., "spawn" / "manual" / "hybrid"
 ```
 
@@ -627,9 +652,32 @@ If non-interactive path: echo chosen values to user (`Auto-pinned: env=X, mode=Y
 
 ```bash
 # 1. Defaults (if AI did not export — non-interactive or skipped paths)
+detect_vg_runtime() {
+  case "${VG_RUNTIME:-${VG_PROVIDER:-}}" in
+    claude|claude-*) echo "claude"; return ;;
+    codex|codex-*) echo "codex"; return ;;
+  esac
+  if [ -n "${CLAUDE_SESSION_ID:-}" ] || [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    echo "claude"
+    return
+  fi
+  if [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_CLI_SANDBOX:-}" ] || [ -n "${CODEX_HOME:-}" ]; then
+    echo "codex"
+    return
+  fi
+  echo "claude"  # Preserve Claude/Haiku path unless Codex is explicit.
+}
+VG_RUNTIME="$(detect_vg_runtime)"
+export VG_RUNTIME
+
 : "${VG_ENV:=${CONFIG_STEP_ENV_VERIFY:-local}}"
 : "${VG_REVIEW_MODE:=${REVIEW_MODE:-full}}"
-: "${VG_SCANNER:=haiku-only}"
+if [ -z "${VG_SCANNER+x}" ]; then
+  case "$VG_RUNTIME" in
+    codex|codex-*) VG_SCANNER="codex-inline" ;;
+    *) VG_SCANNER="haiku-only" ;;
+  esac
+fi
 : "${VG_METHOD:=spawn}"
 
 # 2. CLI flag override (still applies even if AI exported — explicit beats prompt)
@@ -646,6 +694,10 @@ if [[ "$ARGUMENTS" =~ --method=([a-z]+) ]]; then VG_METHOD="${BASH_REMATCH[1]}";
 # manual/hybrid don't apply). Echo correction so user sees what happened.
 if [ "$VG_SCANNER" = "haiku-only" ] && [ "$VG_METHOD" != "spawn" ]; then
   echo "ℹ Method '${VG_METHOD}' không áp dụng cho scanner=haiku-only (Haiku qua Task tool internal). Coerce method=spawn."
+  VG_METHOD="spawn"
+fi
+if [ "$VG_SCANNER" = "codex-inline" ] && [ "$VG_METHOD" != "spawn" ]; then
+  echo "ℹ Method '${VG_METHOD}' không áp dụng cho scanner=codex-inline (Codex main orchestrator owns MCP/browser). Coerce method=spawn."
   VG_METHOD="spawn"
 fi
 
@@ -675,10 +727,13 @@ esac
 
 # 5b. Validate scanner is recognized
 case "$VG_SCANNER" in
-  haiku-only|codex-supplement|gemini-supplement|council-all) ;;
+  haiku-only|codex-inline|codex-supplement|gemini-supplement|council-all) ;;
   *)
-    echo "⚠ Scanner '${VG_SCANNER}' không hợp lệ — fall back về 'haiku-only'." >&2
-    VG_SCANNER="haiku-only"
+    echo "⚠ Scanner '${VG_SCANNER}' không hợp lệ — fall back theo runtime." >&2
+    case "$VG_RUNTIME" in
+      codex|codex-*) VG_SCANNER="codex-inline" ;;
+      *) VG_SCANNER="haiku-only" ;;
+    esac
     export VG_SCANNER
     ;;
 esac
@@ -703,6 +758,7 @@ echo "  Env:      ${VG_ENV}"
 echo "  Mode:     ${VG_REVIEW_MODE}"
 echo "  Scanner:  ${VG_SCANNER}"
 echo "  Method:   ${VG_METHOD}    # spawn=auto subprocess / manual=paste prompt / hybrid"
+echo "  Runtime:  ${VG_RUNTIME}"
 echo "  Args:     ${ARGUMENTS}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
@@ -720,6 +776,7 @@ review['env'] = '${VG_ENV}'
 review['mode'] = '${VG_REVIEW_MODE}'
 review['scanner'] = '${VG_SCANNER}'
 review['method'] = '${VG_METHOD}'
+review['runtime'] = '${VG_RUNTIME}'
 review['profile'] = '${PHASE_PROFILE}'
 review['last_invoked_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 review['last_args'] = '''${ARGUMENTS}'''[:500]
@@ -739,7 +796,7 @@ p.write_text(json.dumps(s, indent=2))
   --step "0a_env_mode_gate" \
   --actor "llm-claimed" \
   --outcome "INFO" \
-  --payload "{\"phase\":\"${PHASE_NUMBER}\",\"command\":\"vg:review\",\"env\":\"${VG_ENV}\",\"mode\":\"${VG_REVIEW_MODE}\",\"scanner\":\"${VG_SCANNER}\",\"method\":\"${VG_METHOD}\",\"profile\":\"${PHASE_PROFILE}\",\"interactive\":$([[ \"$ARGUMENTS\" =~ --non-interactive ]] && echo false || echo true)}" \
+  --payload "{\"phase\":\"${PHASE_NUMBER}\",\"command\":\"vg:review\",\"env\":\"${VG_ENV}\",\"mode\":\"${VG_REVIEW_MODE}\",\"scanner\":\"${VG_SCANNER}\",\"method\":\"${VG_METHOD}\",\"runtime\":\"${VG_RUNTIME}\",\"profile\":\"${PHASE_PROFILE}\",\"interactive\":$([[ \"$ARGUMENTS\" =~ --non-interactive ]] && echo false || echo true)}" \
   2>/dev/null || true
 
 # 9. Mark step
@@ -750,7 +807,7 @@ p.write_text(json.dumps(s, indent=2))
 **Downstream impact:**
 - Phase 1 / Phase 2 / Phase 2.5 / Phase 3 / Phase 4 all read `$ENV_NAME` and `$REVIEW_MODE` — no further changes needed; they pick up user choice automatically.
 - `phaseP_*` profile branches (line 528+) gate on `$REVIEW_MODE` — user can override auto-detected profile mode here.
-- `$VG_SCANNER` is recorded into PIPELINE-STATE.json + telemetry. **Banner echoes the choice at start of phase1_code_scan** so user sees the value was honored. **Supplemental CrossAI CLI scan (codex-supplement / gemini-supplement / council-all) is wired in v2.42.2** — a follow-up patch lands the actual `codex exec` / `gemini` / Claude CLI dispatch after Haiku completes, plus merge into RUNTIME-MAP under `crossai_scanner_findings`. v2.42.1 captures the user choice so the data path is in place.
+- `$VG_SCANNER` is recorded into PIPELINE-STATE.json + telemetry. **Banner echoes the choice at start of phase1_code_scan** so user sees the value was honored. `codex-inline` is the Codex-native path: main orchestrator keeps MCP/browser control and writes the same scan artifacts/events without Haiku. **Supplemental CrossAI CLI scan (codex-supplement / gemini-supplement / council-all) is wired in v2.42.2** — a follow-up patch lands the actual `codex exec` / `gemini` / Claude CLI dispatch after primary scan completes, plus merge into RUNTIME-MAP under `crossai_scanner_findings`. v2.42.1 captures the user choice so the data path is in place.
 - Re-running `/vg:review <phase>` re-prompts (audit trail accumulates `last_invoked_at` history).
 </step>
 
@@ -1634,7 +1691,9 @@ tokens on a doomed scan.
 # BOTH scripts/runtime AND ENV-CONTRACT, so a phase with FIXTURES+lifecycle
 # but no ENV-CONTRACT skipped RCRURD entirely.
 PRE_OK=1
-if [ -d "${REPO_ROOT}/scripts/runtime" ]; then
+VG_SCRIPT_ROOT="${REPO_ROOT}/.claude/scripts"
+[ -d "${VG_SCRIPT_ROOT}/runtime" ] || VG_SCRIPT_ROOT="${REPO_ROOT}/scripts"
+if [ -d "${VG_SCRIPT_ROOT}/runtime" ]; then
   RFC_V9_GATE_RAN=0
   # Only echo the banner once when at least one gate has work to do
   HAS_INVARIANTS_FILE=0
@@ -1646,8 +1705,8 @@ if [ -d "${REPO_ROOT}/scripts/runtime" ]; then
     echo "━━━ Phase 0.5 — RFC v9 preflight ━━━"
 
     # 1. Reap expired leases + orphans (PR-F) — only if FIXTURES exist
-    if [ "$HAS_FIXTURES_DIR" = "1" ] && [ -f "${REPO_ROOT}/scripts/fixture-prune.py" ]; then
-      "${PYTHON_BIN:-python3}" "${REPO_ROOT}/scripts/fixture-prune.py" \
+    if [ "$HAS_FIXTURES_DIR" = "1" ] && [ -f "${VG_SCRIPT_ROOT}/fixture-prune.py" ]; then
+      "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/fixture-prune.py" \
         --phase "$PHASE_NUMBER" --apply --skip-orphans 2>&1 | sed 's/^/  prune: /'
     fi
 
@@ -1658,7 +1717,7 @@ if [ -d "${REPO_ROOT}/scripts/runtime" ]; then
 
   # 2. data_invariants N-consumer check (PR-C, live HTTP wiring stub-1 fix)
   # Codex-HIGH-5-ter: guarded by ENV-CONTRACT.md only — independent of FIXTURES.
-  if [ -f "${REPO_ROOT}/scripts/preflight-invariants.py" ] && \
+  if [ -f "${VG_SCRIPT_ROOT}/preflight-invariants.py" ] && \
      [ -f "${PHASE_DIR}/ENV-CONTRACT.md" ]; then
     # Codex-R4-HIGH-2 fix: PREVIOUSLY parsed step_env.sandbox_test from
     # vg.config.md, but that's an ENV NAME like "local", not a URL. The
@@ -1676,7 +1735,7 @@ if m:
 " 2>/dev/null)
     [ -z "$PRE_BASE" ] && PRE_BASE="${VG_BASE_URL:-}"
     if [ -n "$PRE_BASE" ]; then
-      PRE_OUT=$("${PYTHON_BIN:-python3}" "${REPO_ROOT}/scripts/preflight-invariants.py" \
+      PRE_OUT=$("${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/preflight-invariants.py" \
         --phase "$PHASE_NUMBER" --base-url "$PRE_BASE" \
         --severity "${VG_PREFLIGHT_SEVERITY:-block}" 2>&1)
       PRE_RC=$?
@@ -1749,7 +1808,7 @@ for g in d.get("gaps", []):
   # 3. RCRURD pre_state gate (PR-D2, live wiring stub-2 fix)
   # Calls scripts/rcrurd-preflight.py: walks FIXTURES/*.yaml, runs pre_state
   # GET + assert_jsonpath for each lifecycle block. Fail-fast before scan.
-  if [ -f "${REPO_ROOT}/scripts/rcrurd-preflight.py" ] && \
+  if [ -f "${VG_SCRIPT_ROOT}/rcrurd-preflight.py" ] && \
      [ -d "${PHASE_DIR}/FIXTURES" ]; then
     PRE_BASE_RC="${PRE_BASE:-${VG_BASE_URL:-}}"
     if [ -n "$PRE_BASE_RC" ]; then
@@ -1757,7 +1816,7 @@ for g in d.get("gaps", []):
       # (not a follow-up). The snapshot is read by post-mode at run-complete
       # to compute increased_by_at_least deltas against real pre-action state.
       RCRURD_SNAP="${PHASE_DIR}/.rcrurd-pre-snapshot.json"
-      RCRURD_OUT=$("${PYTHON_BIN:-python3}" "${REPO_ROOT}/scripts/rcrurd-preflight.py" \
+      RCRURD_OUT=$("${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/rcrurd-preflight.py" \
         --phase "$PHASE_NUMBER" --base-url "$PRE_BASE_RC" \
         --severity "${VG_RCRURD_SEVERITY:-block}" \
         --capture-snapshot "$RCRURD_SNAP" 2>&1)
@@ -1853,6 +1912,9 @@ echo "━━━ Phase 1 — Code scan (scanner=${VG_SCANNER:-haiku-only}) ━━
 case "${VG_SCANNER:-haiku-only}" in
   haiku-only)
     echo "  Mode: Haiku-only — fastest path, default depth."
+    ;;
+  codex-inline)
+    echo "  Mode: Codex inline scanner — main orchestrator owns MCP/browser; no Haiku spawn."
     ;;
   codex-supplement)
     echo "  Mode: Haiku + Codex CLI supplement (queued for v2.42.2 wiring)."
@@ -2195,6 +2257,103 @@ Graphify inactive. Enable for cross-module impact detection.
 ```
 
 Final action: `(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase1_5_ripple_and_god_node" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase1_5_ripple_and_god_node.done"`
+</step>
+
+<step name="phase2a_api_contract_probe" profile="web-fullstack,web-frontend-only">
+## Phase 2a.5: API CONTRACT PROBE (curl, no browser)
+
+**Mandatory before browser discovery for web feature phases.**
+
+Purpose:
+- prove the current run touched the live API surface before any browser scan
+- fail fast on broken/stale backend routes instead of hiding the problem behind discovery noise
+- create a fresh artifact that runtime_contract can enforce even on older pinned phases
+
+**Scope:** low-cost readiness gate only. This is NOT the full `/vg:test` runtime contract verification and NOT a project-specific mutation batch. Mutating endpoints are probed safely (OPTIONS / existence check), not executed for side effects.
+
+```bash
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🔎 Phase 2a.5 — API contract probe"
+echo "   Curl API contracts trước browser discovery"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+API_PROBE_OUT="${PHASE_DIR}/api-contract-precheck.txt"
+VG_SCRIPT_ROOT="${REPO_ROOT:-.}/.claude/scripts"
+[ -d "$VG_SCRIPT_ROOT" ] || VG_SCRIPT_ROOT="${REPO_ROOT:-.}/scripts"
+PROBE_SCRIPT="${VG_SCRIPT_ROOT}/review-api-contract-probe.py"
+
+if [ ! -f "$PROBE_SCRIPT" ]; then
+  echo "⛔ API contract probe setup error — missing helper: $PROBE_SCRIPT" | tee "$API_PROBE_OUT"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.api_precheck_blocked" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"reason\":\"missing_helper\"}" >/dev/null 2>&1 || true
+  exit 1
+fi
+
+# Resolve base URL from the same canonical source used by Phase 0.5 preflight.
+API_PROBE_BASE=$("${PYTHON_BIN:-python3}" -c "
+import re, sys
+path = '${PHASE_DIR}/ENV-CONTRACT.md'
+try:
+    text = open(path, encoding='utf-8').read()
+except OSError:
+    sys.exit(0)
+m = re.search(r'^target:\\s*\\n((?:[ \\t].*\\n)+)', text, re.MULTILINE)
+if m:
+    body = m.group(1)
+    bm = re.search(r'^\\s*base_url:\\s*[\"\\']?([^\"\\'\\s#]+)', body, re.MULTILINE)
+    if bm:
+        print(bm.group(1))
+" 2>/dev/null)
+[ -z "$API_PROBE_BASE" ] && API_PROBE_BASE="${VG_BASE_URL:-}"
+
+if [ -z "$API_PROBE_BASE" ]; then
+  echo "⛔ API contract probe setup error — no base_url found in ENV-CONTRACT.md and VG_BASE_URL is empty." | tee "$API_PROBE_OUT"
+  echo "   Fix path: set target.base_url in ENV-CONTRACT.md or export VG_BASE_URL." | tee -a "$API_PROBE_OUT"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.api_precheck_blocked" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"reason\":\"missing_base_url\"}" >/dev/null 2>&1 || true
+  exit 1
+fi
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.api_precheck_started" \
+  --payload "$(printf '{"phase":"%s","base_url":"%s"}' "${PHASE_NUMBER}" "${API_PROBE_BASE}")" >/dev/null 2>&1 || true
+
+PROBE_CMD=("${PYTHON_BIN:-python3}" "$PROBE_SCRIPT"
+  --contracts "${PHASE_DIR}/API-CONTRACTS.md"
+  --base-url "$API_PROBE_BASE"
+  --out "$API_PROBE_OUT")
+
+# Optional auth token from deploy/auth bootstrap. If absent, 401/403 still count
+# as route-exists evidence for auth-protected endpoints.
+if [ -n "${AUTH_TOKEN:-}" ]; then
+  PROBE_CMD+=(--header "Authorization: Bearer ${AUTH_TOKEN}")
+fi
+
+"${PROBE_CMD[@]}"
+API_PROBE_RC=$?
+cat "$API_PROBE_OUT"
+
+if [ "$API_PROBE_RC" -ne 0 ]; then
+  echo "⛔ API contract probe failed — browser discovery is not allowed to start on stale/broken API surface." >&2
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.api_precheck_blocked" \
+    --payload "$(printf '{"phase":"%s","base_url":"%s","rc":%s}' "${PHASE_NUMBER}" "${API_PROBE_BASE}" "${API_PROBE_RC}")" >/dev/null 2>&1 || true
+  exit 1
+fi
+
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/emit-evidence-manifest.py" \
+  --path "${PHASE_DIR}/api-contract-precheck.txt" \
+  --source-inputs "${PHASE_DIR}/API-CONTRACTS.md,.claude/vg.config.md" \
+  --producer "vg:review/phase2a_api_contract_probe"
+MANIFEST_RC=$?
+if [ "$MANIFEST_RC" -ne 0 ]; then
+  echo "⛔ API contract probe wrote report but failed to bind evidence to current run." >&2
+  exit 1
+fi
+
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.api_precheck_completed" \
+  --payload "$(printf '{"phase":"%s","base_url":"%s","artifact":"%s"}' "${PHASE_NUMBER}" "${API_PROBE_BASE}" "api-contract-precheck.txt")" >/dev/null 2>&1 || true
+```
+
 </step>
 
 <step name="phase2_browser_discovery" profile="web-fullstack,web-frontend-only">
@@ -2590,7 +2749,7 @@ Next actions — choose scenario that matches your error, follow the exact comma
   │   ⚠ ANTI-PATTERN WARNING (v1.9.1 R2 + v1.9.2 P4):                      │
   │   Do NOT fall back to "list 3 options (A/B/C) and wait".               │
   │   Use `block_resolve` helper — L1 auto-try `--skip`, L2 architect      │
-  │   proposal for cross-env retry, L3 AskUserQuestion only if L2 fails.   │
+  │   proposal for cross-env retry, L3 provider-native prompt if needed.   │
   │                                                                        │
   │   Block-resolver handler:                                              │
   └─────────────────────────────────────────────────────────────────────────┘
@@ -2615,7 +2774,9 @@ if type -t block_resolve >/dev/null 2>&1; then
 fi
 ```
 
-  **Semantic fallback (if resolver unavailable — raw AskUserQuestion):**
+  **Semantic fallback (if resolver unavailable — provider-native prompt):**
+  - Claude Code: AskUserQuestion.
+  - Codex: ask the same options in the main Codex thread / closest input UI.
   - If A → set config.infra_deps.unmet_behavior="skip", continue
   - If B → switch ENV=sandbox, re-run deploy + preflight
   - If C → continue local with skip, save INFRA_PENDING goals list for sandbox retry
@@ -2851,11 +3012,11 @@ gated ON via the conditions above.
 <MANDATORY_GATE>
 **Applies only when 2b-2 is gated ON (--with-deepscan, --full-scan, mobile-*, or config opt-in).**
 
-**You MUST spawn Haiku agents in step 2b-2** (unless spawn_mode=none for cli-tool/library profiles). This is NOT optional.
+**You MUST run the provider-native scanner protocol in step 2b-2** (unless spawn_mode=none for cli-tool/library profiles). This is NOT optional.
 - Do NOT skip this step because "phase is small" or "I already covered everything in 2b-1"
-- Do NOT replace spawning with "I'll click through views myself"
-- MINIMUM: spawn at least 1 Haiku agent per view discovered in 2b-1
-- The Agent tool with model="haiku" MUST be called. If it's not called, 2b-2 is incomplete.
+- Claude Code path: spawn at least 1 Haiku agent per view discovered in 2b-1; the Agent tool with model="haiku" MUST be called.
+- Codex path: keep MCP/browser actions in the main Codex orchestrator for `codex-inline`; optionally use `codex-spawn.sh --tier scanner --sandbox read-only` only for non-MCP classification over captured snapshots. Do not ask to spawn Haiku on Codex.
+- Required evidence is provider-neutral: `scan-*.json`, RUNTIME-MAP merge, GOAL-COVERAGE-MATRIX impact, and `review.haiku_scanner_spawned` telemetry semantics.
 </MANDATORY_GATE>
 
 <SPAWN_MODE_RESOLUTION>
@@ -3160,14 +3321,15 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
 If eligibility fails → write `.recursive-probe-skipped.yaml` and continue to 2b-3 (no error).
 
 <MANDATORY_GATE>
-**You MUST run the AskUserQuestion pre-flight below BEFORE invoking the bash block** — unless `--non-interactive` / `VG_NON_INTERACTIVE=1` is set, OR all three axes (`--recursion`, `--probe-mode`, `--target-env`) were already passed on the `/vg:review` command line.
+**You MUST run the provider-native user prompt below BEFORE invoking the bash block** — unless `--non-interactive` / `VG_NON_INTERACTIVE=1` is set, OR all three axes (`--recursion`, `--probe-mode`, `--target-env`) were already passed on the `/vg:review` command line.
 - Do NOT skip the pre-flight because "defaults look fine" — the operator must explicitly choose recursion depth, probe execution mode, and target environment per run.
 - Do NOT delegate the prompt to `spawn_recursive_probe.py` stdin — Claude Code's bash sandbox makes `sys.stdin.isatty()` return False, so script-side prompts silently fall back to defaults.
 - The bash block at the end of this section will refuse to launch (loud abort + telemetry) if it detects an interactive run with no env vars set, which means the pre-flight was skipped.
-- After AskUserQuestion answers, emit telemetry event `review.recursive_probe.preflight_asked` (logs the chosen axes for audit).
+- Claude Code path: use `AskUserQuestion`. Codex path: ask the same concise questions in the main Codex thread or closest available Codex input UI.
+- After the prompt answers, emit telemetry event `review.recursive_probe.preflight_asked` (logs the chosen axes for audit).
 </MANDATORY_GATE>
 
-**Pre-flight (v2.41.1) — operator config via AskUserQuestion:**
+**Pre-flight (v2.41.1) — operator config via provider-native prompt:**
 
 > ⚠ Why this lives in the command layer (not script stdin):
 > Claude Code wraps bash in a sandbox where `sys.stdin.isatty()` returns `False`,
@@ -3182,9 +3344,9 @@ all three before invoking bash:
 
 | Env var | Source priority | Default |
 |---|---|---|
-| `RECURSION_MODE` | (1) `--recursion` CLI flag → (2) AskUserQuestion → (3) `light` | `light` |
-| `PROBE_MODE`     | (1) `--probe-mode` CLI flag → (2) AskUserQuestion → (3) `auto` | `auto` |
-| `TARGET_ENV`     | (1) `--target-env` CLI flag → (2) `vg.config review.target_env` → (3) AskUserQuestion → (4) `sandbox` | `sandbox` |
+| `RECURSION_MODE` | (1) `--recursion` CLI flag → (2) provider-native prompt → (3) `light` | `light` |
+| `PROBE_MODE`     | (1) `--probe-mode` CLI flag → (2) provider-native prompt → (3) `auto` | `auto` |
+| `TARGET_ENV`     | (1) `--target-env` CLI flag → (2) `vg.config review.target_env` → (3) provider-native prompt → (4) `sandbox` | `sandbox` |
 
 **Resolution procedure (the orchestrator runs these BEFORE the bash block):**
 
@@ -3195,7 +3357,7 @@ all three before invoking bash:
 2. **Skip prompts entirely if `VG_NON_INTERACTIVE=1`** (CI / piped runs) —
    downstream defaults apply.
 
-3. **For each axis still unset, call `AskUserQuestion`** with the spec below.
+3. **For each axis still unset, run the provider-native prompt** with the spec below.
    Ask in this order, ONE call per axis (so operator answers can short-circuit
    the next prompt — e.g. picking `skip` for probe-mode means we skip the
    target-env question because no probes will fire).
@@ -3229,12 +3391,12 @@ all three before invoking bash:
 **Bash invocation:**
 
 ```bash
-# v2.41.1 — env vars resolved by the AskUserQuestion pre-flight above.
+# v2.41.1 — env vars resolved by the provider-native pre-flight above.
 # Bash forwards each axis ONLY if set; the script's argparse defaults apply
 # otherwise (matches CI / VG_NON_INTERACTIVE=1 contract).
 SKIP_REASON="${SKIP_RECURSIVE_PROBE:-}"
 
-# v2.41.2 — anti-forge guard: if the orchestrator skipped the AskUserQuestion
+# v2.41.2 — anti-forge guard: if the orchestrator skipped the provider-native prompt
 # pre-flight (no env vars set + not in CI), refuse to launch with bare defaults.
 # This catches the regression where Phase 2b-2.5 silently ran with light/auto/
 # sandbox because the markdown narrative pre-flight was lazy-skipped by the LLM.
@@ -3242,12 +3404,12 @@ if [[ -z "${RECURSION_MODE:-}" && -z "${PROBE_MODE:-}" && -z "${TARGET_ENV:-}" \
       && "${VG_NON_INTERACTIVE:-0}" != "1" ]]; then
   echo "" >&2
   echo "⛔ Phase 2b-2.5 pre-flight skipped." >&2
-  echo "   The MANDATORY_GATE above requires AskUserQuestion to run BEFORE this bash block" >&2
+  echo "   The MANDATORY_GATE above requires provider-native prompt to run BEFORE this bash block" >&2
   echo "   so the operator can choose recursion depth / probe-mode / target-env." >&2
   echo "   None of the three env vars (RECURSION_MODE / PROBE_MODE / TARGET_ENV) are set." >&2
   echo "" >&2
   echo "   Fix one of the following:" >&2
-  echo "   1. Run AskUserQuestion to ask the operator (recommended for interactive runs)" >&2
+  echo "   1. Run the provider-native prompt to ask the operator (recommended for interactive runs)" >&2
   echo "   2. Pass --recursion / --probe-mode / --target-env on the /vg:review CLI" >&2
   echo "   3. Set VG_NON_INTERACTIVE=1 to accept defaults (CI / scripted runs only)" >&2
   echo "   4. Pass --skip-recursive-probe=<reason> to skip Phase 2b-2.5 entirely" >&2
@@ -3287,13 +3449,13 @@ python scripts/spawn_recursive_probe.py "${ARGS[@]}"
 
 ```bash
 # /vg:review accepts these flags. The orchestrator parses them BEFORE the
-# AskUserQuestion pre-flight runs and exports the matching env var so the
+# Provider-native pre-flight runs and exports the matching env var so the
 # operator only gets prompted for axes they didn't pre-supply:
 #   --recursion={light,deep,exhaustive}     → export RECURSION_MODE=$value
 #   --probe-mode={auto,manual,hybrid}       → export PROBE_MODE=$value
 #   --target-env={local,sandbox,staging,prod} → export TARGET_ENV=$value
 #   --skip-recursive-probe="<reason>"       → export SKIP_RECURSIVE_PROBE=$value
-#   --non-interactive                       → export VG_NON_INTERACTIVE=1 (suppress AskUserQuestion + stdin prompts)
+#   --non-interactive                       → export VG_NON_INTERACTIVE=1 (suppress provider prompts + stdin prompts)
 #   --i-know-this-is-prod="<reason>"        → forwarded as-is (prod-safety opt-in)
 ```
 
@@ -5043,6 +5205,75 @@ Fix iteration {N}/3:
   Matrix coverage: {review_passed}/{total} goals
   Map stable: {YES|NO}
 ```
+
+### 3e: Iter limit fallback — Diagnostic L2 (RFC v9 D11 + D26, PR-E)
+
+When iter 3 exits with errors STILL remaining (loop hit cap without
+self-resolving), do NOT silent-BLOCK. Spawn diagnostic_l2 single-advisory
+fallback:
+
+1. Capture residual evidence: list of unresolved error rows from
+   RUNTIME-MAP + scan-*.json + recipe_executor logs.
+2. Spawn isolated Haiku subagent (zero parent context — RFC v9 D11) to
+   classify root cause `block_family` ∈ {schema_drift, validation_bug,
+   auth_issue, db_constraint, business_logic, integration_failure,
+   unknown}.
+3. L2 generates `L2Proposal.json` with confidence + proposed_fix.
+4. Present to user via single-advisory pattern (D26):
+     - confidence ≥ 0.7  → "Đề xuất: <fix>. [Yes / chi tiết]"
+     - confidence < 0.7  → 3-option block_resolve_l3_present (legacy)
+5. **User gate is mandatory** — never auto-apply (per project policy).
+6. User accept → apply fix → re-run iter 4 (one extra iteration grace).
+7. User reject → BLOCK with full audit trail in
+   `.l2-proposals/{proposal_id}.json` + DEFECT-LOG entry referencing
+   the proposal.
+
+```bash
+if [ "${ITER:-1}" -eq 3 ] && [ -n "${REMAINING_ERRORS}" ] && \
+   { [ -f "${REPO_ROOT}/.claude/scripts/spawn-diagnostic-l2.py" ] || [ -f "${REPO_ROOT}/scripts/spawn-diagnostic-l2.py" ]; }; then
+  echo "━━━ Phase 3e — Diagnostic L2 fallback (iter 3 hit cap) ━━━"
+  DIAGNOSTIC_L2="${REPO_ROOT}/.claude/scripts/spawn-diagnostic-l2.py"
+  [ -f "$DIAGNOSTIC_L2" ] || DIAGNOSTIC_L2="${REPO_ROOT}/scripts/spawn-diagnostic-l2.py"
+  L2_ARGS=(
+    --phase "${PHASE_NUMBER}"
+    --gate-id "review.fix_loop"
+    --evidence-file "${PHASE_DIR}/.fix-loop-evidence.json"
+  )
+  L2_OUT=$("${PYTHON_BIN:-python3}" "$DIAGNOSTIC_L2" \
+    "${L2_ARGS[@]}" 2>&1)
+  L2_PROPOSAL_ID=$(echo "$L2_OUT" | ${PYTHON_BIN:-python3} -c "
+import json, sys
+try: print(json.loads(sys.stdin.read()).get('proposal_id',''))
+except: print('')
+")
+  if [ -n "$L2_PROPOSAL_ID" ]; then
+    echo "  L2 proposal generated: $L2_PROPOSAL_ID"
+    # Open DEFECT-LOG entry referencing the proposal
+    TESTER_PRO_CLI="${REPO_ROOT}/.claude/scripts/tester-pro-cli.py"
+    [ -f "$TESTER_PRO_CLI" ] || TESTER_PRO_CLI="${REPO_ROOT}/scripts/tester-pro-cli.py"
+    if [ -f "$TESTER_PRO_CLI" ]; then
+      "${PYTHON_BIN:-python3}" "$TESTER_PRO_CLI" defect new \
+        --phase "${PHASE_NUMBER}" \
+        --title "[ITER-LIMIT] Fix loop hit max=3, L2 proposal $L2_PROPOSAL_ID" \
+        --severity major --found-in review \
+        --notes "L2 proposal at .l2-proposals/${L2_PROPOSAL_ID}.json — user decision pending" \
+        2>&1 | sed 's/^/  /' || true
+    fi
+    # User gate is provider-native after spawn-diagnostic-l2.py:
+    # Claude Code uses AskUserQuestion; Codex asks in the main thread/UI.
+    # On accept → run-complete sees applied; on reject → BLOCK below.
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+      "review.diagnostic_l2_spawned" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"proposal_id\":\"$L2_PROPOSAL_ID\"}" \
+      >/dev/null 2>&1 || true
+  fi
+fi
+```
+
+> **Tại sao không tự apply L2 fix**: L2 đã sai trong dogfood 3.2
+> (propose fix giả mà có vẻ hợp lý). User gate là single source of truth
+> cho fix correctness. Audit trail (`.l2-proposals/`) cho phép trace
+> sau-incident: proposal nào được accept/reject, fix tham chiếu commit nào.
 </step>
 
 <step name="phase4_goal_comparison">
@@ -5066,8 +5297,9 @@ set +e
 classify_goals_if_needed "${PHASE_DIR}/TEST-GOALS.md" "${PHASE_DIR}"
 gc_rc=$?
 set -e
-# rc=2 → Haiku tie-break (spawn Task per row in .goal-classifier-pending.tsv, then classify_goals_apply)
-# rc=3 → AskUserQuestion (surface list from config), then classify_goals_apply
+# rc=2 → provider-native cheap classifier
+#        Claude: Haiku Task per row; Codex: read-only scanner adapter over pending TSV
+# rc=3 → provider-native prompt (surface list from config), then classify_goals_apply
 ```
 
 Parse `**Surface:** <name>` per goal.
@@ -5282,7 +5514,7 @@ if [ "$INTERMEDIATE" -gt 0 ]; then
 
   if [[ ! "$ARGUMENTS" =~ --allow-intermediate ]]; then
     # v1.9.1 R2+R4: block-resolver — try L1 auto-fix (re-scan failed goals) before demanding user override.
-    # If L1 fails, L2 architect proposal is presented to user via AskUserQuestion (L3).
+    # If L1 fails, L2 architect proposal is presented through provider-native L3 prompt.
     # L4 only when L2 proposal rejected AND no user direction.
     # See _shared/lib/block-resolver.sh
     source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/block-resolver.sh" 2>/dev/null || true
@@ -6224,7 +6456,9 @@ if [ "$HAS_POST_LIFECYCLE" -gt 0 ] && [ -z "$POST_BASE_RC" ] && \
   echo "   blocks but no sandbox base_url available at run-complete."
   exit 1
 fi
-if [ -f "${REPO_ROOT}/scripts/rcrurd-preflight.py" ] && \
+VG_SCRIPT_ROOT="${REPO_ROOT}/.claude/scripts"
+[ -f "${VG_SCRIPT_ROOT}/rcrurd-preflight.py" ] || VG_SCRIPT_ROOT="${REPO_ROOT}/scripts"
+if [ -f "${VG_SCRIPT_ROOT}/rcrurd-preflight.py" ] && \
    [ -d "${PHASE_DIR}/FIXTURES" ] && [ -n "$POST_BASE_RC" ]; then
   # Codex-HIGH-1-ter fix: snapshot must exist when delta assertions present
   POST_NEEDS_SNAP=$(grep -lE 'increased_by_at_least|decreased_by_at_least' \
@@ -6237,7 +6471,7 @@ if [ -f "${REPO_ROOT}/scripts/rcrurd-preflight.py" ] && \
     "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.rcrurd_post_snapshot_missing" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
     exit 1
   fi
-  POST_OUT=$("${PYTHON_BIN:-python3}" "${REPO_ROOT}/scripts/rcrurd-preflight.py" \
+  POST_OUT=$("${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/rcrurd-preflight.py" \
     --phase "$PHASE_NUMBER" --base-url "$POST_BASE_RC" \
     --mode post --severity "${VG_RCRURD_POST_SEVERITY:-block}" \
     --pre-snapshot "${PHASE_DIR}/.rcrurd-pre-snapshot.json" 2>&1)
@@ -6473,6 +6707,77 @@ if [ -f "$ALIGN_VAL" ]; then
       fi
     fi
   fi
+fi
+
+# RFC v9 D21 — DEFECT-LOG.md generation (tester pro).
+# After GOAL-COVERAGE-MATRIX is final, parse the matrix and create one
+# Defect entry per goal with status ∈ {BLOCKED, UNREACHABLE, FAILED, SUSPECTED}
+# that does NOT already have an open defect in .tester-pro/defects.json.
+# Severity inferred from priority + block_family heuristics.
+TESTER_PRO_CLI="${REPO_ROOT}/.claude/scripts/tester-pro-cli.py"
+[ -f "$TESTER_PRO_CLI" ] || TESTER_PRO_CLI="${REPO_ROOT}/scripts/tester-pro-cli.py"
+if [ -f "$TESTER_PRO_CLI" ] && [ -f "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" ]; then
+  echo "━━━ D21 — Defect log generation ━━━"
+  TESTER_PRO_CLI="$TESTER_PRO_CLI" ${PYTHON_BIN:-python3} - <<'PYDEFECT' 2>&1 | sed 's/^/  D21: /' || true
+import json, os, re, subprocess, sys
+phase_dir = os.environ['PHASE_DIR']
+phase_no = os.environ['PHASE_NUMBER']
+matrix = open(os.path.join(phase_dir, 'GOAL-COVERAGE-MATRIX.md'),
+              encoding='utf-8').read()
+cli = os.environ.get(
+    'TESTER_PRO_CLI',
+    os.path.join(os.environ['REPO_ROOT'], 'scripts', 'tester-pro-cli.py'),
+)
+# Parse rows `| G-XX | priority | surface | STATUS | evidence |`
+row_re = re.compile(
+    r"^\|\s*(G-[\w.-]+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|"
+    r"\s*([A-Z_]+)\s*\|\s*(.+?)\s*\|", re.MULTILINE,
+)
+fail_states = {"BLOCKED", "UNREACHABLE", "FAILED", "SUSPECTED"}
+# Load existing open defects to skip duplicates by (goal, title-prefix)
+defects_path = os.path.join(phase_dir, '.tester-pro', 'defects.json')
+existing = []
+if os.path.exists(defects_path):
+    try: existing = json.load(open(defects_path, encoding='utf-8'))
+    except: pass
+def is_open_for(gid, title_prefix):
+    return any(
+        d.get('related_goals') and gid in d['related_goals']
+        and d.get('title','').startswith(title_prefix)
+        and not d.get('closed_at')
+        for d in existing
+    )
+opened = 0
+for m in row_re.finditer(matrix):
+    gid, prio, surf, status, ev = m.groups()
+    if status not in fail_states:
+        continue
+    title_prefix = f"[{status}]"
+    if is_open_for(gid, title_prefix):
+        continue
+    # Severity heuristic: critical priority → critical; backend mutation → major;
+    # else minor.
+    prio_l = prio.strip().lower()
+    surf_l = surf.strip().lower()
+    if prio_l == 'critical':
+        sev = 'critical'
+    elif any(s in surf_l for s in ('api', 'data', 'integration')):
+        sev = 'major'
+    else:
+        sev = 'minor'
+    title = f"[{status}] {gid} — {ev[:80]}"
+    cmd = [
+        sys.executable, cli, 'defect', 'new',
+        '--phase', phase_no, '--title', title,
+        '--severity', sev, '--found-in', 'review',
+        '--goals', gid,
+        '--notes', f"surface={surf} priority={prio} status={status}. Auto-opened from GOAL-COVERAGE-MATRIX.",
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode == 0:
+        opened += 1
+print(f"opened {opened} new defect(s) from matrix")
+PYDEFECT
 fi
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete

@@ -15,7 +15,7 @@ Codex use the same workflow contracts, but their orchestration primitives differ
 
 | Claude Code concept | Codex-compatible pattern | Notes |
 |---|---|---|
-| AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it. |
+| AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it; prefer Codex-native options such as `codex-inline` when the source prompt distinguishes providers. |
 | Agent(...) / Task | Prefer `commands/vg/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
 | TaskCreate / TaskUpdate / TodoWrite | Markdown progress + step markers | Do not rely on Claude's persistent task tail UI. |
 | Playwright MCP | Main Codex orchestrator MCP tools, or smoke-tested subagents | If an MCP-using subagent cannot access tools in a target environment, fall back to orchestrator-driven/inline scanner flow. |
@@ -57,6 +57,12 @@ Codex hook parity is evidence-based: `.vg/events.db`, step markers,
 `must_emit_telemetry`, and `run-complete` output are authoritative. A Codex
 run is not complete just because the model says it is complete.
 
+Before executing command bash blocks from a Codex skill, export
+`VG_RUNTIME=codex`. This is an adapter signal, not a source replacement:
+Claude/unknown runtime keeps the canonical `AskUserQuestion` + Haiku path,
+while Codex maps only the incompatible orchestration primitives to
+Codex-native choices such as `codex-inline`.
+
 ### Codex spawn precedence
 
 When the source workflow below says `Agent(...)` or "spawn", Codex MUST
@@ -66,7 +72,7 @@ apply this table instead of treating the Claude syntax as executable:
 |---|---|---|---|---|
 | `/vg:build` wave executor, `model="${MODEL_EXECUTOR}"` | Write one prompt file per task, run `codex-spawn.sh --tier executor`; parallelize independent tasks with background processes and `wait`, serialize dependency groups | `VG_CODEX_MODEL_EXECUTOR`; leave unset to use Codex config default. Set this to the user's strongest coding model when they want Sonnet-class build quality. | `workspace-write` | child output, stdout/stderr logs, changed files, verification commands, task-fidelity prompt evidence |
 | `/vg:blueprint`, `/vg:scope`, planner/checker agents | Run `codex-spawn.sh --tier planner` or inline in the main orchestrator if the step needs interactive user answers | `VG_CODEX_MODEL_PLANNER` | `workspace-write` for artifact-writing planners, `read-only` for pure checks | requested artifacts or JSON verdict |
-| `/vg:review` navigator/scanner, `Agent(model="haiku")` | Do NOT blindly spawn `codex exec` for Playwright/Maestro work. Main Codex orchestrator owns MCP/browser/device actions. Use `codex-spawn.sh --tier scanner --sandbox read-only` only for non-MCP classification over captured snapshots/artifacts. | `VG_CODEX_MODEL_SCANNER`; set this to a cheap/fast model for review map/scanner work | `read-only` unless explicitly generating scan files from supplied evidence | same `scan-*.json`, `RUNTIME-MAP.json`, `GOAL-COVERAGE-MATRIX.md`, and `review.haiku_scanner_spawned` telemetry event semantics |
+| `/vg:review` navigator/scanner, `Agent(model="haiku")` | Use `--scanner=codex-inline` by default. Do NOT ask to spawn Haiku or blindly spawn `codex exec` for Playwright/Maestro work. Main Codex orchestrator owns MCP/browser/device actions. Use `codex-spawn.sh --tier scanner --sandbox read-only` only for non-MCP classification over captured snapshots/artifacts. | `VG_CODEX_MODEL_SCANNER`; set this to a cheap/fast model for review map/scanner work | `read-only` unless explicitly generating scan files from supplied evidence | same `scan-*.json`, `RUNTIME-MAP.json`, `GOAL-COVERAGE-MATRIX.md`, and `review.haiku_scanner_spawned` telemetry event semantics |
 | `/vg:review` fix agents and `/vg:test` codegen agents | Use `codex-spawn.sh --tier executor` because they edit code/tests | `VG_CODEX_MODEL_EXECUTOR` or explicit `--model` if the command selected a configured fix model | `workspace-write` | changed files, tests run, unresolved risks |
 | Rationalization guard, reflector, gap hunters | Use `codex-spawn.sh --tier scanner` for read-only classification, or `--tier adversarial` for independent challenge/review | `VG_CODEX_MODEL_SCANNER` or `VG_CODEX_MODEL_ADVERSARIAL` | `read-only` by default | compact JSON/markdown verdict; fail closed on empty/unparseable output |
 
@@ -2154,11 +2160,13 @@ The injector now does TWO passes:
    identifier (UUID-like, sentinel-prefixed, or ≥ 8 chars unique).
 
 ```bash
-if [ -f "${REPO_ROOT}/scripts/codegen-fixture-inject.py" ] && \
+CODEGEN_FIXTURE_INJECT="${REPO_ROOT}/.claude/scripts/codegen-fixture-inject.py"
+[ -f "$CODEGEN_FIXTURE_INJECT" ] || CODEGEN_FIXTURE_INJECT="${REPO_ROOT}/scripts/codegen-fixture-inject.py"
+if [ -f "$CODEGEN_FIXTURE_INJECT" ] && \
    [ -f "${PHASE_DIR}/FIXTURES-CACHE.json" ]; then
   echo "▸ RFC v9 codegen fixture inject (sweep mode, post-generation)"
   INJECT_OUT=$("${PYTHON_BIN:-python3}" \
-    "${REPO_ROOT}/scripts/codegen-fixture-inject.py" \
+    "$CODEGEN_FIXTURE_INJECT" \
     --phase "$PHASE_NUMBER" \
     --sweep "${GENERATED_TESTS_DIR:-apps/web/e2e}" \
     --substitute 2>&1)
@@ -3974,6 +3982,38 @@ COMP_RC=$?
 if [ "$COMP_RC" -ne 0 ] && [ "$COMP_SEV" = "block" ]; then
   echo "⛔ Test flow compliance failed. See .flow-compliance-test.yaml or pass --skip-compliance=\"<reason>\"."
   exit 1
+fi
+
+# RFC v9 D22 + D23 — TEST-SUMMARY-REPORT.md + RTM.md (tester pro discipline).
+# Aggregate goal results + defect log + traceability into final reports.
+TESTER_PRO_CLI="${REPO_ROOT}/.claude/scripts/tester-pro-cli.py"
+[ -f "$TESTER_PRO_CLI" ] || TESTER_PRO_CLI="${REPO_ROOT}/scripts/tester-pro-cli.py"
+if [ -f "$TESTER_PRO_CLI" ]; then
+  echo "━━━ D22 — TEST-SUMMARY-REPORT.md ━━━"
+  "${PYTHON_BIN:-python3}" "$TESTER_PRO_CLI" summary render \
+    --phase "${PHASE_NUMBER}" 2>&1 | sed 's/^/  D22: /' || true
+
+  echo "━━━ D23 — RTM.md (bi-directional traceability) ━━━"
+  # Pre-2026-05-01 phases: WARN (orphan goals/requirements expected during
+  # migration). New phases: BLOCK on orphan to enforce traceability.
+  GOALS_FIRST_COMMIT_TS=$(git log --reverse --format=%ct -- \
+    "${PHASE_DIR}/TEST-GOALS.md" 2>/dev/null | head -1)
+  GRANDFATHER_CUTOFF=$(date -u -j -f "%Y-%m-%d" "2026-05-01" +%s 2>/dev/null \
+    || date -u -d "2026-05-01" +%s 2>/dev/null || echo "0")
+  if [ -n "$GOALS_FIRST_COMMIT_TS" ] && [ "$GOALS_FIRST_COMMIT_TS" -lt "$GRANDFATHER_CUTOFF" ]; then
+    RTM_SEVERITY="warn"
+  else
+    RTM_SEVERITY="block"
+  fi
+  "${PYTHON_BIN:-python3}" "$TESTER_PRO_CLI" rtm render \
+    --phase "${PHASE_NUMBER}" --severity "$RTM_SEVERITY" 2>&1 | sed 's/^/  D23: /' || true
+  RTM_RC=$?
+  if [ "${RTM_RC:-0}" -eq 1 ] && [ "$RTM_SEVERITY" = "block" ]; then
+    echo "⛔ D23 BLOCK: RTM has orphan goals or orphan requirements."
+    echo "   Fix: every goal must trace to a decision (D-XX) cited in SPECS/CONTEXT;"
+    echo "        every decision must have ≥1 covering goal in TEST-GOALS."
+    exit 1
+  fi
 fi
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
