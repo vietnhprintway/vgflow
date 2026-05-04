@@ -138,3 +138,31 @@ cat > "$run_file" <<JSON
   "started_at": "$ts"
 }
 JSON
+
+# Issue #105 #4 — propagate session_id to orchestrator subprocess via
+# .vg/.session-context.json. Claude Code does NOT export
+# CLAUDE_SESSION_ID to user-spawned bash, only CLAUDE_HOOK_SESSION_ID
+# inside the hook process. state._session_id_from_session_context() reads
+# this file as a fallback so orchestrator run-start tags the same
+# session_id as the active-runs file written above (preventing
+# session-unknown-* synthetic ids + cross-session run_id divergence).
+mkdir -p ".vg" 2>/dev/null
+python3 - "$session_id" "$run_id" "$cmd" "$phase" <<'PY' 2>/dev/null || true
+import json, os, sys
+from pathlib import Path
+sid, rid, command, phase = sys.argv[1:5]
+ctx_path = Path(".vg/.session-context.json")
+ctx = {}
+if ctx_path.exists():
+    try:
+        ctx = json.loads(ctx_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        ctx = {}
+ctx["session_id"] = sid
+ctx["run_id"] = rid
+ctx["command"] = command
+ctx["phase"] = phase
+tmp = ctx_path.with_suffix(ctx_path.suffix + ".tmp")
+tmp.write_text(json.dumps(ctx, indent=2), encoding="utf-8")
+os.replace(str(tmp), str(ctx_path))
+PY

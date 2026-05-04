@@ -185,6 +185,8 @@ def main() -> int:
                     help="don't deploy to ~/.codex/skills")
     ap.add_argument("--json", action="store_true",
                     help="emit JSON for programmatic consumers")
+    ap.add_argument("--verbose", "--list", action="store_true", dest="verbose",
+                    help="with --check: list each drifted item (path + reason)")
     ap.add_argument("--dry-run-release", action="store_true",
                     help="with --release: prepare but don't push")
     args = ap.parse_args()
@@ -231,6 +233,24 @@ def main() -> int:
             print(json.dumps(report, indent=2))
         else:
             print(report["summary"])
+            if args.verbose and pre_rc != 0:
+                # Issue #105 #3 — print each drifted item so operator can
+                # triage instead of seeing only the count.
+                results = pre_data.get("results") or []
+                drifted = [r for r in results if not r.get("in_sync", False)]
+                if drifted:
+                    print()
+                    print(f"Drift details ({len(drifted)} item(s)):")
+                    for r in drifted:
+                        skill = r.get("skill") or r.get("name") or "?"
+                        reason = r.get("reason") or r.get("status") or "drift"
+                        # Surface chain / path info if available.
+                        chain = r.get("chain") or r.get("path") or ""
+                        suffix = f" [{chain}]" if chain else ""
+                        print(f"  ✗ {skill}{suffix} — {reason}")
+                else:
+                    print("  (validator reported drift_count > 0 but no "
+                          "per-item results — re-run with --json for raw output)")
         return pre_rc
 
     # --- 2. Run sync.sh ---

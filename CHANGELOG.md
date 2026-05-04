@@ -1,5 +1,51 @@
 # Changelog
 
+## v2.49.0 — RFC v9 followup batch (PR #104) + harness blocker hotfix (Issue #105)
+
+Minor release. Squash-merge of **PR #104** delivering R2 Test Pilot + R4 Scope/Accept + Hook UX overhaul + RFC v9 backlog cleanup, plus four harness fixes from PrintwayV3 dogfood reported as **Issue #105** by @vietnhprintway. Two maintainer-side CI fixes were applied to PR #104 mid-merge to clear the green bar (`state.current_session_id` mirror desync + `deploy.md` 538-line slim-cap regression).
+
+### Added (PR #104 — features) — closes #100 #101 #102 #103
+
+- **R2 Test Pilot** — `/vg:test` 5-step refactor (preflight → deploy → runtime → goal-verification → codegen → fix-loop → regression+security → close). Heavy steps moved to dedicated subagents (`vg-test-codegen-deep-probe`, `vg-test-goal-verification`, `vg-test-mobile-codegen`). Native tasklist projection enrolled in build/deploy/test for depth-aware progress reporting (Bug L / Task 44b Rule V2).
+- **R4 Scope/Accept** — `/vg:scope` 5-round structured discussion (domain → technical → API → UI → tests) with deep-probe loop, env-preference write-through, completeness validation, CrossAI peer review. `/vg:accept` 8-step UAT (preflight → 3-tier gates → checklist build → narrative autofire → interactive → quorum → audit → cleanup) with quorum gate + audit subagent.
+- **Hook UX overhaul** — Title-color compact stderr (orange = error, yellow = warn, plain follow-up lines), full diagnostic written to `.vg/blocks/<run_id>/<gate_id>.md` instead of stderr blowout. Cross-run guard with stale (>30min) + run.blocked-unhandled escape clauses, mainline ↔ auxiliary distinction (auxiliary cmds don't hard-block mainline runs on same phase).
+- **RFC v9 backlog** — fail-closed build truthcheck cascading into deploy/test, OpenAPI evidence gate hardening, capsule_version "2" graceful-degrade in `verify-task-context-capsule.py`, blueprint mockup-strict per-phase gate.
+- **/vg:deploy `--pre-test` mode** for `/vg:build` STEP 6.5 pre-close invocation (sandbox health probe before close).
+- **State-machine validator soft-skip** for unknown commands (silent pass instead of hard-block on schema gap — `2fadc394`).
+- **Per-task artifact dispatch** in waves (`test_vg_load_per_task_artifacts`) — task executors load only the contracts they bind to, not the whole phase blueprint.
+
+### Fixed (CI maintainer-side, mid-merge)
+
+- **`scripts/vg-orchestrator/state.py` mirror desync** — repo-root canonical was missing `current_session_id()` + `_session_id_from_session_context()` + `CODEX_SESSION_ID` env support that lived in `.claude/scripts/vg-orchestrator/state.py`. CI's `cp -r scripts/* .claude/scripts/` step then overwrote the good copy with the stale mirror, crashing `cmd_run_status` with `AttributeError: module 'state' has no attribute 'current_session_id'`. Fix: sync the two copies (commit `36a5879` on the PR branch). Identified by `cmd_run_status` traceback in run `25307129764`.
+- **`commands/vg/deploy.md` 538-line slim-cap regression** — `tests/skills/test_deploy_slim_size.py` enforces `<= 500 LOC` for slim entry. Two new feature commits in this PR (`5853be2` `--pre-test` mode + `b204666` H1+deploy enrollment) re-bloated past the limit set by `cc8e4a6` (refactor r6a). Per the test message, extracted Step 2's inline Python merge-and-summary logic to standalone `scripts/vg-deploy-merge-summary.py` (91 LOC). deploy.md now 488 LOC. Behavior unchanged — same merge semantics, same telemetry payload (commit `9228f46`).
+
+### Fixed (Issue #105 — harness blockers from PrintwayV3 dogfood)
+
+- **#105.1 — PostToolUse matcher hardcoded `TodoWrite` did not fire on `TaskCreate`/`TaskUpdate`**. Claude Code 2026 split the task tool family — newer runtimes expose `TaskCreate`/`TaskUpdate`/`TaskList` instead of (or alongside) `TodoWrite`. With matcher `"TodoWrite"` only, sessions that called `TaskCreate` to project the tasklist never fired the PostToolUse hook → `.tasklist-projected.evidence.json` never written → PreToolUse-Bash gate blocked every `vg-orchestrator step-active` indefinitely. Fix: widen matcher to `"TodoWrite|TaskCreate|TaskUpdate"` in `scripts/hooks/install-hooks.sh:50` so the hook fires on all three. Hook body already tolerates `tool_input.todos` being empty (TaskCreate has `subject`+`description` instead).
+- **#105.2 — `sync-vg-skills.py` overwriting local matcher patches**. Operator manually patched `.claude/settings.json` line 11 in PrintwayV3 to add the matcher fix; next `python .claude/scripts/sync-vg-skills.py` invocation reverted it within ~1 minute (settings.json is regenerated from `install-hooks.sh` template). Closed structurally by fix #105.1 — applying the matcher widening at the **template level** means subsequent syncs re-emit the correct matcher; no per-install patch needed. Operators upgrading need to re-run `sync.sh` (or `sync-vg-skills.py`) after pulling v2.49.0 to refresh `.claude/settings.json`.
+- **#105.3 — `sync-vg-skills.py --check` reported `drift detected (16 items)` with no way to inspect**. New `--verbose` / `--list` flag prints per-item drift detail (skill name + chain + reason) so operators can triage instead of blindly re-running sync. Reads `results[]` already returned by `verify-codex-skill-mirror-sync.py --json`; no validator change needed.
+- **#105.4 — `CLAUDE_SESSION_ID` env var not propagated → run_id mismatch between PreToolUse hook and orchestrator subprocess**. Claude Code does NOT export `CLAUDE_SESSION_ID` to user-spawned bash, only `CLAUDE_HOOK_SESSION_ID` inside the hook process. PreToolUse hook reads `${CLAUDE_HOOK_SESSION_ID:-default}` to look up `.vg/active-runs/<sid>.json` while orchestrator's `run-start` sees no session env at all and tags the run with `session-unknown-<rid>` — two different files for the same logical run. Fix: `vg-user-prompt-submit.sh` now writes `.vg/.session-context.json` with `{session_id, run_id, command, phase}`. `state._session_id_from_session_context()` (already shipped in v2.48.0) reads this file as fallback so orchestrator subprocess calls resolve the same session_id the hook used. Closes the orphan `default.json` ↔ `session-unknown-*` divergence.
+
+### Triaged
+
+| Issue | Verdict | Notes |
+|---|---|---|
+| #100 | closed | emit-tasklist.py exit-1-despite-write — covered by PR #104's tasklist depth/match v2 enforcement (`vg-post-tool-use-todowrite.sh` rule V2) |
+| #101 | closed | hook session_id falls back to `default` → orphan active-runs/default.json — covered by Issue #105.4 fix in this release |
+| #102 | closed | blueprint subagent output ↔ validator schema mismatch — covered by PR #104's `verify-crud-surface-contract` + `verify-interface-standards` updates |
+| #103 | closed | vg-state-machine-validator strict pointer-walk fail on retroactive event — covered by PR #104 commit `2fadc394` (skip silently for unknown commands) |
+| #105 | closed | all 5 sub-items addressed: #1+#2 (matcher widening at template level), #3 (--verbose drift), #4 (session-id propagation). #5 (run-start dedup) deferred — low-priority polish, separate ticket if needed. |
+
+### Internal
+
+- VERSION + VGFLOW-VERSION → 2.49.0 (minor — feature batch + harness hotfixes)
+- `.claude/` mirror committed as part of PR #104 (643 files) so installs reflect canonical-source state without requiring local `sync.sh` for the slim-entry contracts
+- `scripts/vg-deploy-merge-summary.py` (NEW, 91 LOC, AST-validated, idempotent)
+- `scripts/sync-vg-skills.py` `--verbose` flag (alias `--list`); reads validator `results[]` already returned by `verify-codex-skill-mirror-sync.py --json`
+- `scripts/hooks/vg-user-prompt-submit.sh` writes `.vg/.session-context.json` (atomic via tmp + replace) on every `/vg:*` prompt
+- 906 pytest tests pass on Linux CI (Run `25307782303` on commit `9228f46`); 1 skill slim-size test, 643 .claude/ tracked file mirrors validated end-to-end
+- Codex skill mirrors regenerated as part of PR #104
+
 ## v2.48.1 — orchestrator subprocess crash fix (PR #99) + matrix-evidence-link surface-probe schema gap closure (Issue #85)
 
 Patch release — 1 hotfix from PrintwayV3 dogfood (PR #99) + 1 deferred schema-gap fix (Issue #85, deferred since v2.47.1).
