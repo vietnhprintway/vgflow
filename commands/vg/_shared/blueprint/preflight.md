@@ -245,7 +245,7 @@ ${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
 
 # IMMEDIATELY after this block: apply TASKLIST_POLICY → project
 # `.vg/runs/{run_id}/tasklist-contract.json` to native task UI and call
-# `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
+# `vg-orchestrator tasklist-projected --adapter auto`.
 
 # R2 skip prereq assertion: --from=X must verify prior steps actually completed.
 FROM_STEP=""
@@ -321,21 +321,29 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
   (each sub-step prefixed with `  ↳`). This is what TodoWrite projects.
 
 <HARD-GATE>
-You MUST IMMEDIATELY call TodoWrite AFTER the bash below runs. Do NOT continue
-without TodoWrite — the PreToolUse Bash hook will block all subsequent
-step-active calls until signed evidence exists at
-`.vg/runs/<run_id>/.tasklist-projected.evidence.json`.
+You MUST IMMEDIATELY project the native task UI AFTER the bash below runs.
+Do NOT continue without the runtime-native projection — the PreToolUse Bash
+hook will block all subsequent step-active calls until signed evidence exists
+at `.vg/runs/<run_id>/.tasklist-projected.evidence.json`.
 
-The PostToolUse TodoWrite hook auto-writes that signed evidence after your
-TodoWrite call.
+Claude Code: call TodoWrite with the full two-layer hierarchy. The PostToolUse
+TodoWrite hook auto-writes signed evidence.
+
+Codex CLI: update only the compact plan window from `codex_plan_window`. Do
+NOT paste all `projection_items[]` into Codex `update_plan`; show at most 6
+rows: active group/step first, next 2-3 pending steps, completed groups
+collapsed, and `+N pending`.
 </HARD-GATE>
 
 Required behavior:
-1. Read `.vg/runs/<run_id>/tasklist-contract.json` → consume `projection_items[]`.
-2. Call `TodoWrite` with one todo per `projection_items[]` entry — full hierarchy
-   (group headers + sub-steps with `↳` prefix). Use the entry's `title` verbatim
-   as todo `content`.
-3. Call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
+1. Read `.vg/runs/<run_id>/tasklist-contract.json`.
+2. Project by runtime:
+   - Claude Code: consume `projection_items[]`; call `TodoWrite` with one todo
+     per item — full hierarchy (group headers + sub-steps with `↳` prefix).
+     Use the entry's `title` verbatim as todo `content`.
+   - Codex CLI: consume `codex_plan_window`; update Codex `update_plan` with a
+     compact 5-6 row window. Full hierarchy stays in `tasklist-contract.json`.
+3. Call `vg-orchestrator tasklist-projected --adapter auto`.
 4. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 Per sub-step lifecycle:
@@ -345,7 +353,7 @@ Per sub-step lifecycle:
 - When ALL sub-steps in a group are `completed`: set group header todo `completed`.
 - On run-complete: clear projected tasklist per `close-on-complete`.
 
-Example projection for vg:blueprint web-fullstack (32 items):
+Claude TodoWrite projection example for vg:blueprint web-fullstack (32 items):
 ```
 [ ] 📋 Blueprint Preflight (5 steps)
 [ ]   ↳ 0_design_discovery
@@ -367,9 +375,9 @@ vg-orchestrator step-active create_task_tracker
 # AI could skip the tasklist-projected call and rely on PostToolUse implicit
 # write. Now bash-enforced: blueprint.native_tasklist_projected MUST fire.
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected \
-  --adapter "${VG_TASKLIST_ADAPTER:-claude}" || {
+  --adapter auto || {
     echo "⛔ vg-orchestrator tasklist-projected failed — blueprint.native_tasklist_projected event will not fire." >&2
-    echo "   Check .vg/runs/<run_id>/tasklist-contract.json + adapter ∈ {claude,codex,fallback}." >&2
+    echo "   Check .vg/runs/<run_id>/tasklist-contract.json and runtime adapter lock." >&2
     exit 1
 }
 

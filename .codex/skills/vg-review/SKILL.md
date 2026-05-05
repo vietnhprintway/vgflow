@@ -169,9 +169,14 @@ verbatim. The PreToolUse-bash hook will BLOCK every `step-active` call
 in this slim entry until `.vg/runs/${RUN_ID}/.tasklist-projected.evidence.json`
 exists.
 
-TodoWrite MUST include sub-items (`↳` prefix) for each group header;
+Claude TodoWrite MUST include sub-items (`↳` prefix) for each group header;
 flat projection (group-headers only) is rejected by PostToolUse depth
 check (Task 44b Rule V2).
+
+Codex MUST keep the visible plan compact. Do not paste the full hierarchy
+into Codex `update_plan`; use `codex_plan_window` from the contract and show
+at most 6 rows: active group/step first, next 2-3 pending steps, completed
+groups collapsed, and `+N pending`.
 
 <TASKLIST_POLICY>
 **Native task UI projection is REQUIRED.**
@@ -183,11 +188,14 @@ Source of truth:
 
 Provider adapters:
 - **Claude CLI:** use native Claude tasklist projection. Prefer `TodoWrite`
-  with one todo per checklist group from the contract; each todo `content`
-  MUST start with the contract checklist `id`. If this Claude runtime exposes
-  `TaskCreate`/`TaskUpdate`, that adapter is also acceptable. Do not create
-  ad-hoc todos outside `tasklist-contract.json`.
-- **Codex CLI:** project the same contract items to Codex's native tasklist/plan UI; preserve each contract `id` at the start of the item text. Update the active/completed item before/after each step.
+  with the full two-layer hierarchy from `projection_items[]`; each todo
+  `content` MUST start with the contract checklist/step id or title. If this
+  Claude runtime exposes `TaskCreate`/`TaskUpdate`, that adapter is also
+  acceptable. Do not create ad-hoc todos outside `tasklist-contract.json`.
+- **Codex CLI:** project only a compact plan window from `codex_plan_window`;
+  preserve current active group/step identity, but do not create one visible
+  item per `projection_items[]` row. Update the compact window before/after
+  each step and keep it at 6 visible rows or fewer.
 - **Fallback:** only if the runtime exposes no native task UI, use `vg-orchestrator run-status --pretty` before and after each step and record adapter `fallback`.
 
 Lifecycle:
@@ -200,14 +208,15 @@ Lifecycle:
 
 Mandatory binding:
 1. After `emit-tasklist.py` prints the taskboard and `Tasklist contract: ...`, read that contract.
-2. Project every contract item to the runtime-native task UI before phase execution continues.
+2. Project to the runtime-native task UI before phase execution continues:
+   Claude full hierarchy; Codex compact window only.
 3. Immediately call:
    ```bash
    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected --adapter auto
    # auto locks to claude, codex, or fallback from runtime env
    ```
-4. At each step start, update the native UI item to active and call `vg-orchestrator step-active <step_name>`.
-5. At each step end, write the marker, update the native UI item to completed, and call `vg-orchestrator mark-step review <step_name>`.
+4. At each step start, update the native UI to show the active step and call `vg-orchestrator step-active <step_name>`.
+5. At each step end, write the marker, update the native UI to show completion, and call `vg-orchestrator mark-step review <step_name>`.
 
 Do not improvise a separate checklist. The native UI is a projection of `tasklist-contract.json`; the harness contract remains authoritative.
 
@@ -218,7 +227,7 @@ KHÔNG cứng. Khi AI execute group/step phức tạp (e.g. `phase2_browser_disc
 với nhiều view, `phase2_5_recursive_lens_probe` với nhiều lens), AI PHẢI append
 child todos vào group đó để user thấy real-time progress.
 
-Pattern (tolerant hook B11.6+):
+Pattern for Claude native task UI (tolerant hook B11.6+):
 - Initial: 1 todo per group header
 - During execution: TodoWrite update — keep group header, append children
   với title `  ↳ <id>: <one-line desc>` (status: pending → in_progress → completed)
@@ -229,6 +238,9 @@ Pattern (tolerant hook B11.6+):
 
 Cho operator visibility "AI sẽ làm gì tiếp / tiến độ tới đâu" mà không phải
 đọc Bash log dài.
+
+Codex exception: keep these dynamic details folded into the active compact
+plan row or the next row. Do not exceed the 6-row `codex_plan_window` budget.
 
 **Translate English terms (RULE)** — output có thuật ngữ tiếng Anh PHẢI thêm giải thích VN trong dấu ngoặc tại lần đầu xuất hiện. Tham khảo `_shared/term-glossary.md`. Ví dụ: `BLOCK (chặn)`, `Foundation (nền tảng) drift detected (phát hiện lệch hướng)`, `legacy-v1 (định dạng cũ v1)`, `UNREACHABLE (không tiếp cận được)`. Không áp dụng: file path, code identifier (`D-XX`, `git`, `pnpm`), config tag values, lần lặp lại trong cùng message.
 </TASKLIST_POLICY>
@@ -379,7 +391,7 @@ session_mark_step "0-parse-args"
 
 Immediately after this block returns, execute the TASKLIST_POLICY binding:
 project `.vg/runs/{run_id}/tasklist-contract.json` to the native task UI and
-call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
+call `vg-orchestrator tasklist-projected --adapter auto`.
 </step>
 
 <step name="0_parse_and_validate">
@@ -1068,12 +1080,13 @@ touch "${PHASE_DIR}/.step-markers/0c_telemetry_suggestions.done"
 Per TASKLIST_POLICY, the tasklist shown by `emit-tasklist.py` is a binding contract, not advisory text. Before running Phase 1, do all of this:
 
 1. Read `.vg/runs/{run_id}/tasklist-contract.json` from the current run.
-2. Project every contract item to native task UI:
+2. Project to native task UI by runtime:
    - Claude CLI: `TodoWrite` replaces the whole tasklist with one item per
-     checklist group, then updates the
-     same list as steps move active/completed. `TaskCreate`/`TaskUpdate` is
-     acceptable only when that runtime exposes those native task tools.
-   - Codex CLI: use Codex native tasklist/plan UI with the same item ids, then update items as steps move active/completed.
+     `projection_items[]` row, then updates the same list as steps move
+     active/completed. `TaskCreate`/`TaskUpdate` is acceptable only when that
+     runtime exposes those native task tools.
+   - Codex CLI: use Codex native plan UI with `codex_plan_window`; do not
+     mirror every contract item. Keep at most 6 rows visible.
 3. Bind the projection to orchestrator telemetry:
    ```bash
    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected --adapter auto

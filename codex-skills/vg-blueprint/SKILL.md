@@ -168,14 +168,18 @@ You MUST follow STEP 1 through STEP 6 in exact order. Each step is gated
 by hooks. Skipping ANY step will be blocked by PreToolUse + Stop hooks.
 You CANNOT rationalize past these gates.
 
-You MUST call TodoWrite IMMEDIATELY after STEP 1.4 (create_task_tracker)
-runs emit-tasklist.py — DO NOT continue without it. The PreToolUse Bash
-hook will block all subsequent step-active calls until signed evidence
-exists.
+You MUST project native task UI IMMEDIATELY after STEP 1.4
+(create_task_tracker) runs emit-tasklist.py — DO NOT continue without it.
+The PreToolUse Bash hook will block all subsequent step-active calls until
+signed evidence exists.
 
-TodoWrite MUST include sub-items (`↳` prefix) for each group header;
-flat projection (group-headers only) is rejected by PostToolUse depth
+Claude Code: TodoWrite MUST include sub-items (`↳` prefix) for each group
+header; flat projection (group-headers only) is rejected by PostToolUse depth
 check (Task 44b Rule V2).
+
+Codex CLI: update only the compact plan window, not the full hierarchy. Show
+at most 6 rows from `codex_plan_window`: active group/step first, next 2-3
+pending steps, completed groups collapsed, and `+N pending`.
 
 For HEAVY steps (STEP 3, STEP 4), you MUST spawn the named subagent via
 the `Agent` tool (NOT `Task` — Codex confirmed correct tool name per
