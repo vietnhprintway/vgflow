@@ -40,6 +40,11 @@ import re
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 # ─── Dockerfile parsing ────────────────────────────────────────────────
 
@@ -194,8 +199,10 @@ def _auto_detect_dockerfile(root: Path) -> Path | None:
                       root / "apps" / "web" / "Dockerfile"]:
         if candidate.exists():
             return candidate
-    # Fall-back: glob
+    skip_parts = {"node_modules", ".git", "dist", "build", ".next", "target", "vendor"}
     for p in root.rglob("Dockerfile"):
+        if any(part in skip_parts for part in p.relative_to(root).parts):
+            continue
         return p
     return None
 
@@ -225,6 +232,8 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+    if not args.json and not sys.stdout.isatty():
+        args.json = True
 
     root = Path(args.project_root).resolve()
 
