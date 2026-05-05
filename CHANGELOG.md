@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.50.5 - Scope challenger and container hardening fixes
+
+Patch release. Fixes issue #110 and issue #107.
+
+### Fixed
+
+- Wrapper now skips only genuine trivial answers with no AI draft/option in accumulated context.
+- Trivial confirmations with `**Recommended:**`, `<ai-draft>`, or selected option content now flow into `challenge_answer` so the draft gets challenged.
+- Wrapper sets a safe `PLANNING_DIR=.vg` default for standalone use under `set -u`.
+- `verify-container-hardening.py` no longer auto-detects vendored `node_modules`, `.git`, `dist`, `build`, `.next`, `target`, or `vendor` Dockerfiles.
+- Container hardening output uses UTF-8 replace mode and defaults to JSON on non-TTY stdout, preventing orchestrator parse crashes on human text.
+
+### Verified
+
+- `bash scripts/validators/test-answer-challenger-trivial.sh`
+- `python -m pytest -q tests/test_container_hardening_issue107.py`
+- Mirror parity for wrapper + validator shell test.
+- `git diff --check`
+
 ## v2.50.4 - Test suite cleanup after tasklist gate hardening
 
 Patch release. Fixes the post-v2.50.3 Test workflow failures caused by stale write-hook expectations and an oversized `vg:deploy` slim entry.

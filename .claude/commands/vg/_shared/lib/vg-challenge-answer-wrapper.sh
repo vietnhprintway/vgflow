@@ -23,6 +23,7 @@ USER_ANSWER="$1"
 ROUND_LABEL="$2"
 COMMAND_NAME="$3"
 ACCUMULATED="${4:-}"
+: "${PLANNING_DIR:=.vg}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -36,10 +37,26 @@ if ! type -t challenge_answer >/dev/null 2>&1; then
   exit 1
 fi
 
-# Trivial-answer auto-skip — helper has own detector
+# Trivial-answer auto-skip — preserve helper's v2.6 draft-swap path.
+#
+# v2.50.5 fix: do not exit before challenge_answer can turn "ok"/"a"/
+# "recommended" into the AI draft or chosen option from ACCUMULATED. Only skip
+# when the helper can find no substantive draft/option to challenge.
 if type -t challenger_is_trivial >/dev/null 2>&1; then
   if challenger_is_trivial "$USER_ANSWER"; then
-    exit 2
+    CHALLENGE_SUBSTANCE=""
+    if type -t challenger_normalize_pick >/dev/null 2>&1; then
+      PICK="$(challenger_normalize_pick "$USER_ANSWER")"
+      if [ -n "$PICK" ] && [ "$PICK" != "_recommended_" ] \
+        && type -t challenger_extract_option >/dev/null 2>&1; then
+        CHALLENGE_SUBSTANCE="$(challenger_extract_option "$ACCUMULATED" "$PICK")"
+      fi
+    fi
+    if [ -z "$CHALLENGE_SUBSTANCE" ] \
+      && type -t challenger_extract_ai_draft >/dev/null 2>&1; then
+      CHALLENGE_SUBSTANCE="$(challenger_extract_ai_draft "$ACCUMULATED")"
+    fi
+    [ -z "$CHALLENGE_SUBSTANCE" ] && exit 2
   fi
 fi
 

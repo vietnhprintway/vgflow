@@ -22,10 +22,23 @@
 set -e
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_ROOT="$(cygpath -u "$REPO_ROOT")"
+fi
 HELPER="${REPO_ROOT}/.claude/commands/vg/_shared/lib/answer-challenger.sh"
+WRAPPER="${REPO_ROOT}/.claude/commands/vg/_shared/lib/vg-challenge-answer-wrapper.sh"
+if command -v cygpath >/dev/null 2>&1; then
+  WRAPPER_BASH="$(cygpath -u "$WRAPPER")"
+else
+  WRAPPER_BASH="$WRAPPER"
+fi
 
 if [ ! -f "$HELPER" ]; then
   echo "⛔ helper not found: $HELPER"
+  exit 1
+fi
+if [ ! -f "$WRAPPER" ]; then
+  echo "⛔ wrapper not found: $WRAPPER"
   exit 1
 fi
 
@@ -206,6 +219,31 @@ if [ ${#OPT_1} -ge 30 ] && echo "$OPT_1" | grep -q "JWT"; then
   pass "extract numeric option 1 (${#OPT_1} chars)"
 else
   fail "should extract option 1 (JWT); got '${OPT_1:0:80}'"
+fi
+
+echo ""
+echo "═══ Test 13: wrapper preserves draft-swap on trivial confirm ═══"
+WRAP_ACC='**Recommended:** Use JWT with RS256 algorithm, 15min access token TTL, 7d refresh token rotation, blacklist on logout via Redis SET. SameSite=Strict cookie + HttpOnly + Secure flags.'
+set +e
+WRAP_PROMPT=$("${BASH:-bash}" "$WRAPPER_BASH" "OK" "round-issue-110" "phase-scope" "$WRAP_ACC")
+WRAP_RC=$?
+set -e
+if [ "$WRAP_RC" -eq 0 ] \
+  && echo "$WRAP_PROMPT" | grep -q "USER-CONFIRMED-DRAFT" \
+  && echo "$WRAP_PROMPT" | grep -q "RS256"; then
+  pass "wrapper OK + draft → prompt emitted"
+else
+  fail "wrapper should emit draft-swap prompt; rc=$WRAP_RC prompt='${WRAP_PROMPT:0:120}'"
+fi
+
+set +e
+WRAP_EMPTY=$("${BASH:-bash}" "$WRAPPER_BASH" "OK" "round-issue-110" "phase-scope" "plain context without any draft marker")
+WRAP_EMPTY_RC=$?
+set -e
+if [ "$WRAP_EMPTY_RC" -eq 2 ] && [ -z "$WRAP_EMPTY" ]; then
+  pass "wrapper OK without draft → trivial skip rc=2"
+else
+  fail "wrapper should skip only genuine trivial answer; rc=$WRAP_EMPTY_RC output='${WRAP_EMPTY:0:80}'"
 fi
 
 echo ""
