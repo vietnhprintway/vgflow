@@ -44,7 +44,20 @@ def test_write_allows_non_protected_path_without_active_run(tmp_workspace):
     assert result.stderr == ""
 
 
-def test_write_allows_non_protected_path_with_active_run(vg_active_run):
+def test_write_blocks_non_protected_path_with_active_run_before_tasklist(vg_active_run):
+    result = run_hook(
+        "write",
+        stdin=_write_input("src/feature/x.ts"),
+    )
+    assert result.returncode == 2
+    assert "PreToolUse-Write-tasklist-required" in result.stderr
+
+
+def test_write_allows_non_protected_path_with_active_run_after_tasklist(vg_active_run):
+    evidence_dir = vg_active_run / ".vg" / "runs" / "run-test-001"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / ".tasklist-projected.evidence.json").write_text("{}")
+
     result = run_hook(
         "write",
         stdin=_write_input("src/feature/x.ts"),

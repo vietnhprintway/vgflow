@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.50.4 - Test suite cleanup after tasklist gate hardening
+
+Patch release. Fixes the post-v2.50.3 Test workflow failures caused by stale write-hook expectations and an oversized `vg:deploy` slim entry.
+
+### Fixed
+
+- Updated write-hook regression coverage for the universal mutating-tool tasklist gate: active VG runs now block source writes until tasklist evidence exists.
+- Trimmed `commands/vg/deploy.md` below the 500-line slim-entry guard while preserving prod confirmation, telemetry, markers, and executor delegation.
+- Kept deploy Codex mirrors functionally equivalent to canonical command sources.
+- Hardened Windows test harness paths/encoding for bash-backed hook tests.
+
+### Verified
+
+- `python -m pytest -q tests/hooks/test_write_protection_unconditional.py tests/skills/test_deploy_slim_size.py tests/skills/test_deploy_subagent_delegation.py tests/skills/test_deploy_step_markers_preserved.py tests/skills/test_deploy_telemetry_preserved.py tests/test_deploy_tasklist_enforcement.py tests/test_deploy_pre_test_mode.py tests/skills/test_deploy_state_schema_real.py scripts/tests/test_universal_mutating_tool_gate.py`
+- `python scripts/verify-codex-mirror-equivalence.py --json`
+- `git diff --check`
+
 ## v2.50.3 - Codex compact plan projection
 
 Patch release. Ships PR #109, keeping Codex blueprint and review task projection compact enough for Codex sessions.

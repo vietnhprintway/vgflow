@@ -14,13 +14,35 @@ Closes 2 bypass paths Codex flagged after Q1-Q3 review:
    on match=false.
 """
 import json
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WRITE_HOOK = REPO_ROOT / "scripts" / "hooks" / "vg-pre-tool-use-write.sh"
 BASH_HOOK = REPO_ROOT / "scripts" / "hooks" / "vg-pre-tool-use-bash.sh"
+
+
+def _bash_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    resolved = path.resolve()
+    posix = resolved.as_posix()
+    drive = resolved.drive.rstrip(":").lower()
+    rest = posix[2:] if resolved.drive else posix
+    bash_exe = _bash_exe().lower()
+    prefix = f"/mnt/{drive}" if "windows\\system32" in bash_exe or "windowsapps" in bash_exe else f"/{drive}"
+    return f"{prefix}{rest}"
+
+
+def _bash_exe() -> str:
+    if os.name == "nt":
+        git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe"
+        if git_bash.is_file():
+            return str(git_bash)
+    return shutil.which("bash") or "bash"
 
 
 # ── Fix 1: pre-write hook tasklist gate ─────────────────────────────
@@ -38,10 +60,13 @@ def _run_write_hook(tmp_path, file_path, run_active=True, evidence=False,
         (tmp_path / f".vg/runs/{run_id}").mkdir(parents=True, exist_ok=True)
         (tmp_path / f".vg/runs/{run_id}/.tasklist-projected.evidence.json").write_text("{}")
     payload = json.dumps({"tool_input": {"file_path": file_path}})
+    env = {**os.environ, "CLAUDE_HOOK_SESSION_ID": session_id}
+    if os.name != "nt":
+        env["PATH"] = "/usr/bin:/bin"
     proc = subprocess.run(
-        ["bash", str(WRITE_HOOK)],
+        [_bash_exe(), _bash_path(WRITE_HOOK)],
         input=payload, cwd=tmp_path, capture_output=True, text=True,
-        env={"CLAUDE_HOOK_SESSION_ID": session_id, "PATH": "/usr/bin:/bin"},
+        env=env,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -84,7 +109,7 @@ def test_write_no_active_run_silent(tmp_path):
 
 def test_bash_hook_validates_match_field():
     """Source must verify payload.match (not just depth_valid)."""
-    src = BASH_HOOK.read_text()
+    src = BASH_HOOK.read_text(encoding="utf-8")
     # Find the section after depth_check_result that we just added
     assert "match_check_result" in src, "match-coverage check missing"
     assert 'payload.get("match")' in src, "Must check payload.match field"
@@ -95,7 +120,7 @@ def test_bash_hook_validates_match_field():
 
 def test_bash_hook_match_block_message_actionable():
     """Match-invalid block must tell AI exactly what's missing."""
-    src = BASH_HOOK.read_text()
+    src = BASH_HOOK.read_text(encoding="utf-8")
     # The block message should reference contract_ids and todo_ids
     m = re.search(r"match_invalid.*?emit_block.*?\n", src, re.DOTALL)
     assert m, "match_invalid emit_block clause not found"
@@ -114,7 +139,7 @@ def test_settings_matcher_covers_write_edit():
     rewrite settings.json on launch — operator can re-add manually if
     notebook editing is part of their workflow)."""
     settings_path = REPO_ROOT / ".claude" / "settings.json"
-    src = settings_path.read_text()
+    src = settings_path.read_text(encoding="utf-8")
     assert "Write|Edit" in src, (
         "Hook matcher must cover Write + Edit minimum"
     )
