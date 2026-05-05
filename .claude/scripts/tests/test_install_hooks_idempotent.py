@@ -19,6 +19,10 @@ def test_install_creates_hooks_block(tmp_path, monkeypatch):
     assert "UserPromptSubmit" in settings["hooks"]
     assert "SessionStart" in settings["hooks"]
     assert "PostToolUse" in settings["hooks"]
+    user_prompt_cmd = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert "vg-run-bash-hook.py" in user_prompt_cmd
+    assert "vg-user-prompt-submit.sh" in user_prompt_cmd
+    assert not user_prompt_cmd.startswith("bash ")
 
 
 def test_install_idempotent_no_duplicates(tmp_path, monkeypatch):
@@ -82,3 +86,26 @@ def test_install_quotes_paths_with_spaces(tmp_path, monkeypatch):
                 assert "'" in cmd or '"' in cmd, (
                     f"hook command must quote path containing spaces, got: {cmd}"
                 )
+
+def test_install_absolute_mode_uses_runner(tmp_path, monkeypatch):
+    """Absolute mode must still avoid direct `bash <windows-path>` commands."""
+    monkeypatch.chdir(tmp_path)
+    Path(".claude").mkdir()
+    space_root = tmp_path / "space dir/with subdir"
+    (space_root / "scripts/hooks").mkdir(parents=True)
+    monkeypatch.setenv("VG_PLUGIN_ROOT", str(space_root))
+    monkeypatch.setenv("VG_HOOKS_PATH_MODE", "absolute")
+    result = subprocess.run(
+        ["bash", str(INSTALLER), "--target", str(tmp_path / ".claude/settings.json")],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    settings = json.loads((tmp_path / ".claude/settings.json").read_text())
+    for event_entries in settings["hooks"].values():
+        for entry in event_entries:
+            for h in entry.get("hooks", []):
+                cmd = h.get("command", "")
+                if "vg-" not in cmd:
+                    continue
+                assert "vg-run-bash-hook.py" in cmd
+                assert not cmd.startswith("bash ")
