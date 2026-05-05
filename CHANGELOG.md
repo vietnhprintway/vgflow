@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.50.0 — VG harness R6+R7+R8+R9+Task5 closed-loop integrity (PR #108)
+
+Minor release. Squash-merge of **PR #108** delivering production hardening for native tasklist enforcement, mutating-tool gates, CrossAI skip validation, reflector spawning, and the first CrossAI multi-stage/multi-primary design + M1 infrastructure plan. This is a harness integrity release: the main theme is closing the remaining AI bypass paths seen during PrintwayV3 dogfood runs.
+
+### Fixed
+
+- **Claude adapter evidence gate** — `vg-orchestrator tasklist-projected --adapter claude` now requires the native TodoWrite evidence file written by the PostToolUse hook. The orchestrator can no longer mark tasklist projection complete without a real TodoWrite call.
+- **Claude Code adapter lock** — when `CLAUDECODE=1`, fallback/codex adapters are rejected for tasklist projection. `--adapter` now defaults to `auto`, resolving to `claude` in Claude Code and `fallback` elsewhere.
+- **mark-step gate parity** — PreToolUse Bash enforcement now covers both `step-active` and `mark-step`, blocking direct marker updates until signed tasklist evidence exists.
+- **TodoWrite UI sync reminder** — `vg-orchestrator mark-step <ns> <step>` emits non-blocking additional context reminding the model to refresh the native TodoWrite UI after backend step changes.
+- **Universal mutating-tool gate** — Write/Edit/MultiEdit/NotebookEdit paths now deny source mutations during an active VG run until tasklist evidence exists, while allowing `.vg/` harness state writes.
+- **Tasklist match coverage** — signed evidence must match the contract checklist, not just satisfy depth. Missing/extra task IDs are surfaced in the block diagnostic.
+- **CrossAI skip anti-rationalization** — `skip-*-crossai*` overrides are fact-checked against `vg.config.md` and installed CLIs before logging override debt; build verification re-checks stale skip overrides at run-complete.
+- **Blueprint reflector spawn** — blueprint close now uses the proven `general-purpose` agent + `Use skill: vg-reflector` pattern instead of an invalid `vg-reflector` subagent type.
+- **Codex hook fixture hardening** — hook regression fixtures now include `adapter="claude"` where host `CLAUDECODE=1` inheritance would otherwise trigger adapter-spoof blocks.
+
+### Added
+
+- **Gemini fit report** — documents six appropriate Gemini touchpoints: long-context aggregation, multimodal design checks, CrossAI verification, test replay, high-volume scanners, and reflector/bootstrap synthesis.
+- **CrossAI multi-stage multi-primary design** — 26 decisions covering phased rollout, `crossai.policy`, stage registry, Gemini+Codex parallel primaries, Claude adjudication, Codex 2-pass split, findings.v2 schema, telemetry, health output, and rollout strategy.
+- **CrossAI M1 infrastructure plan** — 13-task TDD plan for shared CrossAI config/library infrastructure, stage wrappers, init/migrate commands, and template extension without changing existing build CrossAI behavior yet.
+
+### Internal
+
+- VERSION + VGFLOW-VERSION + `.claude/VGFLOW-VERSION` -> 2.50.0.
+- Release commit follows PR #108 squash commit `6ea5362`.
+- New/updated tests cover tasklist evidence gating, adapter lock, mark-step reminder/gate, universal mutating-tool denial, CrossAI skip validation, phase profile behavior, reflector spawn correctness, runtime map CRUD depth, and step tracker behavior.
+
 ## v2.49.3 — Bug D universal tasklist + mid-flow context auto-injection (cherry-picks from PrintwayV3 dogfood follow-ups)
 
 Patch release. Two more dogfood-driven commits landed on the fork branch after v2.49.2 ship — both close gate-evasion bypasses found during live `/vg:review 4.1` and `/vg:scope` sessions on PrintwayV3. Cherry-picked rather than waiting for next minor because both close exploitation paths.
