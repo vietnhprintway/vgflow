@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-UserPromptSubmit hook — pre-seeds orchestrator run-start BEFORE Claude/Codex
-processes a VG command.
+UserPromptSubmit hook — pre-seeds orchestrator run-start BEFORE Claude
+processes a /vg:* command.
 
 Purpose: close the "AI can skip init" gap. Skill-MD has a
 `vg-orchestrator run-start` call at top, but AI could rationalize past it.
@@ -10,13 +10,13 @@ every user message submit. If the message is a /vg:* slash command, we
 register the run atomically before Claude loads skill-MD.
 
 Design:
-- Fast path: non-VG messages → early approve, <5ms.
-- Acts on /vg:{command} {phase} and Codex $vg-{command} {phase} patterns.
+- Fast path: non-/vg:* messages → early approve, <5ms.
+- Only acts on /vg:{command} {phase} patterns.
 - Idempotent: if active run already matches (same command+phase), skip.
 - Never blocks user — approve always. Orchestrator rejection logged only.
 - If orchestrator missing or crashes, log + approve (degraded-correct).
 
-Hook input (stdin JSON, Claude Code/Codex UserPromptSubmit contract):
+Hook input (stdin JSON, Claude Code UserPromptSubmit contract):
   {
     "session_id": "...",
     "transcript_path": "...",
@@ -26,9 +26,8 @@ Hook input (stdin JSON, Claude Code/Codex UserPromptSubmit contract):
   }
 
 Hook output (stdout):
-  Claude: {"decision": "approve"}  — always (we never block input)
-  Codex:  {"continue": true}
-  Optionally with `additionalContext` to inform the runtime the run was registered.
+  {"decision": "approve"}  — always (we never block input)
+  Optionally with `additionalContext` to inform Claude the run was registered.
 """
 from __future__ import annotations
 
@@ -43,12 +42,13 @@ from pathlib import Path
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
 CURRENT_RUN = REPO_ROOT / ".vg" / "current-run.json"
 SESSION_CONTEXT = REPO_ROOT / ".vg" / ".session-context.json"
+ORCH = REPO_ROOT / ".claude" / "scripts" / "vg-orchestrator"
 LOG = REPO_ROOT / ".vg" / "hook-entry.log"
 
-# Match /vg:command or Codex $vg-command followed by optional args. Phase is
-# usually first positional numeric token; capture it when present.
+# Match /vg:command followed by optional args. Phase is usually first
+# positional numeric token; capture it when present.
 VG_CMD_RE = re.compile(
-    r"(?:/vg:([a-z][a-z-]*)|\$vg-([a-z][a-z-]*))(?:\s+(\S+))?"
+    r"/vg:([a-z][a-z-]*)(?:\s+(\S+))?"
 )
 
 
@@ -61,12 +61,8 @@ def log(msg: str) -> None:
         pass
 
 
-def _is_codex_runtime() -> bool:
-    return os.environ.get("VG_RUNTIME", "").lower() == "codex"
-
-
 def approve(context: str | None = None) -> None:
-    resp = {"continue": True} if _is_codex_runtime() else {"decision": "approve"}
+    resp = {"decision": "approve"}
     if context:
         resp["hookSpecificOutput"] = {
             "hookEventName": "UserPromptSubmit",
@@ -76,30 +72,12 @@ def approve(context: str | None = None) -> None:
     sys.exit(0)
 
 
-def _orchestrator_path() -> Path | None:
-    """Resolve orchestrator for installed projects and source-tree tests."""
-    candidates = (
-        REPO_ROOT / ".claude" / "scripts" / "vg-orchestrator",
-        REPO_ROOT / "scripts" / "vg-orchestrator",
-    )
-    for candidate in candidates:
-        if (candidate / "__main__.py").exists():
-            return candidate
-    return None
-
-
-def _write_session_context(
-    run_id: str,
-    command: str,
-    phase: str,
-    session_id: str | None = None,
-) -> None:
+def _write_session_context(run_id: str, command: str, phase: str) -> None:
     """Initialize .vg/.session-context.json for Layer 2 step tracker.
 
     Schema (consumed by vg-step-tracker.py PostToolUse hook):
       {
         "run_id": "...",
-        "session_id": "...",
         "command": "vg:build",
         "phase": "7.14.3",
         "started_at": "ISO-8601",
@@ -111,7 +89,6 @@ def _write_session_context(
     SESSION_CONTEXT.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "run_id": run_id,
-        "session_id": session_id,
         "command": command,
         "phase": phase,
         "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -170,7 +147,7 @@ def _looks_like_paste_back(prompt: str) -> bool:
     Signals we're looking at paste-back text, not a fresh user command:
       - "Stop hook feedback" (Claude Code literal prefix)
       - "runtime_contract violations" (verify-claim error text)
-      - "Command: /vg:" / "Command: $vg-" (verify-claim "Command:" line)
+      - "Command: /vg:" (verify-claim "Command:" line)
       - "Fix options:" + "vg-orchestrator override" (verify-claim footer)
       - "Missing evidence:" (verify-claim body marker)
 
@@ -209,7 +186,7 @@ def _looks_like_paste_back(prompt: str) -> bool:
         r"[A-Z]:[\\/]Workspace|[A-Z]:[\\/]Users",
         prompt, re.IGNORECASE,
     ))
-    has_vg_cmd_anywhere = "/vg:" in prompt or "$vg-" in prompt
+    has_vg_cmd_anywhere = "/vg:" in prompt
     if has_abs_path and has_vg_cmd_anywhere:
         # Extra check: real user typing rarely exceeds 2 KB on a slash command.
         # IDE file dumps + transcripts are typically much larger.
@@ -220,7 +197,7 @@ def _looks_like_paste_back(prompt: str) -> bool:
 
 
 def _vg_cmd_at_first_nonempty_line(prompt: str):
-    """Find a VG command matching a fresh invocation: MUST be the FIRST
+    """Find /vg:command matching a fresh invocation: MUST be the FIRST
     non-empty line of the prompt. Stricter than v2.5.2.5's "any line"
     check — closes phantom-run gap when /vg: text appears in body of
     long IDE-context prompts but isn't what the user is invoking.
@@ -233,9 +210,9 @@ def _vg_cmd_at_first_nonempty_line(prompt: str):
         stripped = line.lstrip()
         if not stripped:
             continue
-        # Found the first non-empty line. Check if it's a VG command.
+        # Found the first non-empty line. Check if it's a /vg:cmd.
         m = VG_CMD_RE.match(stripped)
-        return m  # None if first line isn't a VG command, match obj if it is
+        return m  # None if first line isn't /vg:cmd, match obj if it is
     return None
 
 
@@ -262,7 +239,7 @@ def main() -> int:
     session_id = hook_input.get("session_id") or None
 
     # Fast path: non-VG messages
-    if "/vg:" not in prompt and "$vg-" not in prompt:
+    if "/vg:" not in prompt:
         approve()
 
     # v2.5.2.5: reject paste-back text from Stop-hook feedback loops
@@ -278,17 +255,17 @@ def main() -> int:
     # first-non-empty-line check is the natural gate.
     m = _vg_cmd_at_first_nonempty_line(prompt)
     if not m:
-        log("VG command not at first non-empty line — treating as embedded reference, skip")
+        log("/vg: not at first non-empty line — treating as embedded reference, skip")
         approve()
 
-    cmd_name = m.group(1) or m.group(2)
-    phase_token = m.group(3) or ""
+    cmd_name = m.group(1)
+    phase_token = m.group(2) or ""
 
     # Skip non-phase commands (e.g. /vg:progress, /vg:doctor) — these have
     # their own lifecycle or no phase concept. Phase must look like a number
     # (14, 7.6, 07.12).
     if not re.match(r"^\d+(\.\d+)*$", phase_token):
-        log(f"non-phase VG command {cmd_name} — skipping run-start")
+        log(f"non-phase /vg:{cmd_name} — skipping run-start")
         approve()
 
     command = f"vg:{cmd_name}"
@@ -300,9 +277,8 @@ def main() -> int:
                         f"registered (orchestrator idempotent).")
 
     # Orchestrator must exist
-    orch = _orchestrator_path()
-    if orch is None:
-        log("orchestrator missing — approve degraded")
+    if not (ORCH / "__main__.py").exists():
+        log(f"orchestrator missing at {ORCH} — approve degraded")
         approve()
 
     # Fire run-start. v2.28.0: pass session_id via env so orchestrator
@@ -314,7 +290,7 @@ def main() -> int:
         if session_id:
             env["CLAUDE_SESSION_ID"] = session_id
         r = subprocess.run(
-            [sys.executable, str(orch), "run-start", command, phase_token],
+            [sys.executable, str(ORCH), "run-start", command, phase_token],
             capture_output=True, text=True, timeout=10,
             cwd=str(REPO_ROOT),
             env=env,
@@ -328,7 +304,7 @@ def main() -> int:
             # updates current_step when AI runs `touch .step-markers/N.done`.
             # Best-effort: never fail run-start on session-context write error.
             try:
-                _write_session_context(run_id, command, phase_token, session_id=session_id)
+                _write_session_context(run_id, command, phase_token)
             except Exception as e:
                 log(f"session-context init failed (non-fatal): {e}")
 
@@ -358,4 +334,5 @@ if __name__ == "__main__":
             log(f"hook error (soft-approve): {e}")
         except Exception:
             pass
-        approve()
+        print(json.dumps({"decision": "approve"}))
+        sys.exit(0)

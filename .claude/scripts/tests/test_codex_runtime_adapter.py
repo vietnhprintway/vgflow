@@ -171,8 +171,6 @@ Codex path
 Never skip source workflow gates
 BLOCK instead of silently degrading
 commands/vg/_shared/lib/codex-spawn.sh
---spawn-role
-.codex-spawn-manifest.jsonl
 VG_CODEX_MODEL_EXECUTOR
 VG_CODEX_MODEL_SCANNER
 review.haiku_scanner_spawned
@@ -207,7 +205,6 @@ UserPromptSubmit
 vg-entry-hook.py
 vg-verify-claim.py
 vg-step-tracker.py
-codex-hooks/vg-pre-tool-use-apply-patch.py
 .vg/events.db
 vg-orchestrator run-start
 vg-orchestrator mark-step
@@ -218,8 +215,6 @@ Codex path
 Never skip source workflow gates
 BLOCK instead of silently degrading
 commands/vg/_shared/lib/codex-spawn.sh
---spawn-role
-.codex-spawn-manifest.jsonl
 VG_CODEX_MODEL_EXECUTOR
 VG_CODEX_MODEL_SCANNER
 review.haiku_scanner_spawned

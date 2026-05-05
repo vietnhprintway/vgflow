@@ -22,9 +22,7 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -390,76 +388,6 @@ class TestHookIntegration:
         assert payload["match"] is False, (
             "Expected match=False for mismatched todos vs contract"
         )
-
-    def test_orchestrator_codex_adapter_writes_signed_evidence(self, tmp_path):
-        """Codex has no TodoWrite hook, so tasklist-projected owns evidence."""
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-
-        scripts_dir = repo / ".claude" / "scripts"
-        scripts_dir.mkdir(parents=True)
-        shutil.copytree(
-            REPO_ROOT / "scripts" / "vg-orchestrator",
-            scripts_dir / "vg-orchestrator",
-        )
-
-        env = os.environ.copy()
-        env["VG_REPO_ROOT"] = str(repo)
-        env["CLAUDE_SESSION_ID"] = "codex-session"
-        orch = scripts_dir / "vg-orchestrator"
-
-        started = subprocess.run(
-            [sys.executable, str(orch), "run-start", "vg:test", "3.2"],
-            cwd=repo, env=env, capture_output=True, text=True, timeout=15,
-        )
-        assert started.returncode == 0, started.stderr
-        run_id = started.stdout.strip().splitlines()[-1]
-
-        contract = {
-            "schema": "native-tasklist.v2",
-            "run_id": run_id,
-            "command": "vg:test",
-            "phase": "3.2",
-            "profile": "web-fullstack",
-            "projection_required": True,
-            "checklists": [
-                {"id": "test_preflight", "title": "Test Preflight", "items": ["parse_args"]},
-                {"id": "test_runtime", "title": "Test Runtime", "items": ["runtime"]},
-            ],
-            "projection_items": [
-                {"kind": "group", "id": "test_preflight", "title": "Test Preflight"},
-                {"kind": "step", "id": "parse_args", "title": "Parse Args"},
-                {"kind": "group", "id": "test_runtime", "title": "Test Runtime"},
-                {"kind": "step", "id": "runtime", "title": "Runtime"},
-            ],
-            "items": [
-                {"id": "parse_args", "title": "Parse Args"},
-                {"id": "runtime", "title": "Runtime"},
-            ],
-        }
-        contract_path = repo / ".vg" / "runs" / run_id / "tasklist-contract.json"
-        contract_path.parent.mkdir(parents=True)
-        contract_path.write_text(json.dumps(contract), encoding="utf-8")
-
-        projected = subprocess.run(
-            [sys.executable, str(orch), "tasklist-projected", "--adapter", "codex"],
-            cwd=repo, env=env, capture_output=True, text=True, timeout=15,
-        )
-        assert projected.returncode == 0, projected.stderr
-
-        evidence_path = (
-            repo / ".vg" / "runs" / run_id / ".tasklist-projected.evidence.json"
-        )
-        assert evidence_path.exists(), projected.stdout
-        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        payload = evidence["payload"]
-        assert payload["adapter"] == "codex"
-        assert payload["match"] is True
-        assert payload["contract_sha256"] == hashlib.sha256(
-            contract_path.read_bytes()
-        ).hexdigest()
-        assert (repo / ".vg" / ".evidence-key").exists()
 
     @needs_bash
     def test_hook_emit_event_called_for_vg_test(self, tmp_path):

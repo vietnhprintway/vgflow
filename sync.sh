@@ -7,11 +7,12 @@
 #     -> ~/.codex (unless --no-global)
 #
 # Usage:
-#   ./sync.sh              # apply sync to current repo, plus global Codex
+#   ./sync.sh              # apply sync to current repo; global Codex skipped
 #   DEV_ROOT=/project ./sync.sh
 #   ./sync.sh --check      # dry-run, exits 1 if drift exists
 #   ./sync.sh --verify     # run functional Codex mirror equivalence check
-#   ./sync.sh --no-global  # skip ~/.codex deploy
+#   ./sync.sh --global-codex  # also deploy ~/.codex skills/agents
+#   ./sync.sh --no-global     # accepted for compatibility; default behavior
 
 set -euo pipefail
 
@@ -27,7 +28,7 @@ fi
 PYTHON_BIN="$(command -v python3 || command -v python || true)"
 
 MODE_CHECK=false
-SKIP_GLOBAL=false
+SKIP_GLOBAL=true
 VERIFY_ONLY=false
 DEPRECATED_NO_SOURCE=false
 
@@ -36,6 +37,7 @@ for arg in "$@"; do
     --check) MODE_CHECK=true ;;
     --verify) VERIFY_ONLY=true ;;
     --no-global) SKIP_GLOBAL=true ;;
+    --global-codex) SKIP_GLOBAL=false ;;
     --no-source) DEPRECATED_NO_SOURCE=true ;;
     -h|--help)
       sed -n '1,18p' "$0" | sed 's/^# \{0,1\}//'
@@ -168,6 +170,97 @@ EOF
   register_one "vgflow-orchestrator" "VGFlow phase orchestrator for Codex. Coordinates VG skills, gates, and artifact writes."
   register_one "vgflow-executor" "VGFlow bounded code executor for Codex child tasks."
   register_one "vgflow-classifier" "VGFlow cheap classifier/scanner for read-only summaries and triage."
+}
+
+disable_legacy_codex_hooks() {
+  local root="$1"
+  local label="$2"
+
+  [ -d "$root/.codex" ] || return
+  if [ -z "$PYTHON_BIN" ]; then
+    note "MISSING python: cannot disable legacy Codex hooks for $label"
+    MISSING=$((MISSING + 1))
+    return
+  fi
+
+  local result
+  result="$("$PYTHON_BIN" - "$root" "$MODE_CHECK" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+check = sys.argv[2] == "true"
+changed = False
+
+def vg_owned_command(cmd: str) -> bool:
+    return (
+        ".claude/scripts/codex-hooks/" in cmd
+        or ("VG_RUNTIME=codex" in cmd and ".claude/scripts/vg-entry-hook.py" in cmd)
+    )
+
+hooks_path = root / ".codex" / "hooks.json"
+if hooks_path.exists():
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("hooks"), dict):
+        new_hooks = {}
+        for event, entries in data["hooks"].items():
+            if not isinstance(entries, list):
+                new_hooks[event] = entries
+                continue
+            kept_entries = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    kept_entries.append(entry)
+                    continue
+                hook_list = entry.get("hooks")
+                if not isinstance(hook_list, list):
+                    kept_entries.append(entry)
+                    continue
+                kept_hooks = [
+                    h for h in hook_list
+                    if not (isinstance(h, dict) and vg_owned_command(str(h.get("command", ""))))
+                ]
+                if kept_hooks:
+                    updated = dict(entry)
+                    updated["hooks"] = kept_hooks
+                    kept_entries.append(updated)
+            if kept_entries:
+                new_hooks[event] = kept_entries
+        if new_hooks != data["hooks"]:
+            changed = True
+            if not check:
+                if new_hooks:
+                    hooks_path.write_text(json.dumps({"hooks": new_hooks}, indent=2) + "\n", encoding="utf-8")
+                else:
+                    hooks_path.unlink()
+
+config_path = root / ".codex" / "config.toml"
+if config_path.exists():
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    filtered = [line for line in lines if not line.strip().startswith("codex_hooks")]
+    if filtered != lines:
+        changed = True
+        if not check:
+            text = "\n".join(filtered).strip()
+            if text in ("", "[features]"):
+                config_path.unlink()
+            else:
+                config_path.write_text(text + "\n", encoding="utf-8")
+
+print("changed" if changed else "clean")
+PY
+)"
+  if [ "$result" = "changed" ]; then
+    note "UPDATED: $label legacy Codex hooks disabled"
+    CHANGED=$((CHANGED + 1))
+    if [ "$MODE_CHECK" = "false" ]; then
+      echo "  OK: legacy Codex hooks disabled for $label"
+    fi
+  fi
 }
 
 echo "VGFlow sync"
@@ -331,6 +424,7 @@ echo "3. Deploy Codex workflow to target project"
 sync_codex_skills_exact "$TARGET_ROOT/.codex" "codex-skill"
 sync_codex_agents "$TARGET_ROOT/.codex"
 sync_tree "$SCRIPT_DIR/templates/codex" "$TARGET_ROOT/.codex" "codex-template"
+disable_legacy_codex_hooks "$TARGET_ROOT" "project-codex"
 echo ""
 
 if [ "$SKIP_GLOBAL" = "false" ] && [ -d "$HOME/.codex" ]; then
@@ -342,7 +436,7 @@ if [ "$SKIP_GLOBAL" = "false" ] && [ -d "$HOME/.codex" ]; then
   fi
   echo ""
 else
-  echo "4. Global Codex deploy skipped"
+  echo "4. Global Codex deploy skipped (default; pass --global-codex to opt in)"
   echo ""
 fi
 

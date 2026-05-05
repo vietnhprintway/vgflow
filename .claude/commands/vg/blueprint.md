@@ -130,6 +130,8 @@ runtime_contract:
       severity: "warn"
       required_unless_flag: "--skip-workflows"
     # Flag-gated markers (skip via override flag with debt entry)
+    # Implemented in _shared/blueprint/contracts-overview.md via
+    # scripts/test-goal-delta.py after TEST-GOALS.codex-proposal.md is written.
     - name: "2b5a_codex_test_goal_lane"
       required_unless_flag: "--skip-codex-test-goal-lane"
     - name: "2d_crossai_review"

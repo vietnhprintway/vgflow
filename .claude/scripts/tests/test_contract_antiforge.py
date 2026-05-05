@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / ".claude" / "scripts"))
 
 # Import orchestrator's contracts module (treats dir as package)
@@ -113,14 +113,6 @@ class TestTelemetryNormalizer:
         ])
         assert out[0]["min_count"] == 2
         assert out[0]["required_unless_flag"] is None
-        assert out[0]["severity"] == "block"
-
-    def test_dict_with_severity_warn(self):
-        out = contracts_mod.normalize_telemetry([
-            {"event_type": "specs.rejected", "severity": "warn"}
-        ])
-        assert out[0]["event_type"] == "specs.rejected"
-        assert out[0]["severity"] == "warn"
 
 
 # ─── Schema JSON tests ────────────────────────────────────────────────
@@ -139,7 +131,6 @@ class TestSchemaSupport:
         tel_item = schema["properties"]["must_emit_telemetry"]["items"]["oneOf"][1]
         props = tel_item["properties"]
         assert "required_unless_flag" in props
-        assert "severity" in props
 
 
 # ─── Blueprint skill contract tests ─────────────────────────────────

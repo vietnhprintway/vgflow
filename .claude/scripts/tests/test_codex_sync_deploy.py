@@ -5,7 +5,7 @@ the behavior that matters for Codex parity:
 
 - all generated Codex skills deploy locally and globally
 - Codex agent templates deploy locally and globally
-- global Codex config registers the VGFlow agents with usable paths
+- global Codex deploy is opt-in via --global-codex
 - installed-project validators pass against the deployed target
 """
 from __future__ import annotations
@@ -180,30 +180,6 @@ def _assert_claude_hooks_installed(root: Path) -> None:
     assert any(matcher.get("matcher") == "Bash" for matcher in post_tool)
 
 
-def _assert_codex_hooks_installed(root: Path) -> None:
-    hooks_path = root / ".codex" / "hooks.json"
-    config_path = root / ".codex" / "config.toml"
-    assert hooks_path.is_file(), f"missing Codex hooks: {hooks_path}"
-    assert config_path.is_file(), f"missing Codex config: {config_path}"
-    hooks = json.loads(hooks_path.read_text(encoding="utf-8"))
-    commands: list[str] = []
-    for matchers in hooks.get("hooks", {}).values():
-        for matcher in matchers:
-            for hook in matcher.get("hooks", []):
-                commands.append(hook.get("command", ""))
-    joined = "\n".join(commands)
-    assert "vg-entry-hook.py" in joined
-    assert "codex-hooks/vg-pre-tool-use-bash.py" in joined
-    assert "codex-hooks/vg-pre-tool-use-apply-patch.py" in joined
-    assert "codex-hooks/vg-post-tool-use-bash.py" in joined
-    assert "codex-hooks/vg-stop.py" in joined
-    assert "UserPromptSubmit" in hooks["hooks"]
-    assert "PreToolUse" in hooks["hooks"]
-    assert "PostToolUse" in hooks["hooks"]
-    assert "Stop" in hooks["hooks"]
-    assert "codex_hooks = true" in config_path.read_text(encoding="utf-8")
-
-
 def _assert_no_python_cache_synced(root: Path) -> None:
     scripts = root / ".claude" / "scripts"
     assert not list(scripts.rglob("__pycache__"))
@@ -234,7 +210,51 @@ def _assert_playwright_mcp_configured(home: Path) -> None:
     assert "C:/Users/Lionel Messi" not in lock_text
 
 
-def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
+def test_sync_skips_global_codex_by_default(tmp_path):
+    bash = _working_bash()
+    if bash is None:
+        pytest.skip("working bash not found; sync.sh integration requires bash")
+
+    target = tmp_path / "target-project"
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
+    target.mkdir()
+    stale_global = fake_home / ".codex" / "skills" / "vg-accept" / "RULES-CARDS.md"
+    stale_global.parent.mkdir(parents=True)
+    stale_global.write_text("stale", encoding="utf-8")
+
+    repo_bash = _bash_path(bash, REPO_ROOT)
+    target_bash = _bash_path(bash, target)
+    home_bash = _bash_path(bash, fake_home)
+
+    command = (
+        f"cd {shlex.quote(repo_bash)} && "
+        f"HOME={shlex.quote(home_bash)} "
+        f"DEV_ROOT={shlex.quote(target_bash)} "
+        "bash sync.sh"
+    )
+    result = subprocess.run(
+        [bash, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, (
+        f"sync.sh failed\nSTDOUT:\n{result.stdout[-4000:]}\n"
+        f"STDERR:\n{result.stderr[-4000:]}"
+    )
+
+    assert len(_skill_names(target)) == _canonical_codex_skill_count()
+    assert EXPECTED_SKILLS <= _skill_names(target)
+    assert stale_global.exists(), "default sync must not mutate global Codex skills"
+    assert not (fake_home / ".codex" / "agents" / "vgflow-orchestrator.toml").exists()
+    config_text = (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert "[agents.vgflow-orchestrator]" not in config_text
+
+
+def test_sync_deploys_full_codex_surface_to_project_and_fake_global_when_opted_in(tmp_path):
     bash = _working_bash()
     if bash is None:
         pytest.skip("working bash not found; sync.sh integration requires bash")
@@ -258,7 +278,7 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
         f"cd {shlex.quote(repo_bash)} && "
         f"HOME={shlex.quote(home_bash)} "
         f"DEV_ROOT={shlex.quote(target_bash)} "
-        "bash sync.sh"
+        "bash sync.sh --global-codex"
     )
     result = subprocess.run(
         [bash, "-lc", command],
@@ -290,7 +310,6 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
         target / ".codex" / "config.template.toml"
     ).read_text(encoding="utf-8")
     assert "VG_CODEX_MODEL_EXECUTOR" in config_template
-    assert "codex_hooks = true" in config_template
     assert "Sonnet-class build quality" in config_template
     assert "VG_CODEX_MODEL_SCANNER" in config_template
     assert "cheap/fast read-only model" in config_template
@@ -311,10 +330,6 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
     assert (
         target / ".claude" / "commands" / "vg" / "_shared" / "lib" / "codex-spawn.sh"
     ).is_file()
-    assert (target / ".claude" / "scripts" / "codex-spawn-record.py").is_file()
-    assert (
-        target / ".claude" / "scripts" / "codex-hooks" / "vg-codex-spawn-guard.py"
-    ).is_file()
     helper_exec = subprocess.run(
         [
             bash,
@@ -334,14 +349,12 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
         REPO_ROOT / "VGFLOW-VERSION"
     ).read_text(encoding="utf-8").strip()
     _assert_claude_hooks_installed(target)
-    _assert_codex_hooks_installed(target)
     _assert_no_python_cache_synced(target)
 
     config_text = (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
     _assert_playwright_mcp_configured(fake_home)
     _assert_toml_smoke(fake_home / ".codex" / "config.toml")
     _assert_toml_smoke(target / ".codex" / "config.template.toml")
-    _assert_toml_smoke(target / ".codex" / "config.toml")
     for agent_file in EXPECTED_AGENTS:
         agent_path = fake_home / ".codex" / "agents" / agent_file
         _assert_toml_smoke(agent_path)
@@ -466,6 +479,7 @@ def test_install_deploys_full_claude_and_codex_surfaces(tmp_path):
         f"HOME={shlex.quote(home_bash)} "
         "VGFLOW_SKIP_GRAPHIFY_INSTALL=true "
         f"bash {shlex.quote(_bash_path(bash, INSTALL_SH))} "
+        "--global-codex "
         f"{shlex.quote(target_bash)}"
     )
     result = subprocess.run(
@@ -495,7 +509,6 @@ def test_install_deploys_full_claude_and_codex_surfaces(tmp_path):
     assert (
         target / ".claude" / "commands" / "vg" / "_shared" / "lib" / "codex-spawn.sh"
     ).is_file()
-    assert (target / ".claude" / "scripts" / "codex-spawn-record.py").is_file()
     assert (target / ".claude" / "scripts" / "vg_update.py").is_file()
     assert (target / ".claude" / "schemas").is_dir()
     _assert_claude_hooks_installed(target)
@@ -504,17 +517,8 @@ def test_install_deploys_full_claude_and_codex_surfaces(tmp_path):
         target / ".codex" / "config.template.toml"
     ).read_text(encoding="utf-8")
     assert "VG_CODEX_MODEL_EXECUTOR" in config_template
-    assert "codex_hooks = true" in config_template
     assert "VG_CODEX_MODEL_SCANNER" in config_template
     _assert_playwright_mcp_configured(fake_home)
-    _assert_codex_hooks_installed(target)
-    _assert_toml_smoke(target / ".codex" / "config.toml")
-    assert (
-        target / ".claude" / "scripts" / "codex-hooks" / "vg-pre-tool-use-apply-patch.py"
-    ).is_file()
-    assert (
-        target / ".claude" / "scripts" / "codex-hooks" / "vg-codex-spawn-guard.py"
-    ).is_file()
 
     validator_env = os.environ.copy()
     validator_env.update(

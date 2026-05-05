@@ -104,7 +104,7 @@ ${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
 
 # Immediately after this block, apply TASKLIST_POLICY: project
 # `.vg/runs/{run_id}/tasklist-contract.json` to the native task UI and call
-# `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+# `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 [ -n "$PHASE_DIR_CANDIDATE" ] && stale_state_sweep "build" "$PHASE_DIR_CANDIDATE"
 [ "${CONFIG_SESSION_PORT_SWEEP_ON_START:-true}" = "true" ] && session_port_sweep "pre-flight"
 session_mark_step "1-parse-args"
@@ -339,7 +339,7 @@ Required behavior:
 2. Call `TodoWrite` with one todo per `projection_items[]` entry — full hierarchy
    (group headers + sub-steps with `↳` prefix). Use the entry's `title` verbatim
    as todo `content`.
-3. Call `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+3. Call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 4. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 Per sub-step lifecycle:
@@ -456,7 +456,7 @@ Before proceeding:
    TASKLIST_POLICY. On Claude Code, use `TodoWrite` unless
    `TaskCreate`/`TaskUpdate` is the exposed native adapter. This projection is
    replace-on-start, not append.
-2. Call `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+2. Call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 3. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 ### Step 2: Marker directory sanity check (replaces task count assertion)
@@ -485,6 +485,16 @@ then set the item completed. The native tasklist is UI projection; markers and
 events remain the enforcement source of truth.
 
 ```bash
+# Bug D 2026-05-04: explicit emission — was previously instruction-text-only,
+# AI could skip the tasklist-projected call. Now bash-enforced:
+# build.native_tasklist_projected MUST fire for run-complete contract.
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected \
+  --adapter "${VG_TASKLIST_ADAPTER:-claude}" || {
+    echo "⛔ vg-orchestrator tasklist-projected failed — build.native_tasklist_projected event will not fire." >&2
+    echo "   Check .vg/runs/<run_id>/tasklist-contract.json + adapter ∈ {claude,codex,fallback}." >&2
+    exit 1
+}
+
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "create_task_tracker" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/create_task_tracker.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build create_task_tracker 2>/dev/null || true

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -49,6 +50,51 @@ def test_run_start_backfills_synthetic_session_in_db(tmp_path: Path) -> None:
     assert payload["run_row"]["session_id"] == expected_sid
     assert "other_sessions_active" not in payload
 
+
+def test_run_start_rejects_stale_session_context_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    active_dir = repo / ".vg" / "active-runs"
+    active_dir.mkdir(parents=True)
+    session_id = "codex-session-123"
+    active = {
+        "run_id": "new-deploy-run",
+        "command": "vg:deploy",
+        "phase": "4.2",
+        "args": "",
+        "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "session_id": session_id,
+    }
+    active_dir.joinpath(f"{session_id}.json").write_text(
+        json.dumps(active),
+        encoding="utf-8",
+    )
+    (repo / ".vg" / "current-run.json").write_text(
+        json.dumps(active),
+        encoding="utf-8",
+    )
+    (repo / ".vg" / ".session-context.json").write_text(
+        json.dumps({
+            "run_id": "old-test-run",
+            "session_id": session_id,
+            "command": "vg:test",
+            "phase": "4.2",
+        }),
+        encoding="utf-8",
+    )
+
+    started = _run(repo, "run-start", "vg:test", "4.2", "4.2")
+    assert started.returncode == 0, started.stderr
+    run_id = started.stdout.strip().splitlines()[-1]
+    assert run_id != "old-test-run"
+    assert run_id != "new-deploy-run"
+
+    status = _run(repo, "run-status")
+    assert status.returncode == 0, status.stderr
+    payload = json.loads(status.stdout)
+    assert payload["current_run"]["run_id"] == run_id
+    assert payload["current_run"]["session_id"] == f"session-unknown-{run_id[:8]}"
 
 def test_run_status_tolerates_active_state_without_run_id(
     tmp_path: Path,

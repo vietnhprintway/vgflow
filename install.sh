@@ -1,6 +1,6 @@
 #!/bin/bash
 # VGFlow Installer — copy pipeline files to target project
-# Usage: ./install.sh [--refresh] /path/to/your/project
+# Usage: ./install.sh [--refresh] [--global-codex] /path/to/your/project
 #
 # Installs:
 #   - Claude Code commands (.claude/commands/vg/)
@@ -15,6 +15,7 @@ set -e
 
 REFRESH=false
 MIGRATE_DESIGN=false
+GLOBAL_CODEX=false
 TARGET=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -24,10 +25,17 @@ while [ "$#" -gt 0 ]; do
     --migrate-design)
       MIGRATE_DESIGN=true
       ;;
+    --global-codex)
+      GLOBAL_CODEX=true
+      ;;
+    --no-global)
+      GLOBAL_CODEX=false
+      ;;
     -h|--help)
-      echo "Usage: ./install.sh [--refresh] [--migrate-design] /path/to/your/project"
+      echo "Usage: ./install.sh [--refresh] [--migrate-design] [--global-codex] /path/to/your/project"
       echo "  --refresh          force-refresh VG managed files after backing them up"
       echo "  --migrate-design   auto-move legacy .vg/design-normalized/ into 2-tier layout"
+      echo "  --global-codex     also deploy VGFlow skills/agents into ~/.codex"
       exit 0
       ;;
     -*)
@@ -266,10 +274,76 @@ if [ -d "$SCRIPT_DIR/templates/codex" ]; then
   cp "$SCRIPT_DIR/templates/codex/"* "$TARGET/.codex/" 2>/dev/null || true
 fi
 
+disable_legacy_codex_hooks() {
+  local root="$1"
+  local py
+  py="$(command -v python3 || command -v python || true)"
+  [ -n "$py" ] || return 0
+  "$py" - "$root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+def vg_owned_command(cmd: str) -> bool:
+    return (
+        ".claude/scripts/codex-hooks/" in cmd
+        or ("VG_RUNTIME=codex" in cmd and ".claude/scripts/vg-entry-hook.py" in cmd)
+    )
+
+hooks_path = root / ".codex" / "hooks.json"
+if hooks_path.exists():
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("hooks"), dict):
+        new_hooks = {}
+        for event, entries in data["hooks"].items():
+            kept_entries = []
+            iter_entries = entries if isinstance(entries, list) else []
+            for entry in iter_entries:
+                hook_list = entry.get("hooks") if isinstance(entry, dict) else None
+                if not isinstance(hook_list, list):
+                    kept_entries.append(entry)
+                    continue
+                kept_hooks = [
+                    h for h in hook_list
+                    if not (isinstance(h, dict) and vg_owned_command(str(h.get("command", ""))))
+                ]
+                if kept_hooks:
+                    updated = dict(entry)
+                    updated["hooks"] = kept_hooks
+                    kept_entries.append(updated)
+            if kept_entries:
+                new_hooks[event] = kept_entries
+        if new_hooks:
+            hooks_path.write_text(json.dumps({"hooks": new_hooks}, indent=2) + "\n", encoding="utf-8")
+        else:
+            hooks_path.unlink()
+
+config_path = root / ".codex" / "config.toml"
+if config_path.exists():
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    filtered = [line for line in lines if not line.strip().startswith("codex_hooks")]
+    if filtered != lines:
+        text = "\n".join(filtered).strip()
+        if text in ("", "[features]"):
+            config_path.unlink()
+        else:
+            config_path.write_text(text + "\n", encoding="utf-8")
+
+PY
+}
+
+disable_legacy_codex_hooks "$TARGET"
+
 echo "  -> ${SKILL_DEPLOYED} Codex skills installed (full pipeline)"
 echo "  -> ${AGENT_DEPLOYED} Codex agent template(s) installed"
+echo "  -> legacy Codex hooks disabled (Claude hooks stay enabled)"
 
-if [ -d "$HOME/.codex" ]; then
+if [ "$GLOBAL_CODEX" = "true" ] && [ -d "$HOME/.codex" ]; then
   mkdir -p "$HOME/.codex/skills" "$HOME/.codex/agents"
   if [ -d "$SCRIPT_DIR/codex-skills" ]; then
     while IFS= read -r skill_dir; do
@@ -311,6 +385,8 @@ EOF
   register_codex_agent "vgflow-executor" "VGFlow bounded code executor for Codex child tasks."
   register_codex_agent "vgflow-classifier" "VGFlow cheap classifier/scanner for read-only summaries and triage."
   echo "  -> global ~/.codex skills/agents refreshed"
+else
+  echo "  -> global ~/.codex install skipped (use --global-codex to opt in)"
 fi
 
 if command -v codex &>/dev/null; then

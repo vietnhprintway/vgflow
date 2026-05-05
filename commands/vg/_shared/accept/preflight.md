@@ -14,7 +14,7 @@ You MUST call TodoWrite IMMEDIATELY after `create_task_tracker` runs
 emit-tasklist.py — DO NOT continue without it. The PostToolUse TodoWrite
 hook auto-writes signed evidence at
 `.vg/runs/<run_id>/.tasklist-projected.evidence.json`. Then call
-`vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>` so
+`vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>` so
 `accept.native_tasklist_projected` event is emitted (audit FAIL #9 fix —
 baseline 0 events).
 </HARD-GATE>
@@ -120,8 +120,9 @@ Adapter requirements:
   runtime exposes those native task tools.
 - Codex CLI: use the native plan/tasklist UI or Codex adapter. Checklist IDs
   and step IDs must match `tasklist-contract.json`.
-- Fallback: print `vg-orchestrator run-status --pretty`, then continue only
-  after emitting `accept.native_tasklist_projected`.
+- Fallback: print `vg-orchestrator run-status --pretty`, then run
+  `tasklist-projected --adapter auto`; the orchestrator is the sole owner of
+  `accept.native_tasklist_projected`.
 
 ```bash
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator step-active create_task_tracker 2>/dev/null || true
@@ -133,9 +134,9 @@ Adapter requirements:
 # (missing tasklist-contract.json or adapter mismatch) — surface it and
 # block instead of silently masking with `|| true`.
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected \
-  --adapter "${VG_TASKLIST_ADAPTER:-fallback}" || {
+  --adapter "${VG_TASKLIST_ADAPTER:-auto}" || {
     echo "⛔ vg-orchestrator tasklist-projected failed — accept.native_tasklist_projected event will not fire." >&2
-    echo "   Check .vg/runs/<run_id>/tasklist-contract.json was written by emit-tasklist.py + adapter is one of {claude,codex,fallback}." >&2
+    echo "   Check .vg/runs/<run_id>/tasklist-contract.json was written by emit-tasklist.py + native projection was done for this runtime." >&2
     exit 1
   }
 

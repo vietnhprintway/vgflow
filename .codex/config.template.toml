@@ -20,9 +20,6 @@
 #   passes. Leave unset to use the Codex config default.
 sandbox_mode = "workspace-write"
 
-[features]
-codex_hooks = true
-
 [agents.vgflow-orchestrator]
 description = "VGFlow phase orchestrator for Codex. Coordinates VG skills, gates, and artifact writes."
 config_file = ".codex/agents/vgflow-orchestrator.toml"

@@ -19,6 +19,7 @@
 #
 # Exposed functions:
 #   - detect_phase_profile PHASE_DIR                 → stdout: feature|infra|hotfix|bugfix|migration|docs|unknown
+#   - detect_phase_platform_profile PHASE_DIR [FALLBACK] → stdout: web-fullstack|web-frontend-only|web-backend-only|...
 #   - phase_profile_required_artifacts PROFILE       → stdout: space-separated artifact list
 #   - phase_profile_skip_artifacts PROFILE           → stdout: space-separated skip list
 #   - phase_profile_review_mode PROFILE              → stdout: full|infra-smoke|delta|regression|schema-verify|link-check
@@ -33,6 +34,80 @@
 #   REQUIRED=$(phase_profile_required_artifacts "$PHASE_PROFILE")
 #   REVIEW_MODE=$(phase_profile_review_mode "$PHASE_PROFILE")
 #   # ... use $REQUIRED to gate, $REVIEW_MODE to branch
+
+vg_is_platform_profile() {
+  case "${1:-}" in
+    web-fullstack|web-frontend-only|web-backend-only|mobile-rn|mobile-flutter|mobile-native-ios|mobile-native-android|mobile-hybrid|cli-tool|library)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+vg_frontmatter_value() {
+  local file="${1:-}"
+  local key="${2:-}"
+  [ -f "$file" ] || return 1
+  awk -v key="$key" '
+    BEGIN { in_fm=0 }
+    NR == 1 && /^---[[:space:]]*$/ { in_fm=1; next }
+    in_fm && /^---[[:space:]]*$/ { exit }
+    in_fm {
+      pattern="^[[:space:]]*" key "[[:space:]]*:"
+      if ($0 ~ pattern) {
+        sub(/^[^:]+:[[:space:]]*/, "")
+        gsub(/["'\''`'\''\r]/, "")
+        print
+        exit
+      }
+    }
+  ' "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]' | awk '{print $1}'
+}
+
+detect_phase_platform_profile() {
+  local phase_dir="${1:-}"
+  local fallback="${2:-web-fullstack}"
+  [ -n "$phase_dir" ] && [ -d "$phase_dir" ] || { echo "$fallback"; return 1; }
+
+  local file key value
+  for file in PLAN.md SPECS.md TEST-GOALS.md CONTEXT.md; do
+    for key in platform surface profile; do
+      value=$(vg_frontmatter_value "${phase_dir}/${file}" "$key")
+      if vg_is_platform_profile "$value"; then
+        echo "$value"
+        return 0
+      fi
+    done
+  done
+
+  if grep -qiE '(^|[[:space:]])(platform|surface|type)[[:space:]]*:[[:space:]]*["'\''`]?web-backend-only|Profile:[[:space:]]*`?web-backend-only' \
+    "${phase_dir}/SPECS.md" "${phase_dir}/PLAN.md" "${phase_dir}/TEST-GOALS.md" "${phase_dir}/CRUD-SURFACES.md" 2>/dev/null; then
+    echo "web-backend-only"
+    return 0
+  fi
+
+  if [ -f "${phase_dir}/.ui-scope.json" ]; then
+    local has_ui
+    has_ui=$(sed -nE 's/.*"has_ui"[[:space:]]*:[[:space:]]*(true|false).*/\1/ip' "${phase_dir}/.ui-scope.json" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+    case "$has_ui" in
+      false)
+        case "$fallback" in
+          web-fullstack|web-frontend-only|web-backend-only) echo "web-backend-only"; return 0 ;;
+        esac
+        ;;
+      true)
+        case "$fallback" in
+          web-backend-only) echo "web-fullstack"; return 0 ;;
+          web-fullstack|web-frontend-only) echo "$fallback"; return 0 ;;
+        esac
+        ;;
+    esac
+  fi
+
+  echo "$fallback"
+}
 
 # ═══════════════════════════════════════════════════════════════════════
 # detect_phase_profile — pure detection rules
@@ -66,44 +141,11 @@ detect_phase_profile() {
     return 1
   fi
 
-  local plan="${phase_dir}/PLAN.md"
-
-  # Explicit frontmatter wins for non-generic profiles. Some specs keep
-  # `profile: feature` for pipeline compatibility and declare the runtime
-  # surface separately as `platform: cli-tool`; treat that as a CLI profile.
-  local fm_profile fm_platform
-  fm_profile=$(awk '
-    BEGIN { in_fm=0 }
-    NR == 1 && /^---[[:space:]]*$/ { in_fm=1; next }
-    in_fm && /^---[[:space:]]*$/ { exit }
-    in_fm && /^[[:space:]]*profile[[:space:]]*:/ {
-      sub(/^[^:]+:[[:space:]]*/, ""); gsub(/["'\''\r]/, ""); print; exit
-    }
-  ' "$specs" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  fm_platform=$(awk '
-    BEGIN { in_fm=0 }
-    NR == 1 && /^---[[:space:]]*$/ { in_fm=1; next }
-    in_fm && /^---[[:space:]]*$/ { exit }
-    in_fm && /^[[:space:]]*platform[[:space:]]*:/ {
-      sub(/^[^:]+:[[:space:]]*/, ""); gsub(/["'\''\r]/, ""); print; exit
-    }
-  ' "$specs" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  case "$fm_profile" in
-    infra|hotfix|bugfix|migration|docs|cli-tool|library)
-      [ "$fm_profile" != "feature" ] && { echo "$fm_profile"; return 0; }
-      ;;
-  esac
-  case "$fm_platform" in
-    cli-tool|library)
-      echo "$fm_platform"
-      return 0
-      ;;
-  esac
-
   # ─── Rule 2: docs-only (all touched files are .md) ──────────────
   # Heuristic: the phase dir has only *.md files AND any task file-paths in PLAN.md
   # reference only .md files. We do not call git here — pure function, so we
   # rely on PLAN file-path extraction. If PLAN missing, fall through.
+  local plan="${phase_dir}/PLAN.md"
   if [ -f "$plan" ]; then
     local non_md_paths
     non_md_paths=$(grep -oE '<file-path>[^<]+</file-path>' "$plan" 2>/dev/null | \
@@ -238,8 +280,6 @@ phase_profile_required_artifacts() {
   case "${1:-feature}" in
     feature)        echo "SPECS.md CONTEXT.md PLAN.md API-CONTRACTS.md TEST-GOALS.md SUMMARY.md" ;;
     feature-legacy) echo "CONTEXT.md PLAN.md API-CONTRACTS.md TEST-GOALS.md SUMMARY.md" ;;  # v1.9.2.1 — pre-SPECS phases
-    cli-tool)       echo "SPECS.md CONTEXT.md PLAN.md API-CONTRACTS.md TEST-GOALS.md SUMMARY.md" ;;
-    library)        echo "SPECS.md CONTEXT.md PLAN.md TEST-GOALS.md SUMMARY.md" ;;
     infra)          echo "SPECS.md PLAN.md SUMMARY.md" ;;
     hotfix)         echo "SPECS.md PLAN.md SUMMARY.md" ;;
     bugfix)         echo "SPECS.md PLAN.md SUMMARY.md" ;;
@@ -254,8 +294,6 @@ phase_profile_skip_artifacts() {
   case "${1:-feature}" in
     feature)        echo "" ;;
     feature-legacy) echo "SPECS.md" ;;  # v1.9.2.1 — treat SPECS as optional for legacy phases
-    cli-tool)       echo "UI-SPEC.md UI-MAP.md RUNTIME-MAP.json" ;;
-    library)        echo "API-CONTRACTS.md UI-SPEC.md UI-MAP.md RUNTIME-MAP.json" ;;
     infra)          echo "TEST-GOALS.md API-CONTRACTS.md CONTEXT.md RUNTIME-MAP.json" ;;
     hotfix)         echo "TEST-GOALS.md API-CONTRACTS.md CONTEXT.md" ;;
     bugfix)         echo "API-CONTRACTS.md CONTEXT.md" ;;
@@ -268,8 +306,6 @@ phase_profile_skip_artifacts() {
 phase_profile_review_mode() {
   case "${1:-feature}" in
     feature|feature-legacy) echo "full" ;;
-    cli-tool)               echo "cli-smoke" ;;
-    library)                echo "library-api" ;;
     infra)                  echo "infra-smoke" ;;
     hotfix)                 echo "delta" ;;
     bugfix)                 echo "regression" ;;
@@ -282,8 +318,6 @@ phase_profile_review_mode() {
 phase_profile_test_mode() {
   case "${1:-feature}" in
     feature|feature-legacy) echo "full" ;;
-    cli-tool)               echo "cli-smoke" ;;
-    library)                echo "library-api" ;;
     infra)                  echo "infra-smoke" ;;
     hotfix)                 echo "parent-goals-regression" ;;
     bugfix)                 echo "issue-specific" ;;
@@ -295,7 +329,7 @@ phase_profile_test_mode() {
 
 phase_profile_goal_coverage_source() {
   case "${1:-feature}" in
-    feature|feature-legacy|cli-tool|library) echo "TEST-GOALS" ;;
+    feature|feature-legacy) echo "TEST-GOALS" ;;
     infra)                  echo "SPECS.success_criteria" ;;
     hotfix)                 echo "parent_phase.TEST-GOALS" ;;
     bugfix)                 echo "SPECS.fixes_bug" ;;

@@ -34,41 +34,6 @@ then post-spawn validation + marker). The agent prompt itself lives in
 
 ---
 
-## Codex adapter: deterministic pre-spawn helper
-
-If `VG_RUNTIME=codex`, do NOT hand-transcribe the long Bash/Python heredocs
-in STEP 3.1. Codex shell calls are zsh-wrapped in many installs; nested
-heredocs, `$...`, braces, and markdown fences can be expanded before Bash sees
-them. Instead run the deterministic helper below, then continue at the spawn
-step using `plan-delegation.md`.
-
-```bash
-PHASE_NUMBER="${PHASE_NUMBER:-$(printf '%s' "${ARGUMENTS:-}" | awk '{print $1}')}"
-[ -z "$PHASE_NUMBER" ] && { echo "phase number required"; exit 1; }
-PY_BOOT="$(command -v python3 || command -v python || command -v py)"
-eval "$("$PY_BOOT" .claude/scripts/codex-vg-env.py --phase "$PHASE_NUMBER" --format shell)"
-"$PYTHON_BIN" .claude/scripts/codex-blueprint-plan-prep.py \
-  --phase "$PHASE_NUMBER" \
-  --arguments "${ARGUMENTS:-$PHASE_NUMBER}"
-```
-
-This helper:
-- emits `vg-orchestrator step-active 2a_plan`;
-- resolves `REPO_ROOT`, `PHASE_DIR`, `PROFILE`, `PHASE_PROFILE`, and
-  `PYTHON_BIN` without broad scans;
-- writes `.graphify-brief.md`, `.deploy-lessons-brief.md`, and
-  `.tmp/bootstrap-rules-blueprint.md`;
-- enforces the R5 prompt-size gate;
-- does NOT write `PLAN.md` and does NOT mark `2a_plan` complete.
-
-After the helper exits 0, create the planner prompt file from
-`plan-delegation.md`, then run `codex-spawn.sh --tier planner
---spawn-role vg-blueprint-planner --spawn-id blueprint-2a-plan`. The child
-must write `PLAN.md`, `PLAN/index.md`, and `PLAN/task-*.md`; only after
-post-spawn validation passes may the parent mark `2a_plan`.
-
----
-
 ## STEP 3.1 — pre-spawn setup
 
 ### CONTEXT.md format validation (<5 sec)
@@ -77,12 +42,9 @@ post-spawn validation passes may the parent mark `2a_plan`.
 vg-orchestrator step-active 2a_plan
 
 CONTEXT_FILE="${PHASE_DIR}/CONTEXT.md"
-HAS_ENDPOINTS=$(grep -c "^\*\*Endpoints:\*\*" "$CONTEXT_FILE" 2>/dev/null || true)
-HAS_TESTS=$(grep -c "^\*\*Test Scenarios:\*\*" "$CONTEXT_FILE" 2>/dev/null || true)
-DECISION_COUNT=$(grep -cE "^### (P[0-9.]+\.)?D-" "$CONTEXT_FILE" 2>/dev/null || true)
-HAS_ENDPOINTS="${HAS_ENDPOINTS:-0}"
-HAS_TESTS="${HAS_TESTS:-0}"
-DECISION_COUNT="${DECISION_COUNT:-0}"
+HAS_ENDPOINTS=$(grep -c "^\*\*Endpoints:\*\*" "$CONTEXT_FILE" 2>/dev/null || echo 0)
+HAS_TESTS=$(grep -c "^\*\*Test Scenarios:\*\*" "$CONTEXT_FILE" 2>/dev/null || echo 0)
+DECISION_COUNT=$(grep -cE "^### (P[0-9.]+\.)?D-" "$CONTEXT_FILE" 2>/dev/null || echo 0)
 
 if [ "$DECISION_COUNT" -eq 0 ]; then
   echo "⛔ CONTEXT.md has 0 decisions. Run /vg:scope ${PHASE_NUMBER} first."
@@ -591,9 +553,7 @@ echo ""
 echo "Cross-System Check summary:"
 echo "  Route conflicts: ${ROUTE_CONFLICTS:-0}"
 echo "  Existing schema files: ${EXISTING_SCHEMAS:-0}"
-PRIOR_OVERLAP_COUNT=$(echo -e "${PRIOR_OVERLAP:-}" | grep -c . || true)
-PRIOR_OVERLAP_COUNT="${PRIOR_OVERLAP_COUNT:-0}"
-echo "  Prior phase overlap: ${PRIOR_OVERLAP_COUNT}"
+echo "  Prior phase overlap: $(echo -e "${PRIOR_OVERLAP:-}" | grep -c . || echo 0)"
 echo "  Warnings injected into PLAN.md as <!-- cross-system-warning: ... -->"
 echo ""
 echo "No BLOCK — warnings only. Planner should address each in task descriptions."

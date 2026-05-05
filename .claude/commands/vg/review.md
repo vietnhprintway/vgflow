@@ -346,9 +346,8 @@ Mandatory binding:
 2. Project every contract item to the runtime-native task UI before phase execution continues.
 3. Immediately call:
    ```bash
-   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected --adapter claude
-   # or: --adapter codex
-   # or: --adapter fallback
+   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected --adapter auto
+   # auto locks to claude, codex, or fallback from runtime env
    ```
 4. At each step start, update the native UI item to active and call `vg-orchestrator step-active <step_name>`.
 5. At each step end, write the marker, update the native UI item to completed, and call `vg-orchestrator mark-step review <step_name>`.
@@ -490,12 +489,15 @@ else
   PHASE_DIR_CANDIDATE=$(ls -d ${PLANNING_DIR}/phases/${PHASE_NUMBER}* 2>/dev/null | head -1)
 fi
 
-TASKLIST_PROFILE="${PROFILE:-web-fullstack}"
+TASKLIST_PROFILE="${PROFILE:-${CONFIG_PROFILE:-web-fullstack}}"
 TASKLIST_MODE=""
 source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/phase-profile.sh" 2>/dev/null || true
 if [ -n "$PHASE_DIR_CANDIDATE" ] && type -t detect_phase_profile >/dev/null 2>&1; then
   TASKLIST_PHASE_PROFILE=$(detect_phase_profile "$PHASE_DIR_CANDIDATE" 2>/dev/null || echo "feature")
   TASKLIST_MODE=$(phase_profile_review_mode "$TASKLIST_PHASE_PROFILE" 2>/dev/null || echo "full")
+fi
+if [ -n "$PHASE_DIR_CANDIDATE" ] && type -t detect_phase_platform_profile >/dev/null 2>&1; then
+  TASKLIST_PROFILE=$(detect_phase_platform_profile "$PHASE_DIR_CANDIDATE" "$TASKLIST_PROFILE" 2>/dev/null || echo "$TASKLIST_PROFILE")
 fi
 if [[ "$ARGUMENTS" =~ --mode=([a-z-]+) ]]; then
   TASKLIST_MODE="${BASH_REMATCH[1]}"
@@ -520,7 +522,7 @@ session_mark_step "0-parse-args"
 
 Immediately after this block returns, execute the TASKLIST_POLICY binding:
 project `.vg/runs/{run_id}/tasklist-contract.json` to the native task UI and
-call `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 </step>
 
 <step name="0_parse_and_validate">
@@ -591,7 +593,10 @@ source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/phase-profile.sh" 2>/dev/nu
 
 if type -t detect_phase_profile >/dev/null 2>&1; then
   PHASE_PROFILE=$(detect_phase_profile "$PHASE_DIR")
+  REVIEW_PLATFORM_PROFILE=$(detect_phase_platform_profile "$PHASE_DIR" "${PROFILE:-${CONFIG_PROFILE:-web-fullstack}}" 2>/dev/null || echo "${PROFILE:-${CONFIG_PROFILE:-web-fullstack}}")
+  PROFILE="$REVIEW_PLATFORM_PROFILE"
   export PHASE_PROFILE
+  export REVIEW_PLATFORM_PROFILE PROFILE
   REVIEW_MODE=$(phase_profile_review_mode "$PHASE_PROFILE")
   REQUIRED_ARTIFACTS=$(phase_profile_required_artifacts "$PHASE_PROFILE")
   SKIP_ARTIFACTS=$(phase_profile_skip_artifacts "$PHASE_PROFILE")
@@ -1214,9 +1219,8 @@ Per TASKLIST_POLICY, the tasklist shown by `emit-tasklist.py` is a binding contr
    - Codex CLI: use Codex native tasklist/plan UI with the same item ids, then update items as steps move active/completed.
 3. Bind the projection to orchestrator telemetry:
    ```bash
-   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected --adapter claude
-   # Codex runtime uses: --adapter codex
-   # Runtime with no native task UI uses: --adapter fallback
+   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected --adapter auto
+   # auto locks to claude, codex, or fallback from runtime env
    ```
 4. Also write this compact step plan in your text output before starting phase 1 so the message stream is readable:
    ```

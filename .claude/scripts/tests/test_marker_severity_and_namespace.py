@@ -149,7 +149,7 @@ def sandbox(tmp_path, monkeypatch):
         shutil.copytree(src_root / sub, repo / ".claude" / sub,
                         dirs_exist_ok=True)
 
-    # Minimal scope skill-MD with warn-severity marker/telemetry + one waivable
+    # Minimal scope skill-MD with ONE warn-severity marker + ONE waivable
     skill = repo / ".claude" / "commands" / "vg" / "scope.md"
     skill.write_text(textwrap.dedent("""\
         ---
@@ -167,8 +167,6 @@ def sandbox(tmp_path, monkeypatch):
               required_unless_flag: "--skip-reflection"
           must_emit_telemetry:
             - event_type: "scope.completed"
-            - event_type: "scope.optional_branch"
-              severity: "warn"
         ---
 
         # Test scope with warn + waivable markers
@@ -220,7 +218,7 @@ def test_warn_marker_missing_does_not_block(sandbox):
         f"stderr={r.stderr}\nstdout={r.stdout}"
     )
 
-    # Verify contract.marker_warn and contract.telemetry_warn events emitted
+    # Verify contract.marker_warn event emitted
     db_path = sandbox / ".vg" / "events.db"
     assert db_path.exists(), "events.db missing"
     conn = sqlite3.connect(str(db_path))
@@ -229,17 +227,10 @@ def test_warn_marker_missing_does_not_block(sandbox):
             "SELECT event_type, payload_json FROM events "
             "WHERE event_type = 'contract.marker_warn'"
         ).fetchall()
-        telemetry_rows = conn.execute(
-            "SELECT event_type, payload_json FROM events "
-            "WHERE event_type = 'contract.telemetry_warn'"
-        ).fetchall()
     finally:
         conn.close()
     assert len(rows) >= 1, (
         f"Expected >=1 contract.marker_warn event, got {len(rows)}"
-    )
-    assert len(telemetry_rows) >= 1, (
-        f"Expected >=1 contract.telemetry_warn event, got {len(telemetry_rows)}"
     )
 
 

@@ -119,46 +119,6 @@ if not context_path.exists():
 context = context_path.read_text(encoding="utf-8")
 specs = specs_path.read_text(encoding="utf-8") if specs_path.exists() else ""
 
-def _norm_heading(text):
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
-
-def _extract_specs_scope_items(specs_text):
-    """Return full bullet lines from in-scope SPECS sections only."""
-    if not specs_text:
-        return []
-
-    scope_titles = {"scope", "in scope", "in scope items", "in scope requirements"}
-    exclusion_titles = {
-        "out of scope", "out of scope items", "non goals", "non goal",
-        "exclusions", "deferred", "deferred ideas",
-    }
-    items = []
-    fallback = []
-    current_h2 = ""
-    current_h3 = ""
-
-    for line in specs_text.splitlines():
-        h2 = re.match(r"^##\s+(.+?)\s*$", line)
-        if h2:
-            current_h2 = _norm_heading(h2.group(1))
-            current_h3 = ""
-            continue
-        h3 = re.match(r"^###\s+(.+?)\s*$", line)
-        if h3:
-            current_h3 = _norm_heading(h3.group(1))
-            continue
-        if not re.match(r"^\s*[-*]\s+\S+", line):
-            continue
-
-        bullet = line.strip()
-        in_exclusion = current_h2 in exclusion_titles or current_h3 in exclusion_titles
-        if current_h2 in scope_titles and not in_exclusion:
-            items.append(bullet)
-        elif not in_exclusion:
-            fallback.append(bullet)
-
-    return items or fallback
-
 # Split into per-decision blocks (### P{N}.D-XX or ### D-XX heading)
 decision_re = re.compile(r"^###\s+(P[0-9.]+\.)?D-([A-Za-z0-9_-]+)\s*:?\s*(.*)$", re.MULTILINE)
 matches = list(decision_re.finditer(context))
@@ -217,7 +177,7 @@ for d in decisions:
             warnings.append(entry)
 
 # Check C — Decision Completeness (BLOCK if gap_ratio > 0.10)
-specs_items = _extract_specs_scope_items(specs)
+specs_items = re.findall(r"^[-*]\s+\S+", specs, re.MULTILINE) if specs else []
 specs_count = len(specs_items)
 decision_count = len(decisions)
 if specs_count > 0:

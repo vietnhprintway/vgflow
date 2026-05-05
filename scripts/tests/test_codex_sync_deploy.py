@@ -5,7 +5,7 @@ the behavior that matters for Codex parity:
 
 - all generated Codex skills deploy locally and globally
 - Codex agent templates deploy locally and globally
-- global Codex config registers the VGFlow agents with usable paths
+- global Codex deploy is opt-in via --global-codex
 - installed-project validators pass against the deployed target
 """
 from __future__ import annotations
@@ -210,7 +210,51 @@ def _assert_playwright_mcp_configured(home: Path) -> None:
     assert "C:/Users/Lionel Messi" not in lock_text
 
 
-def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
+def test_sync_skips_global_codex_by_default(tmp_path):
+    bash = _working_bash()
+    if bash is None:
+        pytest.skip("working bash not found; sync.sh integration requires bash")
+
+    target = tmp_path / "target-project"
+    fake_home = tmp_path / "home"
+    (fake_home / ".codex").mkdir(parents=True)
+    target.mkdir()
+    stale_global = fake_home / ".codex" / "skills" / "vg-accept" / "RULES-CARDS.md"
+    stale_global.parent.mkdir(parents=True)
+    stale_global.write_text("stale", encoding="utf-8")
+
+    repo_bash = _bash_path(bash, REPO_ROOT)
+    target_bash = _bash_path(bash, target)
+    home_bash = _bash_path(bash, fake_home)
+
+    command = (
+        f"cd {shlex.quote(repo_bash)} && "
+        f"HOME={shlex.quote(home_bash)} "
+        f"DEV_ROOT={shlex.quote(target_bash)} "
+        "bash sync.sh"
+    )
+    result = subprocess.run(
+        [bash, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert result.returncode == 0, (
+        f"sync.sh failed\nSTDOUT:\n{result.stdout[-4000:]}\n"
+        f"STDERR:\n{result.stderr[-4000:]}"
+    )
+
+    assert len(_skill_names(target)) == _canonical_codex_skill_count()
+    assert EXPECTED_SKILLS <= _skill_names(target)
+    assert stale_global.exists(), "default sync must not mutate global Codex skills"
+    assert not (fake_home / ".codex" / "agents" / "vgflow-orchestrator.toml").exists()
+    config_text = (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert "[agents.vgflow-orchestrator]" not in config_text
+
+
+def test_sync_deploys_full_codex_surface_to_project_and_fake_global_when_opted_in(tmp_path):
     bash = _working_bash()
     if bash is None:
         pytest.skip("working bash not found; sync.sh integration requires bash")
@@ -234,7 +278,7 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global(tmp_path):
         f"cd {shlex.quote(repo_bash)} && "
         f"HOME={shlex.quote(home_bash)} "
         f"DEV_ROOT={shlex.quote(target_bash)} "
-        "bash sync.sh"
+        "bash sync.sh --global-codex"
     )
     result = subprocess.run(
         [bash, "-lc", command],
@@ -435,6 +479,7 @@ def test_install_deploys_full_claude_and_codex_surfaces(tmp_path):
         f"HOME={shlex.quote(home_bash)} "
         "VGFLOW_SKIP_GRAPHIFY_INSTALL=true "
         f"bash {shlex.quote(_bash_path(bash, INSTALL_SH))} "
+        "--global-codex "
         f"{shlex.quote(target_bash)}"
     )
     result = subprocess.run(

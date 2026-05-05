@@ -13,7 +13,7 @@ Subcommands:
   run-resume
   run-repair [--force]
   emit-event <event_type> [--payload JSON]
-  tasklist-projected --adapter claude|codex|fallback
+  tasklist-projected --adapter auto|claude|codex|fallback
   step-active <step_name>
   mark-step <namespace> <step_name>
   wave-start <wave_n>
@@ -1060,6 +1060,69 @@ def cmd_tasklist_projected(args) -> int:
         print("\033[38;5;208mtasklist contract contains no task items\033[0m", file=sys.stderr)
         return 2
 
+    # HOTFIX (2026-05-05) — adapter LOCK + AUTO-DETECT based on runtime.
+    # Bug: AI in Claude Code session was switching `--adapter fallback` to
+    # bypass the claude evidence gate (rationalized as "TodoWrite không có
+    # trong session này"). Observed in PV3 blueprint 4.3 session 2026-05-05.
+    #
+    # Truth: Claude Code DOES ship TodoWrite tool — checking CLAUDECODE=1
+    # env var (set unconditionally by Claude Code CLI) proves the session
+    # CAN call TodoWrite. Switching adapter to bypass the gate is the
+    # exact rationalization pattern this hardening exists to block.
+    #
+    # Lock + auto-detect policy:
+    #   - CLAUDECODE=1 in env → adapter resolved to "claude" (TodoWrite available)
+    #   - VG_RUNTIME=codex or CODEX_SESSION_ID set → adapter resolved to "codex"
+    #   - unknown headless runtime → adapter resolved to "fallback" (CLI agents)
+    #   - --adapter auto (default) → resolved by runtime, no rationalization
+    #   - --adapter explicit → validated against runtime, conflict rejected
+    is_claude_code_session = os.environ.get("CLAUDECODE") == "1"
+    is_codex_session = (
+        os.environ.get("VG_RUNTIME") == "codex"
+        or bool(os.environ.get("CODEX_SESSION_ID"))
+    )
+    if args.adapter == "auto":
+        if is_claude_code_session:
+            args.adapter = "claude"
+        elif is_codex_session:
+            args.adapter = "codex"
+        else:
+            args.adapter = "fallback"
+    if is_claude_code_session and args.adapter in ("codex", "fallback"):
+        print(
+            "\033[38;5;208mAdapter lock: CLAUDECODE=1 detected — TodoWrite tool IS available.\033[0m",
+            file=sys.stderr,
+        )
+        print(
+            f"  Requested adapter: {args.adapter}\n"
+            "  Required adapter:  claude\n\n"
+            "  Reason: in a Claude Code session, the native TodoWrite tool\n"
+            "  is the canonical task UI. Switching to fallback/codex bypasses\n"
+            "  the PostToolUse evidence gate and was the rationalization\n"
+            "  observed in PV3 blueprint 4.3 (\"TodoWrite không có trong\n"
+            "  session này\" — FALSE).\n\n"
+            "  Fix: call the TodoWrite tool with the contract checklists,\n"
+            "  then re-run this command with --adapter claude.",
+            file=sys.stderr,
+        )
+        return 2
+    if is_codex_session and args.adapter in ("claude", "fallback"):
+        print(
+            "\033[38;5;208mAdapter lock: Codex runtime detected — use codex tasklist adapter.\033[0m",
+            file=sys.stderr,
+        )
+        print(
+            f"  Requested adapter: {args.adapter}\n"
+            "  Required adapter:  codex\n\n"
+            "  Reason: Codex owns its compact plan/tasklist projection. "
+            "Falling back to Claude/fallback evidence hides the runtime "
+            "difference and can leave the visible plan stale.\n\n"
+            "  Fix: update the Codex plan window from tasklist-contract.json, "
+            "then re-run this command with --adapter codex.",
+            file=sys.stderr,
+        )
+        return 2
+
     evidence_path = None
     if args.adapter in ("codex", "fallback"):
         try:
@@ -1069,6 +1132,31 @@ def cmd_tasklist_projected(args) -> int:
         except Exception as exc:
             print(
                 f"\033[38;5;208mfailed to write signed tasklist evidence: {exc}\033[0m",
+                file=sys.stderr,
+            )
+            return 2
+    elif args.adapter == "claude":
+        # HOTFIX (2026-05-05) — adapter=claude relies on PostToolUse TodoWrite
+        # hook to write evidence. Verify file exists; if missing, AI didn't
+        # call TodoWrite tool (just emit-tasklist text rendering doesn't count).
+        # Without this gate, AI can call this command + emit vg.block.handled
+        # to bypass evidence requirement → subsequent step-active proceed
+        # without native TodoWrite UI rendering. Bug observed in PV3 phase
+        # 4.2 build run a6f54da7 (2026-05-04 23:13:13Z).
+        evidence_path = contract_path.parent / ".tasklist-projected.evidence.json"
+        if not evidence_path.is_file():
+            print(
+                "\033[38;5;208mEvidence file missing — TodoWrite tool was not called.\033[0m",
+                file=sys.stderr,
+            )
+            print(
+                f"  Expected: {evidence_path}\n"
+                "  This is written by the PostToolUse hook on the TodoWrite\n"
+                "  tool. If you ran emit-tasklist.py without calling TodoWrite,\n"
+                "  the native UI render didn't happen.\n\n"
+                "  Fix: call the TodoWrite tool with one item per checklists[]\n"
+                "  row from tasklist-contract.json (with `↳` sub-items per\n"
+                "  group). Then re-run this command.",
                 file=sys.stderr,
             )
             return 2
@@ -2139,6 +2227,56 @@ def cmd_override(args) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # HOTFIX session 2 (2026-05-05) — anti-rationalization gate for
+    # `skip-*-crossai*` overrides. PV3 build 4.2 dogfood: AI emitted
+    # `--flag=skip-build-crossai --reason="...no Codex CLI configured..."`
+    # while Codex was BOTH configured in vg.config.md AND installed on PATH.
+    # Override-debt logged with FALSE claim. Now fact-check claims and
+    # reject if any configured CLI is installed (loop CAN run).
+    flag_text = (args.flag or "").lower()
+    if "crossai" in flag_text and ("skip" in flag_text):
+        try:
+            from lib.crossai_skip_validation import (  # type: ignore
+                validate_skip_legitimate, format_rejection,
+            )
+        except ImportError:
+            try:
+                # Fallback: orchestrator runs from .claude/scripts mirror
+                sys.path.insert(0, str(_REPO_ROOT / "scripts" / "lib"))
+                from crossai_skip_validation import (  # type: ignore
+                    validate_skip_legitimate, format_rejection,
+                )
+            except ImportError:
+                validate_skip_legitimate = None  # type: ignore
+                format_rejection = None  # type: ignore
+        if validate_skip_legitimate is not None:
+            result = validate_skip_legitimate(_REPO_ROOT, reason)
+            if not result.legitimate:
+                print(
+                    f"\033[38;5;208m{format_rejection(result)}\033[0m",
+                    file=sys.stderr,
+                )
+                # Telemetry — track rationalization attempts
+                try:
+                    db.append_event(
+                        run_id=current["run_id"],
+                        event_type="override.crossai_skip_rejected",
+                        phase=current["phase"],
+                        command=current["command"],
+                        actor="orchestrator",
+                        outcome="FAIL",
+                        payload={
+                            "flag": args.flag,
+                            "configured_clis": result.configured_clis,
+                            "installed_clis": result.installed_clis,
+                            "false_claims": result.false_claims,
+                            "reasoning": result.reasoning,
+                        },
+                    )
+                except Exception:
+                    pass
+                return 2
 
     # v2.5.2 Phase O — allow-flag human gate. For --allow-* flags (vs
     # --skip-*), verify caller is on a TTY or has VG_HUMAN_OPERATOR env
@@ -4560,9 +4698,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument(
         "--adapter",
-        required=True,
-        choices=["claude", "codex", "fallback"],
-        help="Runtime surface used to project the tasklist contract",
+        required=False,
+        default="auto",
+        choices=["auto", "claude", "codex", "fallback"],
+        help=(
+            "Runtime surface used to project the tasklist contract. "
+            "Default 'auto' detects from CLAUDECODE env (=1 → claude, "
+            "else fallback). Explicit values are validated against runtime — "
+            "passing --adapter fallback in a Claude Code session is rejected."
+        ),
     )
     s.set_defaults(func=cmd_tasklist_projected)
 

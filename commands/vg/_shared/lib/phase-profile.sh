@@ -19,6 +19,7 @@
 #
 # Exposed functions:
 #   - detect_phase_profile PHASE_DIR                 → stdout: feature|infra|hotfix|bugfix|migration|docs|unknown
+#   - detect_phase_platform_profile PHASE_DIR [FALLBACK] → stdout: web-fullstack|web-frontend-only|web-backend-only|...
 #   - phase_profile_required_artifacts PROFILE       → stdout: space-separated artifact list
 #   - phase_profile_skip_artifacts PROFILE           → stdout: space-separated skip list
 #   - phase_profile_review_mode PROFILE              → stdout: full|infra-smoke|delta|regression|schema-verify|link-check
@@ -33,6 +34,80 @@
 #   REQUIRED=$(phase_profile_required_artifacts "$PHASE_PROFILE")
 #   REVIEW_MODE=$(phase_profile_review_mode "$PHASE_PROFILE")
 #   # ... use $REQUIRED to gate, $REVIEW_MODE to branch
+
+vg_is_platform_profile() {
+  case "${1:-}" in
+    web-fullstack|web-frontend-only|web-backend-only|mobile-rn|mobile-flutter|mobile-native-ios|mobile-native-android|mobile-hybrid|cli-tool|library)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+vg_frontmatter_value() {
+  local file="${1:-}"
+  local key="${2:-}"
+  [ -f "$file" ] || return 1
+  awk -v key="$key" '
+    BEGIN { in_fm=0 }
+    NR == 1 && /^---[[:space:]]*$/ { in_fm=1; next }
+    in_fm && /^---[[:space:]]*$/ { exit }
+    in_fm {
+      pattern="^[[:space:]]*" key "[[:space:]]*:"
+      if ($0 ~ pattern) {
+        sub(/^[^:]+:[[:space:]]*/, "")
+        gsub(/["'\''`'\''\r]/, "")
+        print
+        exit
+      }
+    }
+  ' "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]' | awk '{print $1}'
+}
+
+detect_phase_platform_profile() {
+  local phase_dir="${1:-}"
+  local fallback="${2:-web-fullstack}"
+  [ -n "$phase_dir" ] && [ -d "$phase_dir" ] || { echo "$fallback"; return 1; }
+
+  local file key value
+  for file in PLAN.md SPECS.md TEST-GOALS.md CONTEXT.md; do
+    for key in platform surface profile; do
+      value=$(vg_frontmatter_value "${phase_dir}/${file}" "$key")
+      if vg_is_platform_profile "$value"; then
+        echo "$value"
+        return 0
+      fi
+    done
+  done
+
+  if grep -qiE '(^|[[:space:]])(platform|surface|type)[[:space:]]*:[[:space:]]*["'\''`]?web-backend-only|Profile:[[:space:]]*`?web-backend-only' \
+    "${phase_dir}/SPECS.md" "${phase_dir}/PLAN.md" "${phase_dir}/TEST-GOALS.md" "${phase_dir}/CRUD-SURFACES.md" 2>/dev/null; then
+    echo "web-backend-only"
+    return 0
+  fi
+
+  if [ -f "${phase_dir}/.ui-scope.json" ]; then
+    local has_ui
+    has_ui=$(sed -nE 's/.*"has_ui"[[:space:]]*:[[:space:]]*(true|false).*/\1/ip' "${phase_dir}/.ui-scope.json" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+    case "$has_ui" in
+      false)
+        case "$fallback" in
+          web-fullstack|web-frontend-only|web-backend-only) echo "web-backend-only"; return 0 ;;
+        esac
+        ;;
+      true)
+        case "$fallback" in
+          web-backend-only) echo "web-fullstack"; return 0 ;;
+          web-fullstack|web-frontend-only) echo "$fallback"; return 0 ;;
+        esac
+        ;;
+    esac
+  fi
+
+  echo "$fallback"
+}
 
 # ═══════════════════════════════════════════════════════════════════════
 # detect_phase_profile — pure detection rules

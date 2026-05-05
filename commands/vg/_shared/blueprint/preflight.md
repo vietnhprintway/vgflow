@@ -245,7 +245,7 @@ ${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
 
 # IMMEDIATELY after this block: apply TASKLIST_POLICY → project
 # `.vg/runs/{run_id}/tasklist-contract.json` to native task UI and call
-# `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+# `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 
 # R2 skip prereq assertion: --from=X must verify prior steps actually completed.
 FROM_STEP=""
@@ -335,7 +335,7 @@ Required behavior:
 2. Call `TodoWrite` with one todo per `projection_items[]` entry — full hierarchy
    (group headers + sub-steps with `↳` prefix). Use the entry's `title` verbatim
    as todo `content`.
-3. Call `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+3. Call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 4. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 Per sub-step lifecycle:

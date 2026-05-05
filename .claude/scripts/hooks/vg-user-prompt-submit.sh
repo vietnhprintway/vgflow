@@ -8,6 +8,10 @@ set -euo pipefail
 input="$(cat)"
 prompt="$(printf '%s' "$input" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("prompt",""))' 2>/dev/null || true)"
 session_id="${CLAUDE_HOOK_SESSION_ID:-default}"
+required_adapter="claude"
+if [ "${VG_RUNTIME:-${VG_PROVIDER:-}}" = "codex" ]; then
+  required_adapter="codex"
+fi
 
 # Match /vg:<cmd> [<args>...]
 if [[ ! "$prompt" =~ ^/vg:([a-z][a-z0-9_-]*)([[:space:]]+(.*))?$ ]]; then
@@ -45,12 +49,12 @@ if [[ ! "$prompt" =~ ^/vg:([a-z][a-z0-9_-]*)([[:space:]]+(.*))?$ ]]; then
         printf "BEFORE any tool call (Bash/etc), you MUST:\n" >&2
         printf "  1. Read .vg/runs/%s/tasklist-contract.json\n" "$active_run_id" >&2
         printf "  2. Call the TodoWrite tool with hierarchical 2-layer projection (group + ↳ sub-items)\n" >&2
-        printf "  3. Run: python3 .claude/scripts/vg-orchestrator tasklist-projected --adapter claude\n" >&2
-        printf "PreToolUse-bash hook will BLOCK step-active calls until evidence file exists with depth_valid=true and adapter='claude'.\n" >&2
-      elif [ "$adapter" != "claude" ] && [ -n "$adapter" ]; then
-        printf "STATE: tasklist projected with adapter='%s' — Claude Code session requires adapter='claude'. Re-call TodoWrite + tasklist-projected --adapter claude before next step-active or PreToolUse hook will BLOCK.\n" "$adapter" >&2
+        printf "  3. Run: python3 .claude/scripts/vg-orchestrator tasklist-projected --adapter %s\n" "$required_adapter" >&2
+        printf "PreToolUse-bash hook will BLOCK step-active calls until evidence file exists with depth_valid=true and adapter='%s'.\n" "$required_adapter" >&2
+      elif [ "$adapter" != "$required_adapter" ] && [ -n "$adapter" ]; then
+        printf "STATE: tasklist projected with adapter='%s' — this runtime requires adapter='%s'. Re-project native tasklist + tasklist-projected --adapter %s before next step-active or PreToolUse hook will BLOCK.\n" "$adapter" "$required_adapter" "$required_adapter" >&2
       else
-        printf "STATE: tasklist projected OK (adapter=claude). Continue executing the flow per slim-entry STEP order. DO NOT ad-hoc skip steps.\n" >&2
+        printf "STATE: tasklist projected OK (adapter=%s). Continue executing the flow per slim-entry STEP order. DO NOT ad-hoc skip steps.\n" "$required_adapter" >&2
       fi
       printf "Slim entry: commands/vg/%s.md\n" "${active_cmd#vg:}" >&2
       printf "</vg-flow-context>\n" >&2
@@ -204,10 +208,16 @@ if ctx_path.exists():
         ctx = json.loads(ctx_path.read_text(encoding="utf-8")) or {}
     except Exception:
         ctx = {}
+old_run_id = ctx.get("run_id")
 ctx["session_id"] = sid
 ctx["run_id"] = rid
 ctx["command"] = command
 ctx["phase"] = phase
+if old_run_id != rid:
+    ctx["started_at"] = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    ctx["current_step"] = None
+    ctx["step_history"] = []
+    ctx["telemetry_emitted"] = []
 tmp = ctx_path.with_suffix(ctx_path.suffix + ".tmp")
 tmp.write_text(json.dumps(ctx, indent=2), encoding="utf-8")
 os.replace(str(tmp), str(ctx_path))

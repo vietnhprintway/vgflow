@@ -11,8 +11,19 @@ if [ ! -f "$run_file" ]; then
   exit 0
 fi
 
-run_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$run_file")"
-command="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["command"])' "$run_file")"
+# Race-safe JSON parse: tolerate concurrent writes from parallel sessions
+# (mid-rename, partial flush). The next Stop fire will re-evaluate once settled.
+parse_field() {
+  python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1]))[sys.argv[2]])
+except (json.JSONDecodeError, FileNotFoundError, KeyError, OSError):
+    sys.exit(99)
+' "$run_file" "$1" 2>/dev/null
+}
+run_id="$(parse_field run_id)" || { echo "vg-stop: run_file unreadable; skipping" >&2; exit 0; }
+command="$(parse_field command)" || { echo "vg-stop: run_file unreadable; skipping" >&2; exit 0; }
 db=".vg/events.db"
 
 failures=()

@@ -340,18 +340,18 @@ Adapter requirements:
   when that runtime exposes those tools.
 - Codex CLI: use native plan/tasklist UI or Codex adapter. Checklist IDs and
   step IDs must match `tasklist-contract.json`.
-- Fallback: print `vg-orchestrator run-status --pretty`, then continue only
-  after emitting `test.native_tasklist_projected`.
+- Fallback: print `vg-orchestrator run-status --pretty`, then run
+  `tasklist-projected --adapter auto`; the orchestrator is the sole owner of
+  `test.native_tasklist_projected`.
 
 ```bash
 vg-orchestrator step-active create_task_tracker
 
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected \
-  --adapter "${VG_TASKLIST_ADAPTER:-fallback}" >/dev/null 2>&1 || true
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
-  "test.native_tasklist_projected" \
-  --payload "{\"phase\":\"${PHASE_NUMBER}\",\"adapter\":\"${VG_TASKLIST_ADAPTER:-fallback}\"}" \
-  >/dev/null 2>&1 || true
+  --adapter "${VG_TASKLIST_ADAPTER:-auto}" || {
+  echo "⛔ vg-orchestrator tasklist-projected failed — project native tasklist first." >&2
+  exit 1
+}
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "create_task_tracker" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/create_task_tracker.done"

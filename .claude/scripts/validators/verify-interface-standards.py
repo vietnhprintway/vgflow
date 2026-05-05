@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -16,19 +15,6 @@ from _common import Evidence, Output, emit_and_exit, find_phase_dir, timer  # no
 
 
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
-API_PROFILES = {"web-fullstack", "web-backend-only"}
-FE_PROFILES = {"web-fullstack", "web-frontend-only"}
-CLI_PROFILES = {"cli-tool", "library"}
-HEADING_RE = re.compile(r"^#{1,6}\s+")
-EXCLUSION_HEADING_RE = re.compile(
-    r"^#{1,6}\s*(out\s+of\s+scope|non[- ]?goals?|exclusions?)\b",
-    re.IGNORECASE,
-)
-NEGATED_SURFACE_RE = re.compile(
-    r"\b(no|not|without|exclude[sd]?|excluding|non[- ]|out\s+of\s+scope|"
-    r"not\s+in\s+scope|does\s+not|do\s+not|never)\b",
-    re.IGNORECASE,
-)
 
 
 def _read(path: Path) -> str:
@@ -48,74 +34,21 @@ def _resolve_phase_dir(args: argparse.Namespace) -> Path | None:
     return None
 
 
-def _affirmative_phase_text(text: str) -> str:
-    lines: list[str] = []
-    in_exclusion_section = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if HEADING_RE.match(line):
-            in_exclusion_section = bool(EXCLUSION_HEADING_RE.match(line))
-            if in_exclusion_section:
-                continue
-        if in_exclusion_section:
-            continue
-        if NEGATED_SURFACE_RE.search(line):
-            continue
-        lines.append(raw_line)
-    return "\n".join(lines)
-
-
-def _load_generator_infer():
-    candidates = [
-        REPO_ROOT / "scripts" / "generate-interface-standards.py",
-        REPO_ROOT / ".claude" / "scripts" / "generate-interface-standards.py",
-        Path(__file__).resolve().parents[1] / "generate-interface-standards.py",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        spec = importlib.util.spec_from_file_location(
-            "vg_generate_interface_standards", path,
-        )
-        if not spec or not spec.loader:
-            continue
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        infer = getattr(module, "infer_surfaces", None)
-        if callable(infer):
-            return infer
-    return None
-
-
 def _infer_surfaces(phase_dir: Path, profile: str) -> dict[str, bool]:
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
     try:
-        infer_surfaces = _load_generator_infer()
-        if infer_surfaces:
-            return infer_surfaces(phase_dir, profile)
+        from generate_interface_standards import infer_surfaces  # type: ignore
+        return infer_surfaces(phase_dir, profile)
     except Exception:
-        pass
-    text = "\n".join(_read(phase_dir / name) for name in (
-        "SPECS.md", "CONTEXT.md", "PLAN.md", "API-CONTRACTS.md", "TEST-GOALS.md",
-    ))
-    affirmative = _affirmative_phase_text(text)
-    lower = affirmative.lower()
-    is_cli_only = profile in CLI_PROFILES
-    return {
-        "api": (
-            profile in API_PROFILES
-            or ((phase_dir / "API-CONTRACTS.md").exists() and not is_cli_only)
-            or bool(re.search(r"\b(get|post|put|patch|delete)\s+/", affirmative, re.I))
-            or (not is_cli_only and bool(re.search(r"\b(api|endpoint|rest|graphql|webhook)\b", affirmative, re.I)))
-        ),
-        "frontend": (
-            profile in FE_PROFILES
-            or "surface: ui" in lower
-            or bool(re.search(r"\*\*surface:\*\*\s*ui\b", affirmative, re.I))
-            or (not is_cli_only and bool(re.search(r"\b(frontend|ui|page|form|toast)\b", affirmative, re.I)))
-        ),
-        "cli": profile in CLI_PROFILES or bool(re.search(r"\b(cli|command line|stdout|stderr)\b|--json\b", affirmative, re.I)),
-        "mobile": profile.startswith("mobile-") or (not is_cli_only and bool(re.search(r"\b(mobile|ios|android|maestro)\b", affirmative, re.I))),
-    }
+        text = "\n".join(_read(phase_dir / name) for name in (
+            "SPECS.md", "CONTEXT.md", "PLAN.md", "API-CONTRACTS.md", "TEST-GOALS.md",
+        )).lower()
+        return {
+            "api": (phase_dir / "API-CONTRACTS.md").exists() or " api" in text or "endpoint" in text,
+            "frontend": "surface: ui" in text or "frontend" in text or "toast" in text,
+            "cli": " cli" in text or "--json" in text,
+            "mobile": "mobile" in text,
+        }
 
 
 def _load_json(path: Path, out: Output) -> dict[str, Any] | None:

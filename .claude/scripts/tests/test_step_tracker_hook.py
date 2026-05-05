@@ -55,6 +55,18 @@ def _setup_repo(tmp_path: Path, *, ctx: dict | None = None) -> Path:
         (vg / ".session-context.json").write_text(
             json.dumps(ctx), encoding="utf-8"
         )
+        active = {
+            "run_id": ctx.get("run_id"),
+            "command": ctx.get("command"),
+            "phase": ctx.get("phase"),
+            "session_id": ctx.get("session_id"),
+        }
+        (vg / "current-run.json").write_text(json.dumps(active), encoding="utf-8")
+        if ctx.get("session_id"):
+            safe = "".join(c for c in str(ctx["session_id"]) if c.isalnum() or c in "-_")
+            active_dir = vg / "active-runs"
+            active_dir.mkdir(parents=True, exist_ok=True)
+            (active_dir / f"{safe}.json").write_text(json.dumps(active), encoding="utf-8")
     return tmp_path
 
 
@@ -140,6 +152,34 @@ def test_marker_done_updates_state(tmp_path, capsys, monkeypatch):
     assert len(ctx["step_history"]) == 1
     assert ctx["step_history"][0]["step"] == "8_execute_waves"
     assert ctx["step_history"][0]["transition"] == "done"
+
+def test_stale_context_does_not_update_state(tmp_path, capsys, monkeypatch):
+    initial = {
+        "run_id": "old-run", "session_id": "s1",
+        "command": "vg:test", "phase": "4.2",
+        "started_at": "2026-05-05T18:31:31Z",
+        "current_step": None, "step_history": [], "telemetry_emitted": [],
+    }
+    repo = _setup_repo(tmp_path, ctx=initial)
+    active = {
+        "run_id": "new-run", "session_id": "s1",
+        "command": "vg:deploy", "phase": "4.2",
+    }
+    (repo / ".vg/current-run.json").write_text(json.dumps(active), encoding="utf-8")
+    (repo / ".vg/active-runs/s1.json").write_text(json.dumps(active), encoding="utf-8")
+
+    mod = _load_hook(repo)
+    rc = _drive(mod, {
+        "session_id": "s1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "touch /x/.step-markers/0_parse_and_validate.done"},
+    }, capsys, monkeypatch)
+    assert rc == 0
+    ctx = json.loads(
+        (repo / ".vg" / ".session-context.json").read_text(encoding="utf-8")
+    )
+    assert ctx["current_step"] is None
+    assert ctx["step_history"] == []
 
 
 def test_history_dedup(tmp_path, capsys, monkeypatch):

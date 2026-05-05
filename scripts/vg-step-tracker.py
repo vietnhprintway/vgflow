@@ -127,18 +127,72 @@ def _write_session_context(ctx: dict) -> None:
         log(f"session-context write error: {e}")
 
 
+def _safe_session_filename(sid: str) -> str:
+    safe = "".join(c for c in sid if c.isalnum() or c in "-_")
+    return safe or "unknown"
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _context_matches_active_run(ctx: dict, hook_session_id: str | None) -> bool:
+    ctx_session = ctx.get("session_id")
+    if hook_session_id and ctx_session and hook_session_id != ctx_session:
+        log(f"skip stale context: hook session {hook_session_id} != ctx session {ctx_session}")
+        return False
+
+    candidates: list[Path] = []
+    if ctx_session:
+        candidates.append(REPO_ROOT / ".vg" / "active-runs" / f"{_safe_session_filename(str(ctx_session))}.json")
+    candidates.append(REPO_ROOT / ".vg" / "current-run.json")
+
+    for path in candidates:
+        run = _read_json(path)
+        if not run:
+            continue
+        if ctx.get("run_id") and run.get("run_id") != ctx.get("run_id"):
+            continue
+        if ctx_session and run.get("session_id") and str(run.get("session_id")) != str(ctx_session):
+            continue
+        mismatched = False
+        for key in ("command", "phase"):
+            if ctx.get(key) and run.get(key) and str(ctx.get(key)) != str(run.get(key)):
+                mismatched = True
+                break
+        if not mismatched:
+            return True
+
+    log(
+        "skip stale context: no active-run matches "
+        f"run_id={ctx.get('run_id')} command={ctx.get('command')} phase={ctx.get('phase')}"
+    )
+    return False
+
+
 def _emit_telemetry(event_type: str, payload: dict) -> None:
     """Best-effort `hook.*` telemetry via vg-orchestrator emit-event.
     `hook.*` prefix is reserved-safe (not in RESERVED_EVENT_PREFIXES).
     """
     try:
+        env = os.environ.copy()
+        session_id = payload.get("session_id")
+        if session_id:
+            env["CLAUDE_SESSION_ID"] = str(session_id)
+            env["CLAUDE_HOOK_SESSION_ID"] = str(session_id)
         subprocess.run(
             [sys.executable, str(ORCHESTRATOR), "emit-event",
              event_type,
              "--actor", "hook",
              "--outcome", "INFO",
              "--payload", json.dumps(payload)],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=5, env=env,
         )
     except Exception as e:
         log(f"emit-event failed for {event_type}: {e}")
@@ -169,6 +223,9 @@ def main() -> int:
     # an active run (Layer 1 vg-entry-hook seeds it).
     ctx = _read_session_context()
     if not ctx:
+        return 0
+    hook_session_id = hook_input.get("session_id")
+    if not _context_matches_active_run(ctx, hook_session_id):
         return 0
 
     # Update state
@@ -201,6 +258,7 @@ def main() -> int:
             "hook.step_active",
             {
                 "run_id": ctx.get("run_id"),
+                "session_id": ctx.get("session_id"),
                 "command": ctx.get("command"),
                 "phase": ctx.get("phase"),
                 "step": step_name,

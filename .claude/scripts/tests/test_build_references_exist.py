@@ -9,7 +9,7 @@ REFS = {
     "preflight.md":                500,
     "context.md":                  500,
     "validate-blueprint.md":       500,
-    "waves-overview.md":          1350,  # extracted from backup step 8; R2 round-2 + Codex spawn parity keep orchestration local to the heavy spawn site
+    "waves-overview.md":          1200,  # extracted from backup step 8 (1882 lines), compressed; R2 round-2 added wave_id reset banner + override.used migration notes (5 paths)
     "waves-delegation.md":         500,
     "post-execution-overview.md":  980,  # extracted from backup step 9 (896 lines); R2 round-2 expanded post-spawn validator to enforce BUILD-LOG sha + index + sub-files (closes A4/E2/C5 drift)
     "post-execution-delegation.md": 500,

@@ -130,23 +130,6 @@ Then call:
 Agent(subagent_type="vg-test-goal-verifier", prompt=<rendered template>)
 ```
 
-### Codex runtime spawn path
-
-If the runtime is Codex, apply
-`commands/vg/_shared/codex-spawn-contract.md` instead of calling the
-Claude-only `Agent(...)` syntax:
-
-1. Render `goal-verification/delegation.md` into
-   `${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-test-goal-verifier.prompt.md`.
-2. Run `codex-spawn.sh --tier executor --sandbox workspace-write
-   --spawn-role vg-test-goal-verifier --spawn-id vg-test-goal-verifier` with
-   `--out ${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-test-goal-verifier.json`.
-3. Set `SUBAGENT_OUTPUT="$(cat "$OUT_FILE")"` and run STEP 4.3 unchanged.
-4. Treat missing helper, missing Codex CLI, non-zero exit, empty output,
-   malformed JSON, or empty `goals_verified[]` as a HARD BLOCK.
-
-Do NOT verify goals inline on Codex.
-
 The subagent:
 - In TRUST REVIEW mode: runs baseline console check, spot-checks non-READY
   goals (BLOCKED/UNREACHABLE/DEFERRED), emits goals_verified array with

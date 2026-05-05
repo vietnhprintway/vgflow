@@ -74,9 +74,11 @@ goals = []
 # Split by goal blocks first — lets us capture multi-field metadata per goal
 # (Mutation evidence + Persistence check are paragraph-level fields that the
 # single-line regex above cannot match reliably).
+goal_heading = r'^## (?:Goal )?(G-[\w]+): *(.+?)$'
+next_goal_heading = r'^## (?:Goal )?G-[\w]+:'
 for blk_m in re.finditer(
-    r'^## Goal (G-[\w]+): *(.+?)$'
-    r'(?P<body>(?:(?!^## Goal ).)*)',
+    goal_heading +
+    r'(?P<body>(?:(?!' + next_goal_heading + r').)*)',
     tg_text, re.M | re.S
 ):
     gid, title, body = blk_m.group(1), blk_m.group(2).strip(), blk_m.group('body') or ''
@@ -258,7 +260,9 @@ for g in goals:
 intermediate = total_by_status['NOT_SCANNED'] + total_by_status['FAILED']
 
 verdict = 'PASS'
-if intermediate > 0:
+if not goals:
+    verdict = 'BLOCK'
+elif intermediate > 0:
     verdict = 'INTERMEDIATE'
 else:
     # Compute weighted gate
@@ -319,11 +323,17 @@ if verdict == 'INTERMEDIATE':
         '- Override (log debt): `/vg:review {phase} --allow-intermediate`',
     ]
 elif verdict == 'BLOCK':
-    failed = [p for p, i in by_priority.items() if i.get('failed_gate')]
-    lines += [
-        f'Gate threshold not met for: {", ".join(failed)}',
-        'Fix blockers or escalate to /vg:accept with debt entry.',
-    ]
+    if not goals:
+        lines += [
+            'No goals parsed from TEST-GOALS.md. Coverage gate cannot pass with total=0.',
+            'Fix goal headings or parser support, then rerun Phase 4.',
+        ]
+    else:
+        failed = [p for p, i in by_priority.items() if i.get('failed_gate')]
+        lines += [
+            f'Gate threshold not met for: {", ".join(failed)}',
+            'Fix blockers or escalate to /vg:accept with debt entry.',
+        ]
 else:
     lines += [f'All priority thresholds met. {total_by_status["READY"]}/{len(goals)} READY — proceed to /vg:test.']
 

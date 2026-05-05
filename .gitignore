@@ -13,3 +13,9 @@ graphify-out/
 # only ever appears here as test-run telemetry/artifacts.
 .vg/
 .worktrees/
+
+# Local Codex runtime files are project/user state. Keep templates tracked.
+.codex/config.toml
+.codex/hooks.json
+.mcp.json
+.graphifyignore

@@ -33,24 +33,6 @@ Read `delegation.md` for the input/output contract. Then call:
 Agent(subagent_type="vg-accept-cleanup", prompt=<built from delegation>)
 ```
 
-### Codex runtime spawn path
-
-If the runtime is Codex, apply
-`commands/vg/_shared/codex-spawn-contract.md` instead of calling the
-Claude-only `Agent(...)` syntax:
-
-1. Render `delegation.md` into
-   `${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-accept-cleanup.prompt.md`.
-2. Run `codex-spawn.sh --tier executor --sandbox workspace-write
-   --spawn-role vg-accept-cleanup --spawn-id vg-accept-cleanup` with
-   `--out ${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-accept-cleanup.json`.
-3. Set `SUBAGENT_OUTPUT="$(cat "$OUT_FILE")"` and run output validation +
-   post-subagent hard-exit gates unchanged.
-4. Treat missing helper, missing Codex CLI, non-zero exit, empty output,
-   malformed JSON, verdict mismatch, or failed hard-exit gate as a HARD BLOCK.
-
-Do NOT cleanup inline on Codex.
-
 ## Post-spawn narration
 
 On success:

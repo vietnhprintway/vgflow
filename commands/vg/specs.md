@@ -106,7 +106,7 @@ without ever projecting the tasklist, defeating the universal contract.
 The process preamble below calls it; this skill IMPERATIVELY calls
 TodoWrite right after with one todo per `projection_items[]` entry
 (group headers + sub-steps with `↳` prefix). Then calls
-`vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`
+`vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`
 so `specs.native_tasklist_projected` event fires.
 
 Lifecycle: `replace-on-start` (first projection replaces stale list) +
@@ -171,9 +171,8 @@ Required behavior:
 2. Call `TodoWrite` with one todo per `projection_items[]` entry — full hierarchy
    (group headers + sub-steps with `↳` prefix). Use the entry's `title` verbatim
    as todo `content`.
-3. Call `vg-orchestrator tasklist-projected --adapter claude` (or `codex|fallback`
-   in non-Claude runtimes; Claude Code session adapter MUST be `claude` per Bug L
-   P6 hook check).
+3. Call `vg-orchestrator tasklist-projected --adapter auto`; the orchestrator
+   locks to `claude`, `codex`, or `fallback` from runtime env.
 4. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 ```bash
