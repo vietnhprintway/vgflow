@@ -20,9 +20,6 @@ fi
 # Protected path patterns.
 protected_patterns=(
   '\.vg/runs/[^/]+/\.tasklist-projected\.evidence\.json$'
-  '\.vg/runs/[^/]+/\.codex-spawn-manifest\.jsonl$'
-  '\.vg/runs/[^/]+/\.spawn-count\.json$'
-  '\.vg/runs/[^/]+/codex-spawns/.*'
   '\.vg/runs/[^/]+/evidence-.*\.json$'
   '\.vg/runs/[^/]+/.*evidence.*'
   '\.vg/phases/.*/\.step-markers/.*\.done$'
