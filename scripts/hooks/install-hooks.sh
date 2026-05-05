@@ -29,14 +29,25 @@ HOOKS_DIR="${PLUGIN_ROOT}/scripts/hooks"
 # .claude/settings.json baked with one developer's macOS path, breaking every
 # other machine; placeholder mode prevents that recurrence.
 HOOKS_PATH_MODE="${VG_HOOKS_PATH_MODE:-placeholder}"
+PYTHON_CMD="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_CMD" ]; then
+  for cand in python3 python py; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      PYTHON_CMD="$cand"
+      break
+    fi
+  done
+fi
+PYTHON_CMD="${PYTHON_CMD:-python3}"
 
-python3 - "$target" "$HOOKS_DIR" "$HOOKS_PATH_MODE" <<'PY'
+python3 - "$target" "$HOOKS_DIR" "$HOOKS_PATH_MODE" "$PYTHON_CMD" <<'PY'
 import json, os, shlex, sys
 from pathlib import Path
 
 target = Path(sys.argv[1])
 hooks_dir = sys.argv[2]
 mode = sys.argv[3]
+python_cmd = sys.argv[4]
 
 if target.exists():
     settings = json.loads(target.read_text())
@@ -52,11 +63,18 @@ settings.setdefault("hooks", {})
 #   absolute              — bake hooks_dir absolute path at install time
 #                           (legacy/escape hatch via VG_HOOKS_PATH_MODE=absolute).
 def _cmd(script_name: str) -> str:
+    runner_name = "vg-run-bash-hook.py"
     if mode == "absolute":
-        # CRITICAL: hooks_dir may contain spaces (e.g., "Vibe Code") — bash word-splits
-        # unquoted command. Use shlex.quote to wrap each script path in single-quotes.
-        return f"bash {shlex.quote(f'{hooks_dir}/{script_name}')}"
-    return f'bash "${{CLAUDE_PROJECT_DIR}}/.claude/scripts/hooks/{script_name}"'
+        # CRITICAL: hooks_dir may contain spaces (e.g., "Vibe Code") — shell word-splits
+        # unquoted command. Use shlex.quote to wrap each path.
+        return (
+            f"{python_cmd} {shlex.quote(f'{hooks_dir}/{runner_name}')} "
+            f"{shlex.quote(f'{hooks_dir}/{script_name}')}"
+        )
+    return (
+        f'{python_cmd} "${{CLAUDE_PROJECT_DIR}}/.claude/scripts/hooks/{runner_name}" '
+        f'"${{CLAUDE_PROJECT_DIR}}/.claude/scripts/hooks/{script_name}"'
+    )
 
 VG_ENTRIES = {
     "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": _cmd("vg-user-prompt-submit.sh")}]}],

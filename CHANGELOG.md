@@ -1,78 +1,50 @@
 # Changelog
 
-## v2.50.0 — R6+R7+R8+R9+Task5 closed-loop integrity + HOTFIX session 1+2 chain + Gemini-Native /vg:review design (PR #108)
+## v2.50.1 — Windows-safe Claude bash hook runner
 
-Minor release. Massive production-readiness work merging the `feat/rfc-v9-followup-fixes` branch (PR #108). Three concurrent threads landed:
+Patch release. Fixes Claude Code `UserPromptSubmit hook (failed)` on Windows machines where `bash` resolves to the WSL launcher (`C:\Windows\System32\bash.exe`) before Git Bash. WSL bash cannot consume `${CLAUDE_PROJECT_DIR}` Windows paths like `D:\Workspace\...`, so hooks failed before the script body started.
 
-### Closed-loop integrity (R6 + R7 + R8 + R9 + Task 5)
+### Fixed
 
-- **R8-A through R8-G:** zero-tolerance verifiers, phase-level `G-PHASE-NN` goal class, FOUNDATION→SPECS traceability, milestone foundation matrix, RCRURDR full lifecycle attestation
-- **R9-A:** `lesson_lookup.py` failure-time retrieval (Critical) — surfaces relevant past lessons at the moment AI hits a known failure pattern
-- **R9-B:** bootstrap injection extended to review/accept/debug/specs/fix-loop (was build-only)
-- **R9-C:** atomic `learn promote` generates canonical rules/overlay/patches from `ACCEPTED.md` in one transaction
-- **Task 5 (G9):** multi-actor workflow review verdict replay engine — `workflow_replay.py` + verifier + schema + verdict integration; closes the Phase 4 verdict pipeline gap for cross-role flows
+- Added `vg-run-bash-hook.py`, a tiny Python runner that preserves stdin/stdout/stderr/exit code while selecting Git Bash before WSL bash on Windows.
+- Regenerated `.claude/settings.json` so all bash hooks go through the runner instead of calling `bash "${CLAUDE_PROJECT_DIR}/..."` directly.
+- Updated `scripts/hooks/install-hooks.sh` so future `sync.sh` or hook reinstall operations keep emitting the Windows-safe runner command.
+- Runner normalizes Windows script paths to `D:/...` before invoking Git Bash, covering both placeholder and absolute install modes.
 
-### HOTFIX session 1 + 2 — 8 bypass paths closed (PV3 dogfood-driven)
+### Verified
 
-PV3 dogfood (build 4.2 + blueprint 4.3 + review 4.1) revealed AI evading the tasklist enforcement gate via 8 distinct paths. All closed:
+- Reproduced old failure: `bash "${CLAUDE_PROJECT_DIR}/.claude/scripts/hooks/vg-user-prompt-submit.sh"` returned `rc=127` with `D:Workspace... No such file`.
+- Verified new settings command returns `rc=0` for both non-VG prompts and `/vg:build 1`.
+- `python -m py_compile` passes for the runner mirror pair.
+- `scripts/tests/test_bash_hook_runner.py` passes.
 
-| # | Bypass path | Closing commit |
-|---|---|---|
-| 1 | Render markdown table without TodoWrite call | `c809d02` — adapter=claude evidence file gate |
-| 2 | Switch `--adapter fallback` to bypass evidence gate | `f2b88dc` — lock on `CLAUDECODE=1` runtime detection |
-| 3 | Pass `--adapter` flag with rationalization | `1c53be7` — auto-detect runtime, default `auto` adapter |
-| 4 | Skip `step-active` → call `mark-step` directly | `1c53be7` — extend hook gate to `mark-step` |
-| 5 | Skip step-active → Write/Edit code directly | `58b1cbc` — universal mutating-tool gate |
-| 6 | TodoWrite subset (depth_valid pass, coverage incomplete) | `58b1cbc` — match-coverage check |
-| 7 | CrossAI skip with false-claim reason ("no X CLI installed") | `07011e4` — anti-rationalization gate (`crossai_skip_validation.py`) |
-| 8 | Reflector spawn syntax error (`vg-reflector` as subagent_type) | `211b889` — concrete `Agent(subagent_type="general-purpose")` block |
+## v2.50.0 — VG harness R6+R7+R8+R9+Task5 closed-loop integrity (PR #108)
 
-Plus HOTFIX A (`2b4c230`) — `PreToolUse-mark-step` injects TodoWrite UI auto-sync reminder.
+Minor release. Squash-merge of **PR #108** delivering production hardening for native tasklist enforcement, mutating-tool gates, CrossAI skip validation, reflector spawning, and the first CrossAI multi-stage/multi-primary design + M1 infrastructure plan. This is a harness integrity release: the main theme is closing the remaining AI bypass paths seen during PrintwayV3 dogfood runs.
 
-### Codex runtime parity hardening (`eef449e`)
+### Fixed
 
-Symmetric extension of HOTFIX session 2 logic to Codex runtime: adapter LOCK in `cmd_tasklist_projected` rejects `("claude", "fallback")` when `VG_RUNTIME=codex` detected. Defense in depth with the existing Claude-side lock.
+- **Claude adapter evidence gate** — `vg-orchestrator tasklist-projected --adapter claude` now requires the native TodoWrite evidence file written by the PostToolUse hook. The orchestrator can no longer mark tasklist projection complete without a real TodoWrite call.
+- **Claude Code adapter lock** — when `CLAUDECODE=1`, fallback/codex adapters are rejected for tasklist projection. `--adapter` now defaults to `auto`, resolving to `claude` in Claude Code and `fallback` elsewhere.
+- **mark-step gate parity** — PreToolUse Bash enforcement now covers both `step-active` and `mark-step`, blocking direct marker updates until signed tasklist evidence exists.
+- **TodoWrite UI sync reminder** — `vg-orchestrator mark-step <ns> <step>` emits non-blocking additional context reminding the model to refresh the native TodoWrite UI after backend step changes.
+- **Universal mutating-tool gate** — Write/Edit/MultiEdit/NotebookEdit paths now deny source mutations during an active VG run until tasklist evidence exists, while allowing `.vg/` harness state writes.
+- **Tasklist match coverage** — signed evidence must match the contract checklist, not just satisfy depth. Missing/extra task IDs are surfaced in the block diagnostic.
+- **CrossAI skip anti-rationalization** — `skip-*-crossai*` overrides are fact-checked against `vg.config.md` and installed CLIs before logging override debt; build verification re-checks stale skip overrides at run-complete.
+- **Blueprint reflector spawn** — blueprint close now uses the proven `general-purpose` agent + `Use skill: vg-reflector` pattern instead of an invalid `vg-reflector` subagent type.
+- **Codex hook fixture hardening** — hook regression fixtures now include `adapter="claude"` where host `CLAUDECODE=1` inheritance would otherwise trigger adapter-spoof blocks.
 
-### Gemini-Native /vg:review pipeline design (Plan G1) — design only, not yet implemented
+### Added
 
-`docs/superpowers/specs/2026-05-06-gemini-review-pipeline-design.md` ships in this release as a green-field design for porting `/vg:review` to run with Gemini family models (3.1-pro / 2.5-flash / 3.1-flash-lite) as a third runtime alongside Claude and Codex. Architecture mirrors the Codex precedent (parallel skill mirror, env-var branching, subprocess-CLI spawn contract). Implementation deferred to a follow-up plan; spec self-reviewed and committed for transparency.
+- **Gemini fit report** — documents six appropriate Gemini touchpoints: long-context aggregation, multimodal design checks, CrossAI verification, test replay, high-volume scanners, and reflector/bootstrap synthesis.
+- **CrossAI multi-stage multi-primary design** — 26 decisions covering phased rollout, `crossai.policy`, stage registry, Gemini+Codex parallel primaries, Claude adjudication, Codex 2-pass split, findings.v2 schema, telemetry, health output, and rollout strategy.
+- **CrossAI M1 infrastructure plan** — 13-task TDD plan for shared CrossAI config/library infrastructure, stage wrappers, init/migrate commands, and template extension without changing existing build CrossAI behavior yet.
 
-### Plan M1 (CrossAI infrastructure) — design only
+### Internal
 
-`docs/superpowers/plans/2026-05-06-crossai-m1-infrastructure.md` (slim index + 13 task splits) ships in this release as the implementation plan for M1 of the multi-stage multi-primary CrossAI design. Touches: `crossai_config.py` rename + extend, new `crossai_loop.py` library, refactor existing build wrapper, new scope/blueprint wrappers, orchestrator init/migrate commands. Implementation deferred; plan ready for `superpowers:subagent-driven-development` or `executing-plans`.
-
-### Audit + research artifacts
-
-- `docs/audits/2026-05-05-gemini-fit-report.md` — 6 touchpoints + 8 anti-fit zones for Gemini integration
-- `docs/superpowers/specs/2026-05-06-crossai-multi-stage-multi-primary-design.md` — 26 architectural decisions across gating policy, runtime selection, consensus pattern, brief inject, iteration, code structure, UX/telemetry, init, rollout, monitoring
-
-### Tests
-
-- 49+ new tests across the chain (orchestrator adapter lock, hook gates, schema, validators, integration)
-- 17/17 hook regression tests pass
-- 32/32 HOTFIX tests pass across 6 test files
-- All R8/R9/Task5 closed-loop tests pass
-
-### Sync
-
-- Sync to PrintwayV3 (146 files updated)
-- All `.claude/scripts/` mirrors byte-identical to source
-- All `.codex/skills/` regenerated with adapter blocks
-
-### Risk + rollback
-
-- Mergeable via clean cherry-pick onto `upstream/main` (rebased before merge — no conflict noise)
-- 488 commits collapsed to 1 squash commit `6ea5362` for clean history
-- Rollback: `git revert 6ea5362` or restore tag `v2.49.3`
-
-### Operator-facing changes
-
-- New env var `CLAUDECODE=1` detection (set unconditionally by Claude Code CLI) — drives adapter LOCK behavior. Operators on Claude Code session see no change; Codex/headless operators may need to set `VG_RUNTIME` explicitly.
-- New `vg-orchestrator` subcommands: `init-crossai`, `migrate-crossai` (defined in M1 plan, implemented in follow-up).
-- `vg.config.md` template gains commented-out `crossai.policy`, `crossai.heuristic_thresholds`, `crossai_clis[].role`, `crossai_stages.{scope,blueprint,build}` sections (M1 implementation).
-- Override `--flag=skip-build-crossai` now fact-checks reason text against `which <cli>` + `crossai_clis` registry — false claims rejected with rc=2.
-
----
+- VERSION + VGFLOW-VERSION + `.claude/VGFLOW-VERSION` -> 2.50.0.
+- Release commit follows PR #108 squash commit `6ea5362`.
+- New/updated tests cover tasklist evidence gating, adapter lock, mark-step reminder/gate, universal mutating-tool denial, CrossAI skip validation, phase profile behavior, reflector spawn correctness, runtime map CRUD depth, and step tracker behavior.
 
 ## v2.49.3 — Bug D universal tasklist + mid-flow context auto-injection (cherry-picks from PrintwayV3 dogfood follow-ups)
 

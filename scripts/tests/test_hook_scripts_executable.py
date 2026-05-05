@@ -10,6 +10,7 @@ HOOKS = [
     "scripts/hooks/vg-pre-tool-use-agent.sh",
     "scripts/hooks/vg-post-tool-use-todowrite.sh",
     "scripts/hooks/vg-stop.sh",
+    "scripts/hooks/vg-run-bash-hook.py",
     "scripts/hooks/install-hooks.sh",
 ]
 
