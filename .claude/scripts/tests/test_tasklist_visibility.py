@@ -292,6 +292,24 @@ def test_codex_plan_window_stays_compact_in_contract(tmp_path, monkeypatch):
     assert "tasklist-contract.json" in data["native_adapters"]["codex"]
 
 
+def test_blueprint_and_review_codex_projection_stays_compact_in_instructions():
+    """Command bodies must not override the Codex adapter with full hierarchy."""
+    source_root = REPO_ROOT / "commands" / "vg"
+    blueprint_preflight = (
+        source_root / "_shared" / "blueprint" / "preflight.md"
+    ).read_text(encoding="utf-8")
+    review = (source_root / "review.md").read_text(encoding="utf-8")
+
+    assert "Codex CLI: consume `codex_plan_window`" in blueprint_preflight
+    assert "NOT paste all `projection_items[]` into Codex `update_plan`" in blueprint_preflight
+    assert "--adapter auto" in blueprint_preflight
+    assert "--adapter <auto|claude|codex|fallback>" not in blueprint_preflight
+
+    assert "Codex MUST keep the visible plan compact" in review
+    assert "project only a compact plan window from `codex_plan_window`" in review
+    assert "do not create one visible\n  item per `projection_items[]` row" in review
+    assert "--adapter <auto|claude|codex|fallback>" not in review
+
 def _load_emit_tasklist_module():
     import importlib.util
 
