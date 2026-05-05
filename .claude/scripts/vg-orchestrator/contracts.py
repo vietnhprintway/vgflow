@@ -319,10 +319,6 @@ _PROFILE_REQUIRED_ARTIFACTS = {
                   "API-DOCS.md",
                   "TEST-GOALS.md", "SUMMARY.md", "DISCUSSION-LOG.md",
                   "api-contract-precheck.txt"},
-    "cli-tool":  {"SPECS.md", "CONTEXT.md", "PLAN.md", "API-CONTRACTS.md",
-                  "TEST-GOALS.md", "SUMMARY.md", "DISCUSSION-LOG.md"},
-    "library":   {"SPECS.md", "CONTEXT.md", "PLAN.md", "TEST-GOALS.md",
-                  "SUMMARY.md", "DISCUSSION-LOG.md"},
     "infra":     {"SPECS.md", "PLAN.md", "SUMMARY.md"},
     "hotfix":    {"SPECS.md", "PLAN.md", "SUMMARY.md"},
     "bugfix":    {"SPECS.md", "PLAN.md", "SUMMARY.md"},
@@ -351,18 +347,10 @@ def detect_phase_profile(phase: str) -> str:
     fm_match = _re.match(r"^---\s*\n(.+?)\n---\s*\n", text, _re.DOTALL)
     if fm_match:
         fm = fm_match.group(1)
-        profile_m = _re.search(r"^\s*profile\s*:\s*[\"']?([\w-]+)",
-                               fm, _re.MULTILINE)
-        platform_m = _re.search(r"^\s*platform\s*:\s*[\"']?([\w-]+)",
-                                fm, _re.MULTILINE)
-        profile = profile_m.group(1).lower() if profile_m else ""
-        platform = platform_m.group(1).lower() if platform_m else ""
-        if profile and profile != "feature" and profile in _PROFILE_REQUIRED_ARTIFACTS:
-            return profile
-        if platform and platform in _PROFILE_REQUIRED_ARTIFACTS:
-            return platform
-        if profile and profile in _PROFILE_REQUIRED_ARTIFACTS:
-            return profile
+        m = _re.search(r"^\s*profile\s*:\s*[\"']?(\w+)",
+                       fm, _re.MULTILINE)
+        if m and m.group(1).lower() in _PROFILE_REQUIRED_ARTIFACTS:
+            return m.group(1).lower()
 
     plan = phase_dir / "PLAN.md"
     test_goals = phase_dir / "TEST-GOALS.md"
@@ -526,15 +514,12 @@ def normalize_telemetry(items: list) -> list[dict]:
     v2.5 extension (anti-forge patch):
     - required_unless_flag: str — check waived when flag appears in run_args.
       Closes gap where AI touched marker but skipped actual CrossAI invoke.
-    - severity: "block" (default) | "warn" — warn emits telemetry event
-      `contract.telemetry_warn` instead of a run-complete violation.
     """
     result = []
     for item in items or []:
         if isinstance(item, str):
             result.append({"event_type": item, "min_count": 1,
-                           "required_unless_flag": None,
-                           "severity": "block"})
+                           "required_unless_flag": None})
         elif isinstance(item, dict) and "event_type" in item:
             result.append({
                 "event_type": item["event_type"],
@@ -542,6 +527,5 @@ def normalize_telemetry(items: list) -> list[dict]:
                 "min_count": int(item.get("min_count", 1)),
                 "must_pair_with": item.get("must_pair_with"),
                 "required_unless_flag": item.get("required_unless_flag"),
-                "severity": item.get("severity", "block"),
             })
     return result

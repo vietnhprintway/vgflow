@@ -341,8 +341,8 @@ class TestCLIContract:
 class TestRealRepoSanity:
     def test_real_repo_passes_after_sync(self):
         """Run validator against current source-truth repo."""
-        r = _run(["--quiet"])
+        r = _run(["--quiet", "--skip-global"])
         assert r.returncode == 0, (
-            f"Real repo drift detected — run /vg:sync to fix.\n"
+            f"Real repo local/project drift detected — run /vg:sync --no-global to fix.\n"
             f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
         )

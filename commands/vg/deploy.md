@@ -144,12 +144,21 @@ case "$BUILD_STATUS" in
     ;;
 esac
 
-# session lifecycle + run-start
-${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator run-start vg:deploy "${PHASE_NUMBER}" "${ARGUMENTS}" 2>&1 | tail -1 || true
+# session lifecycle + run-start. Do not swallow failures: a started run
+# without a tasklist contract is worse than a hard stop.
+RUN_START_OUT="$(${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator run-start vg:deploy "${PHASE_NUMBER}" "${ARGUMENTS}" 2>&1)"
+RUN_START_RC=$?
+printf '%s\n' "$RUN_START_OUT"
+if [ "$RUN_START_RC" -ne 0 ]; then
+  echo "⛔ vg-orchestrator run-start failed for vg:deploy ${PHASE_NUMBER}" >&2
+  exit "$RUN_START_RC"
+fi
+RUN_ID="$(printf '%s\n' "$RUN_START_OUT" | tail -1)"
+export RUN_ID
 
 ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
   "phase.deploy_started" --actor "orchestrator" --outcome "INFO" \
-  --payload "{\"phase\":\"${PHASE_NUMBER}\",\"args\":\"${ARGUMENTS}\"}" 2>/dev/null || true
+  --payload "{\"phase\":\"${PHASE_NUMBER}\",\"args\":\"${ARGUMENTS}\"}"
 
 # Task 44b — tasklist projection enforcement: emit the deploy taskboard so
 # user sees planned steps and tasklist-contract.json is written for the
@@ -158,16 +167,37 @@ ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
 ${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
   --command "vg:deploy" \
   --profile "${PROFILE:-web-fullstack}" \
-  --phase "${PHASE_NUMBER:-unknown}" 2>&1 | head -40 || true
+  --phase "${PHASE_NUMBER:-unknown}"
 
 # See `_shared/lib/tasklist-projection-instruction.md` for the full
-# projection contract. After TodoWrite, AI MUST call:
-#   ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator tasklist-projected --adapter claude
-# (or --adapter codex / --adapter fallback). Until evidence exists, every
-# subsequent `step-active` is BLOCKED by the PreToolUse Bash hook.
-
-(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER}" "0_parse_and_validate" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/0_parse_and_validate.done"
+# projection contract. After native tasklist projection, AI MUST call:
+#   ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator tasklist-projected --adapter auto
+# (`auto` resolves to `claude` or `codex`). Until evidence exists, every
+# subsequent `step-active` / `mark-step` is BLOCKED by the PreToolUse Bash hook.
+# Do not mark 0_parse_and_validate in this Bash call. First project TodoWrite,
+# then run:
+#   ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator mark-step deploy 0_parse_and_validate
 ```
+
+### Step 0b — Native tasklist projection (mandatory, immediate)
+
+Before `0a_env_select_and_confirm`, replace any stale native tasklist with the
+contract for this run:
+
+1. Read `.vg/runs/${RUN_ID}/tasklist-contract.json`.
+2. Claude Code: call `TodoWrite` once with every `projection_items[]` entry,
+   preserving group headers and `↳` sub-items, replacing the whole old list.
+3. Codex CLI: update the compact plan window from `codex_plan_window`:
+   active group/step first, next 2-3 pending, completed groups collapsed,
+   plus `+N pending` if needed.
+4. Run:
+   ```bash
+   ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator tasklist-projected --adapter auto
+   ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator mark-step deploy 0_parse_and_validate
+   ```
+
+If `tasklist-projected` fails, stop and fix projection. Do not ask deploy env
+or run deploy commands until this returns 0.
 </step>
 
 <step name="0a_env_select_and_confirm">
@@ -464,6 +494,13 @@ ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
 
 <step name="complete">
 ## Final — mark + run-complete
+
+Before `run-complete`, close the native tasklist:
+- Claude Code: mark every deploy checklist item completed via `TodoWrite`,
+  then clear the list if supported; otherwise replace it with one completed
+  sentinel: `vg:deploy phase ${PHASE_NUMBER} complete`.
+- Codex CLI: update the compact plan to completed/sentinel so no previous
+  workflow list remains visible.
 
 ```bash
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER}" "complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/complete.done"

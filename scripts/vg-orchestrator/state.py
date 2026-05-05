@@ -45,9 +45,35 @@ def _session_id_from_session_context() -> str | None:
     if not isinstance(ctx, dict):
         return None
 
+    def _ctx_matches_run(run: dict | None) -> bool:
+        if not _has_run_id(run):
+            return False
+        run_id = run.get("run_id")
+        if _is_run_terminal(run_id):
+            return False
+        ctx_run_id = ctx.get("run_id")
+        if isinstance(ctx_run_id, str) and ctx_run_id and run_id != ctx_run_id:
+            return False
+        ctx_sid = ctx.get("session_id")
+        run_sid = run.get("session_id")
+        if (
+            isinstance(ctx_sid, str) and ctx_sid
+            and isinstance(run_sid, str) and run_sid
+            and run_sid != ctx_sid
+        ):
+            return False
+        for key in ("command", "phase"):
+            ctx_value = ctx.get(key)
+            run_value = run.get(key)
+            if ctx_value and run_value and str(ctx_value) != str(run_value):
+                return False
+        return True
+
     ctx_sid = ctx.get("session_id")
     if isinstance(ctx_sid, str) and ctx_sid:
-        return ctx_sid
+        run = _read_json(_active_run_path(ctx_sid))
+        if _ctx_matches_run(run):
+            return ctx_sid
 
     ctx_run_id = ctx.get("run_id")
     if not isinstance(ctx_run_id, str) or not ctx_run_id:
@@ -56,21 +82,11 @@ def _session_id_from_session_context() -> str | None:
     if ACTIVE_RUNS_DIR.exists():
         for f in sorted(ACTIVE_RUNS_DIR.glob("*.json")):
             run = _read_json(f)
-            if (
-                isinstance(run, dict)
-                and run.get("run_id") == ctx_run_id
-                and isinstance(run.get("session_id"), str)
-                and run.get("session_id")
-            ):
+            if _ctx_matches_run(run) and isinstance(run.get("session_id"), str) and run.get("session_id"):
                 return run["session_id"]
 
     legacy = _read_json(LEGACY_CURRENT_RUN)
-    if (
-        isinstance(legacy, dict)
-        and legacy.get("run_id") == ctx_run_id
-        and isinstance(legacy.get("session_id"), str)
-        and legacy.get("session_id")
-    ):
+    if _ctx_matches_run(legacy) and isinstance(legacy.get("session_id"), str) and legacy.get("session_id"):
         return legacy["session_id"]
 
     return None

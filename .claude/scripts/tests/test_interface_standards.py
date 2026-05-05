@@ -122,57 +122,6 @@ def test_generator_writes_phase_local_standard_for_api_ui(tmp_path: Path) -> Non
     assert "Request failed with status" in (phase / "INTERFACE-STANDARDS.md").read_text(encoding="utf-8")
 
 
-def test_cli_surface_inference_ignores_out_of_scope_mentions(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    phase = _phase(repo, "1-codex-fixture-cli-health")
-    phase.joinpath("SPECS.md").write_text(
-        "# SPECS\n\n"
-        "## Goal\n\n"
-        "Provide a dependency-free CLI health command with `--json` output.\n\n"
-        "## Scope\n\n"
-        "- Standardize stdout, stderr, exit codes, and `--json` automation output.\n\n"
-        "## Out of Scope\n\n"
-        "- HTTP API endpoints, frontend pages, mobile screens, and database behavior.\n",
-        encoding="utf-8",
-    )
-    phase.joinpath("CONTEXT.md").write_text(
-        "# Context\n\n"
-        "## Summary\n\n"
-        "- HTTP endpoints noted: 0\n"
-        "- UI components noted: 0\n"
-        "- Test scenarios noted: 3\n\n"
-        "### P1.D-03: CLI contract\n\n"
-        "There is no HTTP API. Invalid flags return nonzero and write a concise "
-        "stable message to stderr.\n",
-        encoding="utf-8",
-    )
-
-    gen = _run([
-        sys.executable, str(GENERATOR),
-        "--phase-dir", str(phase),
-        "--profile", "cli-tool",
-        "--force",
-    ], repo)
-
-    assert gen.returncode == 0, gen.stderr
-    payload = json.loads((phase / "INTERFACE-STANDARDS.json").read_text(encoding="utf-8"))
-    assert payload["surfaces"] == {
-        "api": False,
-        "frontend": False,
-        "cli": True,
-        "mobile": False,
-    }
-
-    val = _run([
-        sys.executable, str(VALIDATOR),
-        "--phase-dir", str(phase),
-        "--profile", "cli-tool",
-        "--no-scan-source",
-    ], repo)
-    assert val.returncode == 0, val.stdout + val.stderr
-    assert _payload(val)["verdict"] == "PASS"
-
-
 def test_interface_validator_blocks_missing_standard_for_api_phase(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     phase = _phase(repo)
@@ -266,28 +215,16 @@ def test_workflow_commands_wire_interface_standard_and_error_lens() -> None:
     specs = (commands / "specs.md").read_text(encoding="utf-8")
     blueprint = (commands / "blueprint.md").read_text(encoding="utf-8")
     build = (commands / "build.md").read_text(encoding="utf-8")
-    build_waves = (
-        commands / "_shared" / "build" / "waves-delegation.md"
-    ).read_text(encoding="utf-8")
     review = (commands / "review.md").read_text(encoding="utf-8")
     test = (commands / "test.md").read_text(encoding="utf-8")
-    test_preflight = (
-        commands / "_shared" / "test" / "preflight.md"
-    ).read_text(encoding="utf-8")
     tasklist = (SCRIPT_ROOT / "emit-tasklist.py").read_text(encoding="utf-8")
 
     assert "write_interface_standards" in specs
     assert "INTERFACE-STANDARDS.md" in blueprint
-    assert (
-        "<interface_standards_context>" in build
-        or "<interface_standards_context>" in build_waves
-    )
+    assert "<interface_standards_context>" in build
     assert "phase2_9_error_message_runtime" in review
     assert "verify-error-message-runtime.py" in review
-    assert (
-        "verify-interface-standards.py" in test
-        or "verify-interface-standards.py" in test_preflight
-    )
+    assert "verify-interface-standards.py" in test
     assert "Specs And Interface Standards" in tasklist
     assert "phase2_9_error_message_runtime" in tasklist
 

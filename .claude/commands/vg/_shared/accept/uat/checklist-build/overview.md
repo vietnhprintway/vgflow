@@ -27,25 +27,6 @@ Read `delegation.md` to get the input/output contract. Then call:
 Agent(subagent_type="vg-accept-uat-builder", prompt=<built from delegation>)
 ```
 
-### Codex runtime spawn path
-
-If the runtime is Codex, apply
-`commands/vg/_shared/codex-spawn-contract.md` instead of calling the
-Claude-only `Agent(...)` syntax:
-
-1. Render `delegation.md` into
-   `${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-accept-uat-builder.prompt.md`.
-2. Run `codex-spawn.sh --tier executor --sandbox workspace-write
-   --spawn-role vg-accept-uat-builder --spawn-id vg-accept-uat-builder` with
-   `--out ${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-accept-uat-builder.json`.
-3. Set `SUBAGENT_OUTPUT="$(cat "$OUT_FILE")"` and run output validation
-   unchanged.
-4. Treat missing helper, missing Codex CLI, non-zero exit, empty output,
-   malformed JSON, missing checklist file, or invalid section counts as a
-   HARD BLOCK.
-
-Do NOT build the UAT checklist inline on Codex.
-
 The subagent uses `vg-load --phase ${PHASE_NUMBER} --artifact goals --list`
 for TEST-GOALS Layer-1 split (NOT flat TEST-GOALS.md — Phase F Task 30
 absorption). Other artifacts stay flat (KEEP-FLAT allowlist: CONTEXT.md,

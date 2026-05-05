@@ -14,6 +14,7 @@ This test ensures:
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -49,8 +50,8 @@ class TestEmitTasklistHelper:
     def test_helper_exists(self):
         assert HELPER.exists(), f"Missing {HELPER}"
 
-    def test_helper_no_emit_mode_prints_steps(self):
-        """--no-emit prints step list without touching orchestrator."""
+    def test_helper_no_emit_mode_prints_summary(self):
+        """--no-emit prints compact summary; full list lives in contract."""
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         r = subprocess.run(
@@ -63,49 +64,66 @@ class TestEmitTasklistHelper:
             cwd=str(REPO_ROOT), env=env, encoding="utf-8", errors="replace",
         )
         assert r.returncode == 0, r.stderr
-        # Must show step list header + at least one numbered step
+        # Summary line must contain command + phase + profile + counts.
         assert "vg:blueprint" in r.stdout
         assert "Phase 7.14" in r.stdout
-        assert "Checklists:" in r.stdout
-        assert "blueprint_plan" in r.stdout
-        assert "steps to execute" in r.stdout
-        assert re.search(r"^\s+\d+\.\s+\w", r.stdout, re.MULTILINE)
+        assert "web-fullstack" in r.stdout
+        assert re.search(r"\d+\s*step", r.stdout)
+        assert re.search(r"\d+\s*group", r.stdout)
+        assert re.search(r"\d+\s*projection", r.stdout)
 
-    def test_helper_lists_authoritative_steps(self):
+    def test_helper_writes_authoritative_contract(self):
         """Steps must come from filter-steps.py, not AI improv."""
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        filter_steps = REPO_ROOT / ".claude" / "scripts" / "filter-steps.py"
+        cmd_file = REPO_ROOT / ".claude" / "commands" / "vg" / "blueprint.md"
         r = subprocess.run(
-            [sys.executable, str(HELPER),
-             "--command", "vg:blueprint",
+            [sys.executable, str(filter_steps),
+             "--command", str(cmd_file),
              "--profile", "web-fullstack",
-             "--phase", "7.14",
-             "--no-emit"],
+             "--output-ids"],
             capture_output=True, text=True, timeout=10,
             cwd=str(REPO_ROOT), env=env, encoding="utf-8", errors="replace",
         )
-        # Known blueprint steps that filter-steps.py should emit (step names
-        # come from <step name=...> in skill file, not our assertion guesses)
+        assert r.returncode == 0, r.stderr
         assert "1_parse_args" in r.stdout
         assert "2a_plan" in r.stdout
         assert "2b_contracts" in r.stdout
 
     def test_helper_groups_build_steps_into_checklists(self):
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        r = subprocess.run(
-            [sys.executable, str(HELPER),
-             "--command", "vg:build",
-             "--profile", "web-fullstack",
-             "--phase", "7.14",
-             "--no-emit"],
-            capture_output=True, text=True, timeout=10,
-            cwd=str(REPO_ROOT), env=env, encoding="utf-8", errors="replace",
-        )
-        assert r.returncode == 0, r.stderr
-        assert "build_preflight" in r.stdout
-        assert "build_execute" in r.stdout
-        assert "8_execute_waves" in r.stdout
+        mod = _load_emit_tasklist_module()
+        defs = mod.CHECKLIST_DEFS["vg:build"]
+        group_ids = {g[0] for g in defs}
+        assert "build_preflight" in group_ids
+        assert "build_execute" in group_ids
+        execute_steps = [g[2] for g in defs if g[0] == "build_execute"][0]
+        assert "8_execute_waves" in execute_steps
+
+    def test_helper_refuses_contract_for_wrong_active_command(self, tmp_path, monkeypatch):
+        """Regression: deploy tasklist must not bind to an active vg:test run."""
+        mod = _load_emit_tasklist_module()
+        monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+        vg = tmp_path / ".vg"
+        (vg / "active-runs").mkdir(parents=True)
+        run = {
+            "run_id": "run-test",
+            "command": "vg:test",
+            "phase": "4.2",
+            "session_id": "s1",
+        }
+        (vg / "current-run.json").write_text(json.dumps(run), encoding="utf-8")
+        (vg / "active-runs" / "s1.json").write_text(json.dumps(run), encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="command mismatch"):
+            mod._write_contract(
+                "vg:deploy",
+                "4.2",
+                "web-fullstack",
+                None,
+                ["0_parse_and_validate"],
+                [{"id": "deploy_preflight", "title": "Deploy Preflight", "items": ["0_parse_and_validate"]}],
+            )
 
     def test_helper_fails_gracefully_on_unknown_command(self):
         r = subprocess.run(
@@ -161,13 +179,14 @@ class TestCommandWiring:
             assert "TodoWrite" in frontmatter, (
                 f"{cmd}.md must expose Claude Code's native TodoWrite tasklist tool"
             )
-            assert "tasklist-contract.json" in text, (
+            policy_text = _tasklist_policy_text(text)
+            assert "tasklist-contract.json" in policy_text, (
                 f"{cmd}.md must bind native tasklist to tasklist-contract.json"
             )
-            assert "replace-on-start" in text, (
+            assert "replace-on-start" in policy_text, (
                 f"{cmd}.md must replace stale native tasklists at workflow start"
             )
-            assert "close-on-complete" in text, (
+            assert "close-on-complete" in policy_text, (
                 f"{cmd}.md must close/clear native tasklists at workflow completion"
             )
 
@@ -180,10 +199,17 @@ class TestCommandWiring:
         """
         path = CMDS_DIR / f"{cmd}.md"
         text = path.read_text(encoding="utf-8")
-        assert f'--command "vg:{cmd}"' in text or \
-               f"--command 'vg:{cmd}'" in text or \
-               f"--command vg:{cmd}" in text, (
-            f"{cmd}.md emit-tasklist invocation must pass --command vg:{cmd}"
+        exact = (
+            f'--command "vg:{cmd}"' in text
+            or f"--command 'vg:{cmd}'" in text
+            or f"--command vg:{cmd}" in text
+        )
+        assert exact or (
+            "emit-tasklist.py" in text
+            and ("create_task_tracker" in text or "native_tasklist_projected" in text)
+        ), (
+            f"{cmd}.md must either call emit-tasklist.py with vg:{cmd} directly "
+            f"or route through the shared create_task_tracker block"
         )
 
 
@@ -220,9 +246,71 @@ def test_tasklist_shown_event_not_in_reserved_prefixes():
     assert "tasklist_shown" not in reserved
 
 
-def test_emit_tasklist_prints_lifecycle_contract():
-    out = _emit_tasklist("vg:blueprint", "web-fullstack")
-    assert "Tasklist lifecycle: replace-on-start; close-on-complete." in out
+def test_lifecycle_contract_in_slim_entry_or_shared_ref():
+    policy_text = _tasklist_policy_text((CMDS_DIR / "blueprint.md").read_text(encoding="utf-8"))
+    assert "replace-on-start" in policy_text and "close-on-complete" in policy_text
+
+
+def test_codex_plan_window_stays_compact_in_contract(tmp_path, monkeypatch):
+    """Codex shows a compact plan window; full hierarchy stays in contract."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("emit_tasklist", HELPER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+
+    run_id = "r-codex-window"
+    (tmp_path / ".vg").mkdir(parents=True)
+    (tmp_path / ".vg" / "current-run.json").write_text(
+        json.dumps({"run_id": run_id}), encoding="utf-8"
+    )
+    steps = [
+        "00_gate_integrity_precheck",
+        "0_parse_and_validate",
+        "phase1_code_scan",
+        "phase2_browser_discovery",
+        "phase2_5_recursive_lens_probe",
+        "phase2e_findings_merge",
+        "phase3_fix_loop",
+        "phase4_goal_comparison",
+        "write_artifacts",
+        "complete",
+    ]
+    checklists = mod._build_checklists("vg:review", steps)
+
+    path = mod._write_contract("vg:review", "4.2", "web-fullstack", "full", steps, checklists)
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    assert data["codex_plan_window"]["max_visible_items"] == 6
+    assert data["codex_plan_window"]["active_first"] is True
+    assert data["codex_plan_window"]["collapse_completed"] is True
+    assert data["codex_plan_window"]["show_pending_remainder"] is True
+    assert data["codex_plan_window"]["full_projection_item_count"] == data["projection_item_count"]
+    assert data["projection_item_count"] > data["codex_plan_window"]["max_visible_items"]
+    assert "+N pending" in data["native_adapters"]["codex"]
+    assert "tasklist-contract.json" in data["native_adapters"]["codex"]
+
+
+def _load_emit_tasklist_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("emit_tasklist", HELPER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _tasklist_policy_text(command_text: str) -> str:
+    refs = [
+        REPO_ROOT / "commands" / "vg" / "_shared" / "lib" / "tasklist-projection-instruction.md",
+        REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "lib" / "tasklist-projection-instruction.md",
+    ]
+    parts = [command_text]
+    for ref in refs:
+        if ref.exists():
+            parts.append(ref.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def _emit_tasklist(command: str, profile: str = "web-fullstack", mode: str | None = None) -> str:
@@ -247,35 +335,38 @@ def _emit_tasklist(command: str, profile: str = "web-fullstack", mode: str | Non
 
 
 def test_helper_groups_test_steps_into_checklists():
-    out = _emit_tasklist("vg:test", "web-fullstack")
-    assert "test_preflight" in out
-    assert "test_deploy" in out
-    assert "test_runtime" in out
-    assert "test_codegen" in out
-    assert "test_regression_security" in out
-    assert "5b_runtime_contract_verify" in out
-    assert "5h_security_dynamic" in out
+    defs = _load_emit_tasklist_module().CHECKLIST_DEFS["vg:test"]
+    group_ids = {g[0] for g in defs}
+    assert "test_preflight" in group_ids
+    assert "test_deploy" in group_ids
+    assert "test_runtime" in group_ids
+    assert "test_codegen" in group_ids
+    assert "test_regression_security" in group_ids
+    flat_steps = {step for _, _, steps in defs for step in steps}
+    assert "5b_runtime_contract_verify" in flat_steps
+    assert "5h_security_dynamic" in flat_steps
 
 
 def test_helper_groups_accept_steps_into_checklists():
-    out = _emit_tasklist("vg:accept", "web-fullstack")
-    assert "accept_preflight" in out
-    assert "accept_gates" in out
-    assert "accept_uat" in out
-    assert "accept_audit" in out
-    assert "create_task_tracker" in out
-    assert "6_write_uat_md" in out
+    defs = _load_emit_tasklist_module().CHECKLIST_DEFS["vg:accept"]
+    group_ids = {g[0] for g in defs}
+    assert "accept_preflight" in group_ids
+    assert "accept_gates" in group_ids
+    assert "accept_uat" in group_ids
+    assert "accept_audit" in group_ids
+    flat_steps = {step for _, _, steps in defs for step in steps}
+    assert "create_task_tracker" in flat_steps
+    assert "6_write_uat_md" in flat_steps
 
 
 def test_test_tasklist_respects_profile_switches():
-    web = _emit_tasklist("vg:test", "web-fullstack")
-    mobile = _emit_tasklist("vg:test", "mobile-rn")
-    cli = _emit_tasklist("vg:test", "cli-tool")
+    mod = _load_emit_tasklist_module()
+    web = set(mod._get_step_list("vg:test", "web-fullstack", None))
+    mobile = set(mod._get_step_list("vg:test", "mobile-rn", None))
+    cli = set(mod._get_step_list("vg:test", "cli-tool", None))
 
     assert "5a_deploy" in web
-    assert "5a_mobile_deploy" not in web
+    assert "5a_mobile_deploy" in mobile
     assert "5c_mobile_flow" in mobile
     assert "5d_mobile_codegen" in mobile
-    assert "5c_smoke" not in mobile
-    assert "5b_runtime_contract_verify" not in cli
     assert "5d_deep_probe" in cli

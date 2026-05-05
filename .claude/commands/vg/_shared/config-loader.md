@@ -11,34 +11,18 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # --- Python interpreter detection + version check ---
 # Mac/Linux usually have python3, Windows official installer only puts python on PATH
 PYTHON_BIN=""
-PYTHON_BIN_FALLBACK=""
-for cand in "${PYTHON_BIN:-}" \
-            /opt/homebrew/opt/python@3.12/libexec/bin/python3 \
-            /opt/homebrew/bin/python3 \
-            /usr/local/bin/python3 \
-            python3 python py; do
-  [ -z "$cand" ] && continue
+for cand in python3 python py; do
   if command -v "$cand" >/dev/null 2>&1; then
     # Verify version >= 3.10 (graphify + build-caller-graph.py use 3.10+ syntax)
     VER=$("$cand" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
     MAJOR=${VER%.*}
     MINOR=${VER#*.}
     if [ "$MAJOR" -ge 3 ] && [ "$MINOR" -ge 10 ] 2>/dev/null; then
-      [ -z "$PYTHON_BIN_FALLBACK" ] && PYTHON_BIN_FALLBACK="$cand"
-      # Most VG validators need PyYAML. Prefer an interpreter that has it,
-      # because macOS /usr/bin/python3 commonly passes the version check but
-      # lacks project validator dependencies.
-      if "$cand" -c 'import yaml' >/dev/null 2>&1; then
-        PYTHON_BIN="$cand"
-        break
-      fi
+      PYTHON_BIN="$cand"
+      break
     fi
   fi
 done
-if [ -z "$PYTHON_BIN" ] && [ -n "$PYTHON_BIN_FALLBACK" ]; then
-  PYTHON_BIN="$PYTHON_BIN_FALLBACK"
-  echo "⚠ Python 3.10+ found but PyYAML missing for detected candidates; validators may fail until PyYAML is installed."
-fi
 if [ -z "$PYTHON_BIN" ]; then
   echo "⛔ No Python 3.10+ found. Tried: python3, python, py. Install from https://python.org"
   exit 1
@@ -631,14 +615,14 @@ vg_config_get() {
   [ ! -f "$config" ] && { echo "$default"; return; }
   local top="${path%%.*}" field="${path#*.}"
   if [ "$top" = "$field" ]; then
-    local val=$(awk -v k="^${top}:" '$0 ~ k { sub(/^[^:]+:[[:space:]]*/,""); sub(/[[:space:]]+#.*$/,""); gsub(/["'\''\r]/,""); gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit }' "$config" 2>/dev/null)
+    local val=$(awk -v k="^${top}:" '$0 ~ k { sub(/^[^:]+:[[:space:]]*/,""); gsub(/["]/,""); print; exit }' "$config" 2>/dev/null)
     echo "${val:-$default}"; return
   fi
   local val=$(awk -v t="^${top}:" -v f="^[[:space:]]+${field}:" '
     $0 ~ t {in_block=1; next}
     in_block && /^[a-z_]/ {in_block=0}
     in_block && $0 ~ f {
-      sub(/^[^:]+:[[:space:]]*/,""); sub(/[[:space:]]+#.*$/,""); gsub(/["'\''\r]/,""); gsub(/^[[:space:]]+|[[:space:]]+$/,""); print; exit
+      sub(/^[^:]+:[[:space:]]*/,""); gsub(/["\r]/,""); print; exit
     }
   ' "$config" 2>/dev/null)
   echo "${val:-$default}"
@@ -657,7 +641,7 @@ vg_config_get_array() {
     in_top && /^[a-z_]/ {in_top=0}
     in_top && $0 ~ f {in_field=1; next}
     in_field && /^[[:space:]]+-[[:space:]]/ {
-      sub(/^[[:space:]]+-[[:space:]]*/,""); sub(/[[:space:]]+#.*$/,""); gsub(/["'\''\r]/,""); gsub(/^[[:space:]]+|[[:space:]]+$/,""); print
+      sub(/^[[:space:]]+-[[:space:]]*/,""); gsub(/["\r]/,""); print
       next
     }
     in_field && !/^[[:space:]]+-/ {in_field=0}

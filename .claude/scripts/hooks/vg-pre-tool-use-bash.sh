@@ -11,25 +11,53 @@ cmd_text="$(printf '%s' "$input" | python3 -c 'import json,sys; print(json.load(
 session_id="${CLAUDE_HOOK_SESSION_ID:-default}"
 run_file=".vg/active-runs/${session_id}.json"
 if [ ! -f "$run_file" ] && [ "${VG_RUNTIME:-}" = "codex" ]; then
-  ctx_session="$(
+  ctx_run_file="$(
     python3 - <<'PY' 2>/dev/null || true
 import json
 from pathlib import Path
+
+def safe(s):
+    return "".join(c for c in str(s or "") if c.isalnum() or c in "-_") or "unknown"
+
+def read(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except Exception:
+        return None
+
+def matches(ctx, run):
+    if not isinstance(run, dict) or not run.get("run_id"):
+        return False
+    if ctx.get("run_id") and run.get("run_id") != ctx.get("run_id"):
+        return False
+    if ctx.get("session_id") and run.get("session_id") and str(run.get("session_id")) != str(ctx.get("session_id")):
+        return False
+    for key in ("command", "phase"):
+        if ctx.get(key) and run.get(key) and str(ctx.get(key)) != str(run.get(key)):
+            return False
+    return True
+
 p = Path(".vg/.session-context.json")
 if not p.exists():
     raise SystemExit(0)
 try:
-    sid = json.loads(p.read_text(encoding="utf-8")).get("session_id") or ""
+    ctx = json.loads(p.read_text(encoding="utf-8")) or {}
 except Exception:
-    sid = ""
-safe = "".join(c for c in sid if c.isalnum() or c in "-_")
-print(safe)
+    raise SystemExit(0)
+paths = []
+sid = ctx.get("session_id")
+if sid:
+    paths.append(Path(".vg/active-runs") / f"{safe(sid)}.json")
+paths.append(Path(".vg/current-run.json"))
+for path in paths:
+    run = read(path)
+    if matches(ctx, run):
+        print(path)
+        break
 PY
   )"
-  if [ -n "$ctx_session" ] && [ -f ".vg/active-runs/${ctx_session}.json" ]; then
-    run_file=".vg/active-runs/${ctx_session}.json"
-  elif [ -f ".vg/current-run.json" ]; then
-    run_file=".vg/current-run.json"
+  if [ -n "$ctx_run_file" ] && [ -f "$ctx_run_file" ]; then
+    run_file="$ctx_run_file"
   fi
 fi
 if [ -f "$run_file" ]; then
@@ -255,8 +283,8 @@ fi
 # When AI calls `vg-orchestrator mark-step <ns> <step>`, marker filesystem
 # is updated automatically but TodoWrite UI doesn't auto-refresh — AI must
 # re-call TodoWrite tool. AI dispatchers frequently forget mid-flow → UI
-# shows stale state. Inject additionalContext reminder so model knows to
-# update TodoWrite after the mark-step succeeds.
+# shows stale state. PreToolUse cannot return additionalContext on current
+# Claude/Codex hook schemas, so emit a stderr reminder only.
 #
 # HOTFIX session 2: only emit reminder when evidence file ALREADY exists
 # (i.e. mark-step is PROCEEDING). When evidence is missing, fall through
@@ -268,29 +296,7 @@ if [[ "$cmd_text" =~ vg-orchestrator[[:space:]]+mark-step[[:space:]]+([A-Za-z0-9
   mark_step_name="${BASH_REMATCH[2]}"
   _early_evidence_path=".vg/runs/${run_id}/.tasklist-projected.evidence.json"
   if [ -f "$run_file" ] && [ -f "$_early_evidence_path" ]; then
-    VG_MS_NS="$mark_step_ns" VG_MS_NAME="$mark_step_name" python3 -c '
-import json, os, sys
-ns = os.environ.get("VG_MS_NS", "")
-step = os.environ.get("VG_MS_NAME", "")
-addl = (
-    f"After this `mark-step` succeeds, call TodoWrite tool to sync UI:\n"
-    f"  - Find item matching id `{step}` (or namespace:{ns}/{step}) in current todos[]\n"
-    f"  - Set its status to `completed`\n"
-    f"  - Set the next pending item to `in_progress`\n"
-    f"  - Reorder todos[] so active group + in_progress sub-step appear FIRST\n"
-    f"  - Pass full updated todos[] array (TodoWrite is replacement, not append)\n\n"
-    f"Reason: VG marker filesystem is updated by mark-step but Claude Code "
-    f"TodoWrite UI does NOT auto-refresh from filesystem state. Forgetting "
-    f"this update leaves the user seeing stale tasklist (Bug observed in "
-    f"PV3 build 4.2 dogfood). HOTFIX A enforces this reminder."
-)
-sys.stdout.write(json.dumps({
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "additionalContext": addl,
-  }
-}))
-' 2>/dev/null || true
+    printf "VG TodoWrite reminder: after mark-step %s/%s succeeds, update native task UI: complete this step, set next pending in_progress, keep active group first.\\n" "$mark_step_ns" "$mark_step_name" >&2
     exit 0
   fi
   # Evidence missing — do NOT exit here, fall through to evidence gate
@@ -340,6 +346,18 @@ emit_block() {
   local gate_id="PreToolUse-tasklist"
   local block_dir=".vg/blocks/${run_id}"
   local block_file="${block_dir}/${gate_id}.md"
+  local projection_adapter="auto"
+  local projection_step="Call the native tasklist/plan tool with one entry per \`items[]\` row."
+  local projection_resolution="tasklist projected, evidence regenerated"
+  if [ "${VG_RUNTIME:-${VG_PROVIDER:-}}" = "codex" ]; then
+    projection_adapter="codex"
+    projection_step="Project the Codex tasklist/plan with one entry per \`items[]\` row."
+    projection_resolution="Codex tasklist projected, evidence regenerated"
+  elif [ "${CLAUDECODE:-}" = "1" ] || [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    projection_adapter="claude"
+    projection_step="Call the \`TodoWrite\` tool with one entry per \`items[]\` row."
+    projection_resolution="TodoWrite called, evidence regenerated"
+  fi
 
   # Full diagnostic written to file (AI reads on demand, not pasted to chat).
   mkdir -p "$block_dir" 2>/dev/null
@@ -356,10 +374,10 @@ emit_block() {
     echo "1. Ensure \`${contract_path}\` exists. If missing, run the command's"
     echo "   \`emit-tasklist.py\` preflight block first."
     echo "2. Read \`${contract_path}\` (parse \`checklists[]\`)."
-    echo "3. Call the \`TodoWrite\` tool with one entry per \`items[]\` row."
+    echo "3. ${projection_step}"
     echo "4. Run:"
     echo "   \`\`\`bash"
-    echo "   python3 .claude/scripts/vg-orchestrator tasklist-projected --adapter claude"
+    echo "   python3 .claude/scripts/vg-orchestrator tasklist-projected --adapter ${projection_adapter}"
     echo "   \`\`\`"
     echo "   This writes \`.tasklist-projected.evidence.json\` so subsequent"
     echo "   step-active calls pass this hook."
@@ -375,7 +393,7 @@ emit_block() {
     echo "\`\`\`"
     echo "vg-orchestrator emit-event vg.block.handled \\"
     echo "  --gate ${gate_id} \\"
-    echo "  --resolution \"TodoWrite called, evidence regenerated\""
+    echo "  --resolution \"${projection_resolution}\""
     echo "\`\`\`"
     echo ""
     echo "If this gate blocked ≥3 times this run, MUST call AskUserQuestion instead of retrying."
@@ -552,10 +570,9 @@ esac
 # evidence adapter spoofing. AI was passing `--adapter fallback` to satisfy
 # the evidence-file gate without ever calling Claude Code's TodoWrite tool —
 # UI never rendered, but hook accepted the evidence. Now require adapter to
-# match the runtime: if CLAUDE_SESSION_ID is set (Claude Code session),
-# evidence.adapter MUST be "claude". Codex sessions detect via different
-# env (handled separately).
-if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+# match the runtime. Do NOT key this on CLAUDE_SESSION_ID: Codex wrappers reuse
+# that env var only as a compatibility session transport.
+if { [ "${VG_RUNTIME:-${VG_PROVIDER:-}}" != "codex" ] && { [ "${CLAUDECODE:-}" = "1" ] || [ -n "${CLAUDE_SESSION_ID:-}" ]; }; }; then
   adapter_check_result="$(python3 - "$evidence_path" <<'PY'
 import json, sys
 ev = json.loads(open(sys.argv[1]).read())
@@ -572,6 +589,26 @@ PY
     adapter_mismatch*)
       bad_adapter="${adapter_check_result#adapter_mismatch|}"
       emit_block "tasklist evidence adapter='${bad_adapter}' but Claude Code session requires adapter='claude'. AI must call the TodoWrite tool (not just emit-tasklist text), then run \`vg-orchestrator tasklist-projected --adapter claude\`. Using --adapter fallback satisfies the evidence file but skips Claude Code's native TodoWrite UI rendering."
+      ;;
+    *) emit_block "adapter check failed: ${adapter_check_result}" ;;
+  esac
+elif [ "${VG_RUNTIME:-${VG_PROVIDER:-}}" = "codex" ]; then
+  adapter_check_result="$(python3 - "$evidence_path" <<'PY'
+import json, sys
+ev = json.loads(open(sys.argv[1]).read())
+payload = ev.get("payload", {}) if isinstance(ev, dict) else {}
+adapter = payload.get("adapter", "")
+if adapter == "codex":
+    print("ok", end="")
+else:
+    print(f"adapter_mismatch|{adapter}", end="")
+PY
+)"
+  case "$adapter_check_result" in
+    ok) ;;
+    adapter_mismatch*)
+      bad_adapter="${adapter_check_result#adapter_mismatch|}"
+      emit_block "tasklist evidence adapter='${bad_adapter}' but Codex runtime requires adapter='codex'. Re-project the Codex tasklist/plan, then run \`vg-orchestrator tasklist-projected --adapter codex\`. Using --adapter fallback or --adapter claude can bypass Codex adapter semantics."
       ;;
     *) emit_block "adapter check failed: ${adapter_check_result}" ;;
   esac

@@ -101,7 +101,6 @@ sys.stdout.write(json.dumps({
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
     "permissionDecisionReason": os.environ.get("VG_HOOK_REASON", ""),
-    "additionalContext": os.environ.get("VG_HOOK_ADDL", ""),
   }
 }))
 ' 2>/dev/null || true

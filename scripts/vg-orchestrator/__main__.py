@@ -13,7 +13,7 @@ Subcommands:
   run-resume
   run-repair [--force]
   emit-event <event_type> [--payload JSON]
-  tasklist-projected --adapter claude|codex|fallback
+  tasklist-projected --adapter auto|claude|codex|fallback
   step-active <step_name>
   mark-step <namespace> <step_name>
   wave-start <wave_n>
@@ -1072,12 +1072,22 @@ def cmd_tasklist_projected(args) -> int:
     #
     # Lock + auto-detect policy:
     #   - CLAUDECODE=1 in env → adapter resolved to "claude" (TodoWrite available)
-    #   - CLAUDECODE unset → adapter resolved to "fallback" (CLI agents)
+    #   - VG_RUNTIME=codex or CODEX_SESSION_ID set → adapter resolved to "codex"
+    #   - unknown headless runtime → adapter resolved to "fallback" (CLI agents)
     #   - --adapter auto (default) → resolved by runtime, no rationalization
     #   - --adapter explicit → validated against runtime, conflict rejected
     is_claude_code_session = os.environ.get("CLAUDECODE") == "1"
+    is_codex_session = (
+        os.environ.get("VG_RUNTIME") == "codex"
+        or bool(os.environ.get("CODEX_SESSION_ID"))
+    )
     if args.adapter == "auto":
-        args.adapter = "claude" if is_claude_code_session else "fallback"
+        if is_claude_code_session:
+            args.adapter = "claude"
+        elif is_codex_session:
+            args.adapter = "codex"
+        else:
+            args.adapter = "fallback"
     if is_claude_code_session and args.adapter in ("codex", "fallback"):
         print(
             "\033[38;5;208mAdapter lock: CLAUDECODE=1 detected — TodoWrite tool IS available.\033[0m",
@@ -1093,6 +1103,22 @@ def cmd_tasklist_projected(args) -> int:
             "  session này\" — FALSE).\n\n"
             "  Fix: call the TodoWrite tool with the contract checklists,\n"
             "  then re-run this command with --adapter claude.",
+            file=sys.stderr,
+        )
+        return 2
+    if is_codex_session and args.adapter in ("claude", "fallback"):
+        print(
+            "\033[38;5;208mAdapter lock: Codex runtime detected — use codex tasklist adapter.\033[0m",
+            file=sys.stderr,
+        )
+        print(
+            f"  Requested adapter: {args.adapter}\n"
+            "  Required adapter:  codex\n\n"
+            "  Reason: Codex owns its compact plan/tasklist projection. "
+            "Falling back to Claude/fallback evidence hides the runtime "
+            "difference and can leave the visible plan stale.\n\n"
+            "  Fix: update the Codex plan window from tasklist-contract.json, "
+            "then re-run this command with --adapter codex.",
             file=sys.stderr,
         )
         return 2

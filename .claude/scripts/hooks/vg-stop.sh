@@ -11,9 +11,8 @@ if [ ! -f "$run_file" ]; then
   exit 0
 fi
 
-# Race-safe JSON parse — tolerate concurrent writes from parallel sessions
-# (mid-rename, partial flush). Fall back to exit 0 silently rather than
-# crashing; the next stop fire will re-evaluate once file settles.
+# Race-safe JSON parse: tolerate concurrent writes from parallel sessions
+# (mid-rename, partial flush). The next Stop fire will re-evaluate once settled.
 parse_field() {
   python3 -c '
 import json, sys
@@ -23,8 +22,8 @@ except (json.JSONDecodeError, FileNotFoundError, KeyError, OSError):
     sys.exit(99)
 ' "$run_file" "$1" 2>/dev/null
 }
-run_id="$(parse_field run_id)" || { echo "▸ vg-stop: run_file unreadable (race or partial write) — skipping" >&2; exit 0; }
-command="$(parse_field command)" || { echo "▸ vg-stop: run_file unreadable (race or partial write) — skipping" >&2; exit 0; }
+run_id="$(parse_field run_id)" || { echo "vg-stop: run_file unreadable; skipping" >&2; exit 0; }
+command="$(parse_field command)" || { echo "vg-stop: run_file unreadable; skipping" >&2; exit 0; }
 db=".vg/events.db"
 
 failures=()

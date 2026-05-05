@@ -136,24 +136,6 @@ Then call:
 Agent(subagent_type="vg-test-codegen", prompt=<rendered template>)
 ```
 
-### Codex runtime spawn path
-
-If the runtime is Codex, apply
-`commands/vg/_shared/codex-spawn-contract.md` instead of calling the
-Claude-only `Agent(...)` syntax:
-
-1. Render `codegen/delegation.md` into
-   `${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-test-codegen.prompt.md`.
-2. Run `codex-spawn.sh --tier executor --sandbox workspace-write
-   --spawn-role vg-test-codegen --spawn-id vg-test-codegen` with
-   `--out ${VG_TMP:-${PHASE_DIR}/.vg-tmp}/codex-spawns/vg-test-codegen.json`.
-3. Set `SUBAGENT_OUTPUT="$(cat "$OUT_FILE")"` and run STEP 5.3 unchanged.
-4. Treat missing helper, missing Codex CLI, non-zero exit, empty output,
-   malformed JSON, missing spec files, or `bindings_satisfied=MISSING` as a
-   HARD BLOCK.
-
-Do NOT generate Playwright specs inline on Codex.
-
 The subagent writes:
 - `${GENERATED_TESTS_DIR}/{phase}-goal-{group}.spec.ts` (READY goals)
 - `${GENERATED_TESTS_DIR}/auto-{goal-id-slug}.spec.ts` (G-AUTO-* / G-CRUD-* skeletons)

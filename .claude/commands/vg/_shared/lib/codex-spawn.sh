@@ -20,10 +20,6 @@ Options:
   --sandbox read-only|workspace-write|danger-full-access
   --cd DIR
   --schema FILE
-  --spawn-role ROLE
-  --spawn-id ID
-  --task-id TASK_ID
-  --wave WAVE_ID
   -h, --help
 EOF
 }
@@ -36,10 +32,6 @@ TIMEOUT_SECONDS="900"
 SANDBOX_MODE="${CODEX_SANDBOX:-workspace-write}"
 WORKDIR="$(pwd)"
 SCHEMA_FILE=""
-SPAWN_ROLE=""
-SPAWN_ID=""
-TASK_ID=""
-WAVE_ID=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -73,22 +65,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --schema|--output-schema)
       SCHEMA_FILE="${2:-}"
-      shift 2
-      ;;
-    --spawn-role)
-      SPAWN_ROLE="${2:-}"
-      shift 2
-      ;;
-    --spawn-id)
-      SPAWN_ID="${2:-}"
-      shift 2
-      ;;
-    --task-id)
-      TASK_ID="${2:-}"
-      shift 2
-      ;;
-    --wave)
-      WAVE_ID="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -162,43 +138,10 @@ command -v codex >/dev/null 2>&1 || {
   exit 127
 }
 
-REPO_ROOT_FOR_SPAWN="$WORKDIR"
-if command -v git >/dev/null 2>&1; then
-  if GIT_ROOT="$(git -C "$WORKDIR" rev-parse --show-toplevel 2>/dev/null)"; then
-    REPO_ROOT_FOR_SPAWN="$GIT_ROOT"
-  fi
-fi
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SPAWN_RECORD_SCRIPT="${REPO_ROOT_FOR_SPAWN}/.claude/scripts/codex-spawn-record.py"
-if [ ! -f "$SPAWN_RECORD_SCRIPT" ]; then
-  SPAWN_RECORD_SCRIPT="${REPO_ROOT_FOR_SPAWN}/scripts/codex-spawn-record.py"
-fi
-if [ ! -f "$SPAWN_RECORD_SCRIPT" ]; then
-  SPAWN_RECORD_SCRIPT="${SCRIPT_DIR}/../../../../scripts/codex-spawn-record.py"
-fi
-if [ -n "$SPAWN_ROLE" ]; then
-  if [ ! -f "$SPAWN_RECORD_SCRIPT" ]; then
-    echo "ERROR: codex-spawn-record.py missing; cannot record required spawn evidence" >&2
-    exit 2
-  fi
-  python3 "$SPAWN_RECORD_SCRIPT" preflight \
-    --repo-root "$REPO_ROOT_FOR_SPAWN" \
-    --role "$SPAWN_ROLE" \
-    --spawn-id "${SPAWN_ID:-}" \
-    --task-id "${TASK_ID:-}" \
-    --wave-id "${WAVE_ID:-}" \
-    --prompt-file "$PROMPT_FILE"
-fi
-
-TIMEOUT_BIN="${VG_TIMEOUT_BIN:-}"
-if [ -z "$TIMEOUT_BIN" ]; then
-  TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
-fi
-if [ -z "$TIMEOUT_BIN" ]; then
-  echo "ERROR: timeout/gtimeout command not found; install GNU coreutils/Git Bash" >&2
+command -v timeout >/dev/null 2>&1 || {
+  echo "ERROR: timeout command not found; install GNU coreutils/Git Bash" >&2
   exit 127
-fi
+}
 
 mkdir -p "$(dirname "$OUT_FILE")"
 
@@ -224,7 +167,7 @@ if [ -n "$SCHEMA_FILE" ]; then
 fi
 
 set +e
-"$TIMEOUT_BIN" "${TIMEOUT_SECONDS}s" codex "${CODEX_ARGS[@]}" - < "$PROMPT_FILE" \
+timeout "${TIMEOUT_SECONDS}s" codex "${CODEX_ARGS[@]}" - < "$PROMPT_FILE" \
   > "$STDOUT_LOG" 2> "$STDERR_LOG"
 EXIT_CODE=$?
 set -e
@@ -243,7 +186,7 @@ if [ "$EXIT_CODE" -ne 0 ]; then
   exit "$EXIT_CODE"
 fi
 
-if [ ! -s "$TMP_OUT" ] || ! LC_ALL=C tr -d '[:space:]' < "$TMP_OUT" | grep -q .; then
+if [ ! -s "$TMP_OUT" ]; then
   rm -f "$TMP_OUT"
   echo "ERROR: codex child produced empty final message" >&2
   echo "stderr: $STDERR_LOG" >&2
@@ -252,21 +195,4 @@ if [ ! -s "$TMP_OUT" ] || ! LC_ALL=C tr -d '[:space:]' < "$TMP_OUT" | grep -q .;
 fi
 
 mv "$TMP_OUT" "$OUT_FILE"
-
-if [ -n "$SPAWN_ROLE" ]; then
-  python3 "$SPAWN_RECORD_SCRIPT" record \
-    --repo-root "$REPO_ROOT_FOR_SPAWN" \
-    --role "$SPAWN_ROLE" \
-    --spawn-id "${SPAWN_ID:-}" \
-    --task-id "${TASK_ID:-}" \
-    --wave-id "${WAVE_ID:-}" \
-    --prompt-file "$PROMPT_FILE" \
-    --out-file "$OUT_FILE" \
-    --stdout-log "$STDOUT_LOG" \
-    --stderr-log "$STDERR_LOG" \
-    --exit-code "$EXIT_CODE" \
-    --tier "$TIER" \
-    --model "$MODEL" \
-    --sandbox "$SANDBOX_MODE"
-fi
 echo "codex child complete: $OUT_FILE"

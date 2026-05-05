@@ -371,6 +371,114 @@ def test_matrix_merger_ignores_none_mutation_evidence(tmp_path: Path) -> None:
     assert "| G-01 | important | ui | READY | browser: 1 steps |" in matrix
 
 
+def test_matrix_merger_parses_shorthand_goal_headings(tmp_path: Path) -> None:
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is required for matrix-merger integration test")
+
+    phase = _phase(tmp_path)
+    _write_goals(
+        phase,
+        (
+            "## G-01: Campaign list renders\n\n"
+            "**Surface:** ui\n\n"
+            "**Success criteria:** Existing campaigns are visible.\n\n"
+            "**Mutation evidence:** none\n"
+        ),
+    )
+    _write_runtime(
+        phase,
+        {
+            "result": "passed",
+            "steps": [{"action": "goto", "url": "/campaigns"}],
+            "network": [{"method": "GET", "url": "/api/campaigns", "status": 200}],
+        },
+    )
+    phase.joinpath(".surface-probe-results.json").write_text("{}", encoding="utf-8")
+    output = phase / "GOAL-COVERAGE-MATRIX.md"
+    runner = tmp_path / "run-matrix-shorthand.sh"
+    runner.write_text(
+        "\n".join(
+            [
+                "set -euo pipefail",
+                f'source "{_shell_path(REPO_ROOT / "commands/vg/_shared/lib/matrix-merger.sh")}"',
+                "PYTHON_BIN=python",
+                (
+                    f'merge_and_write_matrix "{_shell_path(phase)}" '
+                    f'"{_shell_path(phase / "TEST-GOALS.md")}" '
+                    f'"{_shell_path(phase / "RUNTIME-MAP.json")}" '
+                    f'"{_shell_path(phase / ".surface-probe-results.json")}" '
+                    f'"{_shell_path(output)}"'
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [bash, str(runner)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    matrix = output.read_text(encoding="utf-8")
+    assert "VERDICT=PASS" in proc.stdout
+    assert "TOTAL=1" in proc.stdout
+    assert "- **Total goals:** 1" in matrix
+    assert "| G-01 | important | ui | READY | browser: 1 steps |" in matrix
+
+def test_matrix_merger_blocks_zero_parsed_goals(tmp_path: Path) -> None:
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is required for matrix-merger integration test")
+
+    phase = _phase(tmp_path)
+    _write_goals(phase, "# Test Goals\n\nNo parseable goal headings.\n")
+    _write_runtime(phase, {"result": "passed", "steps": []})
+    phase.joinpath(".surface-probe-results.json").write_text("{}", encoding="utf-8")
+    output = phase / "GOAL-COVERAGE-MATRIX.md"
+    runner = tmp_path / "run-matrix-empty.sh"
+    runner.write_text(
+        "\n".join(
+            [
+                "set -euo pipefail",
+                f'source "{_shell_path(REPO_ROOT / "commands/vg/_shared/lib/matrix-merger.sh")}"',
+                "PYTHON_BIN=python",
+                (
+                    f'merge_and_write_matrix "{_shell_path(phase)}" '
+                    f'"{_shell_path(phase / "TEST-GOALS.md")}" '
+                    f'"{_shell_path(phase / "RUNTIME-MAP.json")}" '
+                    f'"{_shell_path(phase / ".surface-probe-results.json")}" '
+                    f'"{_shell_path(output)}"'
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [bash, str(runner)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    matrix = output.read_text(encoding="utf-8")
+    assert "VERDICT=BLOCK" in proc.stdout
+    assert "TOTAL=0" in proc.stdout
+    assert "Coverage gate cannot pass with total=0" in matrix
+
 def test_read_only_goal_does_not_require_mutation_layers(tmp_path: Path) -> None:
     phase = _phase(tmp_path)
     _write_goals(

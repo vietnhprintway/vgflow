@@ -145,7 +145,7 @@ blocking-severity entries from the override-debt register.
 The slim entry STEP 1 calls it; this skill IMPERATIVELY calls TodoWrite
 right after with one todo per `projection_items[]` entry (5 group headers
 + sub-steps with `↳` prefix). Then calls
-`vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>` so
+`vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>` so
 `accept.native_tasklist_projected` event fires.
 
 Lifecycle: `replace-on-start` (first projection replaces stale list) +

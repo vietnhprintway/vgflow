@@ -88,12 +88,6 @@
               "phase": {"type": "string"},
               "min_count": {"type": "integer", "minimum": 1, "default": 1},
               "must_pair_with": {"type": "string"},
-              "severity": {
-                "type": "string",
-                "enum": ["block", "warn"],
-                "default": "block",
-                "description": "'block' = missing telemetry violates contract (default). 'warn' = missing telemetry emits contract.telemetry_warn but run continues. Use for mutually exclusive branches such as approved vs rejected."
-              },
               "required_unless_flag": {
                 "type": "string",
                 "description": "Waive this telemetry requirement when the named CLI flag is present."

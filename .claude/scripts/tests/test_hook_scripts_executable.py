@@ -23,14 +23,7 @@ def test_all_hooks_executable():
 
 def test_helpers_executable():
     for path in ["scripts/vg-orchestrator-emit-evidence-signed.py",
-                 "scripts/vg-state-machine-validator.py",
-                 "scripts/codex-spawn-record.py",
-                 "scripts/codex-hooks-install.py",
-                 "scripts/codex-hooks/vg-codex-spawn-guard.py",
-                 "scripts/codex-hooks/vg-pre-tool-use-bash.py",
-                 "scripts/codex-hooks/vg-pre-tool-use-apply-patch.py",
-                 "scripts/codex-hooks/vg-post-tool-use-bash.py",
-                 "scripts/codex-hooks/vg-stop.py"]:
+                 "scripts/vg-state-machine-validator.py"]:
         p = REPO / path
         assert p.exists()
         assert os.access(str(p), os.X_OK), f"helper not executable: {path}"

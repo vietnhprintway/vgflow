@@ -17,7 +17,7 @@ Codex use the same workflow contracts, but their orchestration primitives differ
 |---|---|---|
 | AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it; prefer Codex-native options such as `codex-inline` when the source prompt distinguishes providers. |
 | Agent(...) / Task | Prefer `commands/vg/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
-| TaskCreate / TaskUpdate / TodoWrite | Native Codex tasklist/plan projection + orchestrator step markers | Use `tasklist-contract.json` as source of truth. After projecting, emit `vg-orchestrator tasklist-projected --adapter codex`; if no native task UI is exposed, use `--adapter fallback` and `run-status --pretty`. |
+| TaskCreate / TaskUpdate / TodoWrite | Compact Codex plan window + orchestrator step markers | Use `tasklist-contract.json` as source of truth. Do not paste the full hierarchy into Codex `update_plan`. Show at most 6 rows: active group/step first, next 2-3 pending steps, completed groups collapsed, and `+N pending`. After projecting, emit `vg-orchestrator tasklist-projected --adapter codex`. |
 | Playwright MCP | Main Codex orchestrator MCP tools, or smoke-tested subagents | If an MCP-using subagent cannot access tools in a target environment, fall back to orchestrator-driven/inline scanner flow. |
 | Graphify MCP | Python/CLI graphify calls | VGFlow's build/review paths already use deterministic scripts where possible. |
 
@@ -41,84 +41,27 @@ in the body below.
 
 ### Codex hook parity
 
-Claude Code and Codex now both have project-local hook substrates. VGFlow
-`sync.sh`/`install.sh` installs `.codex/hooks.json` plus
-`.codex/config.toml` with `[features].codex_hooks = true`. Codex hooks
-wrap the same orchestrator that writes `.vg/events.db`, while command-body
-guards remain mandatory because Codex hook coverage is still tool-path scoped:
+Claude Code has a project-local hook substrate; Codex skills do not receive
+Claude `UserPromptSubmit`, `Stop`, or `PostToolUse` hooks automatically.
+Therefore Codex must execute the lifecycle explicitly through the same
+orchestrator that writes `.vg/events.db`:
 
 | Claude hook | What it does on Claude | Codex obligation |
 |---|---|---|
-| `UserPromptSubmit` -> `vg-entry-hook.py` | Pre-seeds `vg-orchestrator run-start` and `.vg/.session-context.json` before the skill loads | Codex wrapper accepts both `/vg:cmd` and `$vg-cmd`; command-body `vg-orchestrator run-start` is still mandatory and must BLOCK if missing/failing |
-| `PreToolUse` Bash -> `hooks/vg-pre-tool-use-bash.sh` | Blocks `vg-orchestrator step-active` until tasklist projection evidence is signed | Codex wrapper sets `CLAUDE_SESSION_ID`/`CLAUDE_HOOK_SESSION_ID` from Codex `session_id` and forwards to the same gate |
-| `PreToolUse` Write/Edit -> `hooks/vg-pre-tool-use-write.sh` | Blocks direct writes to protected evidence, marker, and event paths | Codex `apply_patch` wrapper at `codex-hooks/vg-pre-tool-use-apply-patch.py` blocks the same protected paths before patch application |
-| `PostToolUse` Bash -> `vg-step-tracker.py` | Tracks marker commands and emits `hook.step_active` telemetry | Codex wrapper forwards Bash results to the same tracker; explicit `vg-orchestrator mark-step` lines remain required |
-| `Stop` -> `vg-verify-claim.py` | Runs `vg-orchestrator run-complete` and blocks false done claims | Codex wrapper runs the same verifier; command-body terminal `vg-orchestrator run-complete` is still required before claiming completion |
+| `UserPromptSubmit` -> `vg-entry-hook.py` | Pre-seeds `vg-orchestrator run-start` and `.vg/.session-context.json` before the skill loads | Treat the command body's explicit `vg-orchestrator run-start` as mandatory; if missing or failing, BLOCK before doing work |
+| `Stop` -> `vg-verify-claim.py` | Runs `vg-orchestrator run-complete` and blocks false done claims | Run the command body's terminal `vg-orchestrator run-complete` before claiming completion; if it returns non-zero, fix evidence and retry |
+| `PostToolUse` edit -> `vg-edit-warn.py` | Warns that command/skill edits require session reload | After editing VG workflow files on Codex, tell the user the current session may still use cached skill text |
+| `PostToolUse` Bash -> `vg-step-tracker.py` | Tracks marker commands and emits `hook.step_active` telemetry | Do not rely on the hook; call explicit `vg-orchestrator mark-step` lines in the skill and preserve marker/telemetry events |
 
 Codex hook parity is evidence-based: `.vg/events.db`, step markers,
 `must_emit_telemetry`, and `run-complete` output are authoritative. A Codex
 run is not complete just because the model says it is complete.
-
-Codex hook processes cannot mutate the environment of later shell tool calls.
-If a command-body shell lacks `CLAUDE_SESSION_ID`, `vg-orchestrator` recovers
-the session from `.vg/.session-context.json` and the matching
-`.vg/active-runs/<session>.json`. Do not create a fresh run when the
-UserPromptSubmit hook already registered the same command/phase.
 
 Before executing command bash blocks from a Codex skill, export
 `VG_RUNTIME=codex`. This is an adapter signal, not a source replacement:
 Claude/unknown runtime keeps the canonical `AskUserQuestion` + Haiku path,
 while Codex maps only the incompatible orchestration primitives to
 Codex-native choices such as `codex-inline`.
-
-Run fenced command-body shell snippets with Bash explicitly, for example
-`/bin/bash -lc '<snippet>'`, instead of the user's login shell. VGFlow source
-commands use Bash semantics such as `[[ ... ]]`, arrays, `BASH_SOURCE`, and
-`set -u`; zsh can misinterpret those snippets and create false failures.
-
-Do not manually retype long command-body heredocs into nested shell strings.
-Prefer deterministic Codex helpers shipped in `.claude/scripts/`. For
-`/vg:blueprint` STEP 3.1, run `codex-vg-env.py` and
-`codex-blueprint-plan-prep.py` exactly as documented in
-`_shared/blueprint/plan-overview.md`; then spawn the planner from the prepared
-prompt. This avoids zsh glob/quote expansion corrupting Python heredocs before
-Bash executes them.
-
-Before running any command-body snippet that calls validators, orchestrator
-helpers, or `${PYTHON_BIN:-python3}`, execute the Python detection block from
-`.claude/commands/vg/_shared/config-loader.md` in that same Bash shell and
-export the selected `PYTHON_BIN`. Do not reset `PYTHON_BIN=python3` after
-detection: on macOS, bare `python3` is often an older interpreter without
-PyYAML, which makes VG validators fail even though a valid Homebrew/Python.org
-interpreter is installed.
-
-Each Codex shell tool call starts with a fresh environment. If a later command
-invokes `.claude/scripts/*`, validators, or `vg-orchestrator`, redetect
-`PYTHON_BIN` or carry the previously detected absolute interpreter into that
-same command. Do not run `python3 .claude/scripts/...` directly for VG
-validators/orchestrator calls.
-
-`vg-orchestrator` command shapes are positional. Use
-`vg-orchestrator step-active <step_name>`,
-`vg-orchestrator mark-step <namespace> <step_name>`, and
-`vg-orchestrator emit-event <event_type> --payload '{...}'`. Do not use
-`step-active <namespace> <step>`, `event --type`, or grouped helper calls
-that mix tasklist projection with the first step marker.
-
-For tasklist projection, Codex must write evidence as soon as
-`tasklist-contract.json` exists: after `emit-tasklist.py`, run
-`vg-orchestrator tasklist-projected --adapter codex` as its own tool call.
-Do not group `tasklist-projected` and `step-active` in one shell command;
-PreToolUse evaluates the entire command before the evidence file exists and
-will block the grouped command. Some command preflights have bootstrap steps
-before `emit-tasklist.py`; only those declared bootstrap steps may run before
-the tasklist contract exists.
-
-For top-level VG commands that include a mandatory `git commit` step, ensure
-the parent Codex session can write Git metadata. Some Codex
-`workspace-write` sandboxes deny `.git/index.lock`; when that happens,
-BLOCK and ask the operator to rerun with a sandbox/profile that permits Git
-metadata writes instead of skipping or forging the commit marker.
 
 ### Codex spawn precedence
 
@@ -170,8 +113,6 @@ For subprocess-based children, use:
 ```bash
 bash .claude/commands/vg/_shared/lib/codex-spawn.sh \
   --tier executor \
-  --spawn-role "<vg-subagent-role>" \
-  --spawn-id "<stable-spawn-id>" \
   --prompt-file "$PROMPT_FILE" \
   --out "$OUT_FILE" \
   --timeout 900 \
@@ -180,19 +121,6 @@ bash .claude/commands/vg/_shared/lib/codex-spawn.sh \
 
 The helper wraps `codex exec`, writes the final message to `--out`, captures
 stdout/stderr beside it, and fails loudly on timeout or empty output.
-When `--spawn-role` is set, it also writes Codex spawn evidence to
-`.vg/runs/<run_id>/codex-spawns/` and appends
-`.vg/runs/<run_id>/.codex-spawn-manifest.jsonl`. Codex Bash hooks block
-heavy-step markers and `wave-complete` when required spawn evidence or
-build wave `.spawn-count.json` is missing.
-
-When creating prompt files for `codex-spawn.sh`, use a single-quoted heredoc
-delimiter such as `cat > "$PROMPT_FILE" <<'EOF'` or write from an existing
-template. Do not use unquoted `<<EOF` for prompts that contain backticks,
-`$...`, command substitutions, or markdown code fences: the shell will
-expand them before Codex sees the prompt and can corrupt the child contract.
-If runtime variables must be injected, prefer a small controlled render step
-that substitutes placeholders after the quoted template is written.
 
 ### Known Codex caveats to design around
 
@@ -212,8 +140,6 @@ process that cannot see browser tools.
 
 Invoke this skill as `$vg-specs`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
-
-
 
 
 
@@ -262,7 +188,7 @@ without ever projecting the tasklist, defeating the universal contract.
 The process preamble below calls it; this skill IMPERATIVELY calls
 TodoWrite right after with one todo per `projection_items[]` entry
 (group headers + sub-steps with `↳` prefix). Then calls
-`vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`
+`vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`
 so `specs.native_tasklist_projected` event fires.
 
 Lifecycle: `replace-on-start` (first projection replaces stale list) +
@@ -327,9 +253,8 @@ Required behavior:
 2. Call `TodoWrite` with one todo per `projection_items[]` entry — full hierarchy
    (group headers + sub-steps with `↳` prefix). Use the entry's `title` verbatim
    as todo `content`.
-3. Call `vg-orchestrator tasklist-projected --adapter claude` (or `codex|fallback`
-   in non-Claude runtimes; Claude Code session adapter MUST be `claude` per Bug L
-   P6 hook check).
+3. Call `vg-orchestrator tasklist-projected --adapter auto`; the orchestrator
+   locks to `claude`, `codex`, or `fallback` from runtime env.
 4. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 ```bash

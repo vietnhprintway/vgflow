@@ -62,7 +62,7 @@ def _run_hook(command: str, env=None):
 def _seed_signed_evidence(repo: Path, payload: dict, key: bytes):
     evidence_path = repo / ".vg/runs/r1/.tasklist-projected.evidence.json"
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"run_id": "r1", "depth_valid": True, **payload}
+    payload = {"run_id": "r1", "depth_valid": True, "match": True, "adapter": "claude", **payload}
     canonical = json.dumps(payload, sort_keys=True).encode()
     sig = hmac.new(key, canonical, hashlib.sha256).hexdigest()
     evidence_path.write_text(json.dumps(

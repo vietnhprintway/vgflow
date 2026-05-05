@@ -178,17 +178,33 @@ def case_entry_non_vg_prompt():
 def case_step_tracker_updates_context():
     """Bash marker hook updates .vg/.session-context.json."""
     context_path = REPO_ROOT / ".vg" / ".session-context.json"
+    current_run_path = REPO_ROOT / ".vg" / "current-run.json"
+    active_run_path = REPO_ROOT / ".vg" / "active-runs" / "selftest.json"
     context_path.parent.mkdir(parents=True, exist_ok=True)
     original = context_path.read_text(encoding="utf-8") if context_path.exists() else None
-    context_path.write_text(json.dumps({
+    original_current_run = _read_optional(current_run_path)
+    original_active_run = _read_optional(active_run_path)
+    context = {
         "run_id": "selftest-run",
+        "session_id": "selftest",
         "command": "vg:build",
         "phase": "99999999",
         "started_at": "2026-04-27T00:00:00Z",
         "current_step": None,
         "step_history": [],
         "telemetry_emitted": [],
-    }), encoding="utf-8")
+    }
+    active_run = {
+        "run_id": context["run_id"],
+        "session_id": context["session_id"],
+        "command": context["command"],
+        "phase": context["phase"],
+        "started_at": context["started_at"],
+    }
+    context_path.write_text(json.dumps(context), encoding="utf-8")
+    current_run_path.write_text(json.dumps(active_run), encoding="utf-8")
+    active_run_path.parent.mkdir(parents=True, exist_ok=True)
+    active_run_path.write_text(json.dumps(active_run), encoding="utf-8")
 
     try:
         exit_code, stdout, stderr = run_hook(STEP_HOOK, {
@@ -210,10 +226,9 @@ def case_step_tracker_updates_context():
             return False, f"telemetry dedup key missing: {updated}"
         return True, "step tracker updated session context"
     finally:
-        if original is None:
-            context_path.unlink(missing_ok=True)
-        else:
-            context_path.write_text(original, encoding="utf-8")
+        _restore_optional(context_path, original)
+        _restore_optional(current_run_path, original_current_run)
+        _restore_optional(active_run_path, original_active_run)
 
 
 def main() -> int:

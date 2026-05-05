@@ -32,7 +32,7 @@ was replaced by a stricter contract-based rule:
 - On Codex, use the native plan/tasklist UI when available; otherwise use the
   fallback adapter.
 - Immediately record projection with
-  `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+  `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 - At step start/end, update the native task UI and emit
   `vg-orchestrator step-active` / `vg-orchestrator mark-step`.
 

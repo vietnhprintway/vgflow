@@ -81,7 +81,7 @@ Codex use the same workflow contracts, but their orchestration primitives differ
 |---|---|---|
 | AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it; prefer Codex-native options such as \`codex-inline\` when the source prompt distinguishes providers. |
 | Agent(...) / Task | Prefer \`commands/vg/_shared/lib/codex-spawn.sh\` or native Codex subagents | Use \`codex exec\` when exact model, timeout, output file, or schema control matters. |
-| TaskCreate / TaskUpdate / TodoWrite | Native Codex tasklist/plan projection + orchestrator step markers | Use \`tasklist-contract.json\` as source of truth. After projecting, emit \`vg-orchestrator tasklist-projected --adapter codex\`; if no native task UI is exposed, use \`--adapter fallback\` and \`run-status --pretty\`. |
+| TaskCreate / TaskUpdate / TodoWrite | Compact Codex plan window + orchestrator step markers | Use \`tasklist-contract.json\` as source of truth. Do not paste the full hierarchy into Codex \`update_plan\`. Show at most 6 rows: active group/step first, next 2-3 pending steps, completed groups collapsed, and \`+N pending\`. After projecting, emit \`vg-orchestrator tasklist-projected --adapter codex\`. |
 | Playwright MCP | Main Codex orchestrator MCP tools, or smoke-tested subagents | If an MCP-using subagent cannot access tools in a target environment, fall back to orchestrator-driven/inline scanner flow. |
 | Graphify MCP | Python/CLI graphify calls | VGFlow's build/review paths already use deterministic scripts where possible. |
 

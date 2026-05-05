@@ -51,16 +51,12 @@ else
 
   if [ "$AI_SCOPE_DETECT_ENABLED" = "true" ] && { [ ! -f "$UI_SCOPE_JSON" ] || [[ "$ARGUMENTS" =~ --redetect-ui-scope ]]; }; then
     echo "▸ Detecting UI scope via Haiku semantic analysis..."
-    if [[ "$ARGUMENTS" =~ --redetect-ui-scope ]]; then
-      "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/preflight/detect-ui-scope.py" \
-        --phase-dir "${PHASE_DIR}" \
-        --output ".ui-scope.json" \
-        --force >/dev/null 2>&1
-    else
-      "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/preflight/detect-ui-scope.py" \
-        --phase-dir "${PHASE_DIR}" \
-        --output ".ui-scope.json" >/dev/null 2>&1
-    fi
+    DETECT_FLAGS=()
+    [[ "$ARGUMENTS" =~ --redetect-ui-scope ]] && DETECT_FLAGS+=( --force )
+    "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/preflight/detect-ui-scope.py" \
+      --phase-dir "${PHASE_DIR}" \
+      --output ".ui-scope.json" \
+      "${DETECT_FLAGS[@]}" >/dev/null 2>&1
     UI_SCOPE_RC=$?
 
     case "$UI_SCOPE_RC" in
@@ -90,22 +86,15 @@ else
   fi
 
   BLUEPRINT_DESIGN_PREFLIGHT_JSON="${PHASE_DIR}/.tmp/blueprint-design-preflight.json"
-  if [[ "$ARGUMENTS" =~ --allow-shared-mockup-reuse ]]; then
-    "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
-      --phase-dir "${PHASE_DIR}" \
-      --repo-root "${REPO_ROOT}" \
-      --config "${REPO_ROOT}/.claude/vg.config.md" \
-      --apply \
-      --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" \
-      --allow-shared-mockup-reuse >/dev/null
-  else
-    "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
-      --phase-dir "${PHASE_DIR}" \
-      --repo-root "${REPO_ROOT}" \
-      --config "${REPO_ROOT}/.claude/vg.config.md" \
-      --apply \
-      --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" >/dev/null
-  fi
+  PREFLIGHT_EXTRA=()
+  [[ "$ARGUMENTS" =~ --allow-shared-mockup-reuse ]] && PREFLIGHT_EXTRA+=( --allow-shared-mockup-reuse )
+  "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
+    --phase-dir "${PHASE_DIR}" \
+    --repo-root "${REPO_ROOT}" \
+    --config "${REPO_ROOT}/.claude/vg.config.md" \
+    --apply \
+    --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" \
+    "${PREFLIGHT_EXTRA[@]}" >/dev/null
 
   if [ -z "${HAS_UI}" ]; then
     HAS_UI=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('has_ui') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
@@ -129,17 +118,10 @@ else
       fi
       echo "▸ No design mockups found — auto-running /vg:design-scaffold --tool=pencil-mcp"
       SlashCommand: /vg:design-scaffold --tool=pencil-mcp
-      if [[ "$ARGUMENTS" =~ --allow-shared-mockup-reuse ]]; then
-        "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
-          --phase-dir "${PHASE_DIR}" --repo-root "${REPO_ROOT}" \
-          --config "${REPO_ROOT}/.claude/vg.config.md" --apply \
-          --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" --allow-shared-mockup-reuse >/dev/null
-      else
-        "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
-          --phase-dir "${PHASE_DIR}" --repo-root "${REPO_ROOT}" \
-          --config "${REPO_ROOT}/.claude/vg.config.md" --apply \
-          --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" >/dev/null
-      fi
+      "${PYTHON_BIN:-python3}" "${REPO_ROOT}/.claude/scripts/blueprint-design-preflight.py" \
+        --phase-dir "${PHASE_DIR}" --repo-root "${REPO_ROOT}" \
+        --config "${REPO_ROOT}/.claude/vg.config.md" --apply \
+        --output "${BLUEPRINT_DESIGN_PREFLIGHT_JSON}" "${PREFLIGHT_EXTRA[@]}" >/dev/null
       NEEDS_SCAFFOLD=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_scaffold') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
       NEEDS_EXTRACT=$("${PYTHON_BIN:-python3}" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('1' if d.get('needs_extract') else '0')" "$BLUEPRINT_DESIGN_PREFLIGHT_JSON")
       [ "$NEEDS_SCAFFOLD" = "1" ] && { echo "⛔ /vg:design-scaffold did not produce phase design assets."; exit 1; }
@@ -263,7 +245,7 @@ ${PYTHON_BIN:-python3} .claude/scripts/emit-tasklist.py \
 
 # IMMEDIATELY after this block: apply TASKLIST_POLICY → project
 # `.vg/runs/{run_id}/tasklist-contract.json` to native task UI and call
-# `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+# `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 
 # R2 skip prereq assertion: --from=X must verify prior steps actually completed.
 FROM_STEP=""
@@ -353,7 +335,7 @@ Required behavior:
 2. Call `TodoWrite` with one todo per `projection_items[]` entry — full hierarchy
    (group headers + sub-steps with `↳` prefix). Use the entry's `title` verbatim
    as todo `content`.
-3. Call `vg-orchestrator tasklist-projected --adapter <claude|codex|fallback>`.
+3. Call `vg-orchestrator tasklist-projected --adapter <auto|claude|codex|fallback>`.
 4. Keep `.step-markers/*.done` as the durable enforcement signal.
 
 Per sub-step lifecycle:
@@ -379,7 +361,17 @@ Example projection for vg:blueprint web-fullstack (32 items):
 ```bash
 vg-orchestrator step-active create_task_tracker
 
-# (TodoWrite call happens here per HARD-GATE above)
+# (TodoWrite call happens here per HARD-GATE above — PostToolUse hook signs evidence)
+
+# Bug D 2026-05-04: explicit emission — was previously instruction-text-only,
+# AI could skip the tasklist-projected call and rely on PostToolUse implicit
+# write. Now bash-enforced: blueprint.native_tasklist_projected MUST fire.
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator tasklist-projected \
+  --adapter "${VG_TASKLIST_ADAPTER:-claude}" || {
+    echo "⛔ vg-orchestrator tasklist-projected failed — blueprint.native_tasklist_projected event will not fire." >&2
+    echo "   Check .vg/runs/<run_id>/tasklist-contract.json + adapter ∈ {claude,codex,fallback}." >&2
+    exit 1
+}
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "create_task_tracker" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/create_task_tracker.done"
@@ -465,88 +457,41 @@ Design-extract auto-trigger (fixes G1):
 
 ```bash
 DESIGN_PATHS=$(vg_config_get_array design_assets.paths)
-DESIGN_AUTOTRIGGER_SKIPPED=false
-case "${PHASE_PROFILE:-feature}" in
-  cli-tool|library|infra|docs)
-    DESIGN_AUTOTRIGGER_SKIPPED=true
-    echo "ℹ Design-extract auto-trigger skipped for PHASE_PROFILE=${PHASE_PROFILE:-feature}."
-    ;;
-esac
+if [ -n "$DESIGN_PATHS" ]; then
+  source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/design-path-resolver.sh"
+  DESIGN_PHASE_DIR="$(vg_design_phase_dir "$PHASE_DIR")"
+  DESIGN_SHARED_DIR="$(vg_design_shared_dir)"
+  DESIGN_LEGACY_DIR="$(vg_design_legacy_dir)"
 
-if [ "$DESIGN_AUTOTRIGGER_SKIPPED" != true ] && [ -n "$DESIGN_PATHS" ]; then
-  DESIGN_MATCHED_PATHS="$(
-    DESIGN_PATHS="$DESIGN_PATHS" REPO_ROOT="${REPO_ROOT:-.}" "${PYTHON_BIN:-python3}" - <<'PY'
-import glob
-import os
-from pathlib import Path
-
-repo = Path(os.environ.get("REPO_ROOT") or ".").resolve()
-seen = set()
-for raw in os.environ.get("DESIGN_PATHS", "").splitlines():
-    pattern = raw.strip()
-    if not pattern or pattern.startswith("#"):
-        continue
-    path = Path(pattern).expanduser()
-    glob_pattern = str(path if path.is_absolute() else repo / path)
-    matches = glob.glob(glob_pattern, recursive=True)
-    if not matches and not any(ch in pattern for ch in "*?["):
-        candidate = Path(glob_pattern)
-        if candidate.exists():
-            matches = [str(candidate)]
-    for match in matches:
-        candidate = Path(match)
-        if not candidate.exists():
-            continue
-        key = str(candidate.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        print(key)
-PY
-  )"
-
-  if [ -z "$DESIGN_MATCHED_PATHS" ]; then
-    echo "ℹ Design-extract auto-trigger skipped: design_assets.paths matched no files."
+  if [ -f "${DESIGN_PHASE_DIR}/manifest.json" ]; then
+    DESIGN_OUT="$DESIGN_PHASE_DIR"
+  elif [ -f "${DESIGN_SHARED_DIR}/manifest.json" ]; then
+    DESIGN_OUT="$DESIGN_SHARED_DIR"
+  elif [ -n "$DESIGN_LEGACY_DIR" ] && [ -f "${DESIGN_LEGACY_DIR}/manifest.json" ]; then
+    DESIGN_OUT="$DESIGN_LEGACY_DIR"
+    echo "⚠ Using legacy design dir ${DESIGN_LEGACY_DIR}/ — soft-deprecated since v2.30." >&2
   else
-    source "${REPO_ROOT:-.}/.claude/commands/vg/_shared/lib/design-path-resolver.sh"
-    DESIGN_PHASE_DIR="$(vg_design_phase_dir "$PHASE_DIR")"
-    DESIGN_SHARED_DIR="$(vg_design_shared_dir)"
-    DESIGN_LEGACY_DIR="$(vg_design_legacy_dir)"
+    DESIGN_OUT="$DESIGN_PHASE_DIR"
+  fi
+  DESIGN_MANIFEST="${DESIGN_OUT}/manifest.json"
+  DESIGN_OUTPUT_DIR="$DESIGN_OUT"
+  export DESIGN_OUTPUT_DIR DESIGN_MANIFEST
 
-    if [ -f "${DESIGN_PHASE_DIR}/manifest.json" ]; then
-      DESIGN_OUT="$DESIGN_PHASE_DIR"
-    elif [ -f "${DESIGN_SHARED_DIR}/manifest.json" ]; then
-      DESIGN_OUT="$DESIGN_SHARED_DIR"
-    elif [ -n "$DESIGN_LEGACY_DIR" ] && [ -f "${DESIGN_LEGACY_DIR}/manifest.json" ]; then
-      DESIGN_OUT="$DESIGN_LEGACY_DIR"
-      echo "⚠ Using legacy design dir ${DESIGN_LEGACY_DIR}/ — soft-deprecated since v2.30." >&2
-    else
-      DESIGN_OUT="$DESIGN_PHASE_DIR"
-    fi
-    DESIGN_MANIFEST="${DESIGN_OUT}/manifest.json"
-    DESIGN_OUTPUT_DIR="$DESIGN_OUT"
-    export DESIGN_OUTPUT_DIR DESIGN_MANIFEST
+  NEEDS_EXTRACT=false
+  if [ ! -f "$DESIGN_MANIFEST" ]; then
+    NEEDS_EXTRACT=true; REASON="manifest missing"
+  else
+    while read -r pattern; do
+      [ -z "$pattern" ] && continue
+      if find $pattern -newer "$DESIGN_MANIFEST" 2>/dev/null | grep -q .; then
+        NEEDS_EXTRACT=true; REASON="assets changed since last extract"; break
+      fi
+    done <<< "$DESIGN_PATHS"
+  fi
 
-    NEEDS_EXTRACT=false
-    if [ ! -f "$DESIGN_MANIFEST" ]; then
-      NEEDS_EXTRACT=true; REASON="missing"
-    else
-      while IFS= read -r asset_path; do
-        [ -z "$asset_path" ] && continue
-        if [ -d "$asset_path" ]; then
-          if find "$asset_path" -type f -newer "$DESIGN_MANIFEST" 2>/dev/null | grep -q .; then
-            NEEDS_EXTRACT=true; REASON="assets changed since last extract"; break
-          fi
-        elif [ -f "$asset_path" ] && [ "$asset_path" -newer "$DESIGN_MANIFEST" ]; then
-          NEEDS_EXTRACT=true; REASON="assets changed since last extract"; break
-        fi
-      done <<< "$DESIGN_MATCHED_PATHS"
-    fi
-
-    if [ "$NEEDS_EXTRACT" = true ]; then
-      echo "Design assets detected, manifest $REASON. Auto-running /vg:design-extract --auto..."
-      SlashCommand: /vg:design-extract --auto
-    fi
+  if [ "$NEEDS_EXTRACT" = true ]; then
+    echo "Design assets detected, manifest $REASON. Auto-running /vg:design-extract --auto..."
+    SlashCommand: /vg:design-extract --auto
   fi
 fi
 

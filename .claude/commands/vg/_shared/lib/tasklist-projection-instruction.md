@@ -23,20 +23,25 @@ fi
 Then **the AI agent MUST** (this is the part the hook enforces):
 
 1. Read `${CONTRACT_PATH}` and parse `checklists[]`.
-2. Call `TodoWrite` with one todo entry per `items[]` row across all checklists.
-   Each todo's `content` field = the item ID (e.g. `0a_env_mode_gate`).
-   The PostToolUse-TodoWrite hook signs `.tasklist-projected.evidence.json`.
+2. Project the contract to the runtime-native task UI.
+   - Lifecycle: `replace-on-start`; `close-on-complete`.
+   - Claude uses `TodoWrite` with the full two-layer hierarchy.
+   - Codex uses a compact plan window, not the full hierarchy: at most 6
+     visible rows, active group/step first, next 2-3 pending steps, completed
+     groups collapsed, and one `+N pending` row. The full hierarchy remains in
+     `tasklist-contract.json`; do not paste all 40+ review items into Codex
+     `update_plan`.
 3. Run:
    ```bash
-   python3 .claude/scripts/vg-orchestrator tasklist-projected --adapter claude
+   python3 .claude/scripts/vg-orchestrator tasklist-projected --adapter auto
    ```
-   This validates that the most recent TodoWrite payload matches the contract checksum
-   AND writes `.vg/runs/${RUN_ID}/.tasklist-projected.evidence.json`. CLI emit of the
+   This validates/binds the native projection to the contract checksum and writes
+   `.vg/runs/${RUN_ID}/.tasklist-projected.evidence.json`. CLI emit of the
    `*.native_tasklist_projected` event is rejected by the orchestrator (sole-owner rule).
 
 After both succeed, subsequent `step-active` calls pass the PreToolUse-bash hook.
 
-## 2-layer hierarchy required (Task 44b enforcement)
+## Claude 2-layer hierarchy required (Task 44b enforcement)
 
 The TodoWrite payload MUST contain BOTH layers:
 

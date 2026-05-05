@@ -40,6 +40,27 @@ def _safe_session_filename(sid: str) -> str:
     safe = "".join(c for c in sid if c.isalnum() or c in "-_")
     return safe or "unknown"
 
+def _read_json(path: Path) -> dict | None:
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+def _context_matches_run(ctx: dict, run: dict | None) -> bool:
+    if not isinstance(run, dict) or not run.get("run_id"):
+        return False
+    if ctx.get("run_id") and run.get("run_id") != ctx.get("run_id"):
+        return False
+    if ctx.get("session_id") and run.get("session_id") and str(run.get("session_id")) != str(ctx.get("session_id")):
+        return False
+    for key in ("command", "phase"):
+        if ctx.get(key) and run.get(key) and str(ctx.get(key)) != str(run.get(key)):
+            return False
+    return True
+
 
 def _resolve_command_file(command: str) -> Path:
     # "vg:build" → .claude/commands/vg/build.md
@@ -438,19 +459,28 @@ def _read_active_run() -> dict | None:
     sid = (
         os.environ.get("CLAUDE_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_SESSION_ID")
+        or os.environ.get("CODEX_SESSION_ID")
+        or os.environ.get("CLAUDE_HOOK_SESSION_ID")
         or None
     )
     candidates: list[Path] = []
     if sid:
         candidates.append(REPO_ROOT / ".vg" / "active-runs" / f"{_safe_session_filename(sid)}.json")
+
+    ctx = _read_json(REPO_ROOT / ".vg" / ".session-context.json")
+    if isinstance(ctx, dict):
+        ctx_sid = ctx.get("session_id")
+        if ctx_sid:
+            ctx_path = REPO_ROOT / ".vg" / "active-runs" / f"{_safe_session_filename(str(ctx_sid))}.json"
+            if _context_matches_run(ctx, _read_json(ctx_path)):
+                candidates.append(ctx_path)
+        legacy_path = REPO_ROOT / ".vg" / "current-run.json"
+        if _context_matches_run(ctx, _read_json(legacy_path)):
+            candidates.append(legacy_path)
+
     candidates.append(REPO_ROOT / ".vg" / "current-run.json")
     for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+        data = _read_json(path)
         if isinstance(data, dict) and data.get("run_id"):
             return data
     return None
@@ -468,6 +498,14 @@ def _write_contract(
     run_id = active.get("run_id") if active else None
     if not run_id:
         return None
+    if active.get("command") and active.get("command") != command:
+        raise RuntimeError(
+            f"active run command mismatch: active={active.get('command')} requested={command}"
+        )
+    if active.get("phase") and str(active.get("phase")) != str(phase):
+        raise RuntimeError(
+            f"active run phase mismatch: active={active.get('phase')} requested={phase}"
+        )
 
     checklist_by_step = _step_to_checklist(checklists)
     items = [
@@ -505,8 +543,20 @@ def _write_contract(
                 "(do NOT prepend `[id]` or `id:`). PostToolUse hook does tolerant match "
                 "by id OR title, so plain titles work. Sub-steps already include ↳ indent."
             ),
-            "codex": "native tasklist/plan UI — same hierarchy",
+            "codex": (
+                "Codex native plan UI — compact window, not full hierarchy. "
+                "Show at most 6 visible rows: active group/step first, next "
+                "2-3 pending steps, completed groups collapsed, and '+N pending'. "
+                "Full hierarchy remains in tasklist-contract.json for gates."
+            ),
             "fallback": "vg-orchestrator run-status --pretty",
+        },
+        "codex_plan_window": {
+            "max_visible_items": 6,
+            "active_first": True,
+            "collapse_completed": True,
+            "show_pending_remainder": True,
+            "full_projection_item_count": len(projection_items),
         },
         "items": items,
         "enforcement": {
@@ -579,7 +629,21 @@ def main() -> int:
         return 1
 
     checklists = _build_checklists(args.command, steps)
-    contract_path = _write_contract(args.command, args.phase, args.profile, args.mode, steps, checklists)
+    contract_path = None
+    if args.no_emit and not _read_active_run():
+        # Dry-run/visibility mode used by tests and docs. Real command bodies
+        # omit --no-emit and must have an active run so contract/event binding
+        # cannot be skipped.
+        pass
+    else:
+        try:
+            contract_path = _write_contract(args.command, args.phase, args.profile, args.mode, steps, checklists)
+        except RuntimeError as exc:
+            print(f"\033[38;5;208m{exc}\033[0m", file=sys.stderr)
+            return 3
+        if not contract_path:
+            print("\033[38;5;208mNo active VG run. Call vg-orchestrator run-start first.\033[0m", file=sys.stderr)
+            return 3
     _print_tasklist(args.command, args.phase, args.profile, args.mode, steps, checklists)
     if contract_path:
         print(f"  Tasklist contract: {contract_path}")
