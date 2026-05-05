@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.50.2 - Codex UserPromptSubmit JSON adapter
+
+Patch release. Fixes Codex CLI `UserPromptSubmit hook (failed): hook returned invalid user prompt submit JSON output` caused by the Codex installer wiring `UserPromptSubmit` directly to the Claude hook.
+
+### Fixed
+
+- Added a Codex-specific `vg-user-prompt-submit.py` wrapper that converts Claude `{"decision":"approve"}` output to Codex `{"continue":true}`.
+- Maps Claude `hookSpecificOutput.additionalContext` to Codex `systemMessage` when a `/vg:*` run-start registers context.
+- Updated Codex hook installer to point `UserPromptSubmit` at the wrapper and replace legacy direct `vg-entry-hook.py` commands.
+- Kept Codex hook commands platform-neutral on Windows by avoiding Bash-style env prefixes.
+- Made Codex bash hook forwarding choose Git Bash and normalize Windows paths before running shell hooks.
+
+### Verified
+
+- Added schema tests for non-VG and `/vg:build 1` UserPromptSubmit output.
+- Added installer regression coverage for replacing legacy direct `vg-entry-hook.py` wiring.
+
 ## v2.50.1 — Windows-safe Claude bash hook runner
 
 Patch release. Fixes Claude Code `UserPromptSubmit hook (failed)` on Windows machines where `bash` resolves to the WSL launcher (`C:\Windows\System32\bash.exe`) before Git Bash. WSL bash cannot consume `${CLAUDE_PROJECT_DIR}` Windows paths like `D:\Workspace\...`, so hooks failed before the script body started.

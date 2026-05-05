@@ -25,6 +25,7 @@ def test_codex_hooks_installer_writes_hooks_and_feature_flag(tmp_path):
     (root / ".codex").mkdir(parents=True)
     for rel in (
         ".claude/scripts/vg-entry-hook.py",
+        ".claude/scripts/codex-hooks/vg-user-prompt-submit.py",
         ".claude/scripts/codex-hooks/vg-pre-tool-use-bash.py",
         ".claude/scripts/codex-hooks/vg-pre-tool-use-apply-patch.py",
         ".claude/scripts/codex-hooks/vg-post-tool-use-bash.py",
@@ -50,13 +51,12 @@ def test_codex_hooks_installer_writes_hooks_and_feature_flag(tmp_path):
         for group in groups
         for hook in group.get("hooks", [])
     )
-    assert "vg-entry-hook.py" in commands
+    assert "codex-hooks/vg-user-prompt-submit.py" in commands
+    assert "vg-entry-hook.py" not in commands
     assert "codex-hooks/vg-pre-tool-use-bash.py" in commands
     assert "codex-hooks/vg-pre-tool-use-apply-patch.py" in commands
     assert "codex-hooks/vg-post-tool-use-bash.py" in commands
     assert "codex-hooks/vg-stop.py" in commands
-    assert "VG_RUNTIME=codex" in commands
-    assert 'VG_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"' in commands
     assert "^Bash$" in json.dumps(hooks)
     assert "^(apply_patch|Edit|Write)$" in json.dumps(hooks)
 
@@ -102,6 +102,33 @@ def test_codex_hooks_merge_preserves_custom_hooks_and_replaces_vg_owned_hooks():
     ]
     assert "python3 custom.py" in commands
     assert sum("vg-pre-tool-use-bash.py" in command for command in commands) == 1
+
+def test_codex_hooks_installer_replaces_legacy_user_prompt_submit_hook():
+    module = _installer_module()
+    root = Path("/repo")
+    existing = {
+        "hooks": {
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 /repo/.claude/scripts/vg-entry-hook.py",
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    merged = module.merge_hooks(existing, module.desired_hooks(root))
+    commands = [
+        hook["command"]
+        for group in merged["hooks"]["UserPromptSubmit"]
+        for hook in group["hooks"]
+    ]
+    assert sum("vg-user-prompt-submit.py" in command for command in commands) == 1
+    assert not any(command.endswith("vg-entry-hook.py") for command in commands)
 
 
 def test_codex_hooks_feature_merge_updates_existing_features_section():
