@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.50.3 - Codex compact plan projection
+
+Patch release. Ships PR #109, keeping Codex blueprint and review task projection compact enough for Codex sessions.
+
+### Fixed
+
+- Keeps Codex blueprint plan projection to a compact visible window instead of mirroring every `projection_items` row.
+- Applies the same compact-plan rule to `vg:review`.
+- Refreshes Claude test mirrors for the compact-plan behavior.
+
+### Verified
+
+- Added regression coverage for compact tasklist visibility.
+- PR #109 targeted verification covered tasklist visibility, Codex sync deploy, bash hook runner, hook executable checks, install hook idempotency, and Codex hook schema/install tests.
+
 ## v2.50.2 - Codex UserPromptSubmit JSON adapter
 
 Patch release. Fixes Codex CLI `UserPromptSubmit hook (failed): hook returned invalid user prompt submit JSON output` caused by the Codex installer wiring `UserPromptSubmit` directly to the Claude hook.
