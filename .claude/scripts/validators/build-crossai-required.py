@@ -133,6 +133,72 @@ def main() -> None:
         terminal_count = sum(counts.get(e, 0) for e in TERMINAL_EVENTS)
 
         if iter_count == 0:
+            # HOTFIX session 2 (2026-05-05) — recognize legitimate skip:
+            # if a `loop_user_override` terminal exists AND the preceding
+            # `override.used --flag=skip-*-crossai*` passes the anti-
+            # rationalization fact-check (no CrossAI CLI installed AND
+            # configured), iter_count=0 is the EXPECTED state (loop
+            # physically can't run, so it didn't).
+            #
+            # If the override is rationalized (CLI installed but reason
+            # claims otherwise), the orchestrator's cmd_override would have
+            # rejected the override before override.used was emitted. So if
+            # we see override.used here, it already passed fact-check.
+            stream_for_skip = _read_event_stream(
+                run_id,
+                ["build.crossai_loop_user_override", "override.used"],
+            )
+            has_user_override = any(
+                e["event_type"] == "build.crossai_loop_user_override"
+                for e in stream_for_skip
+            )
+            has_skip_override_used = any(
+                e["event_type"] == "override.used"
+                and "crossai" in str(e["payload"].get("flag", "")).lower()
+                and "skip" in str(e["payload"].get("flag", "")).lower()
+                for e in stream_for_skip
+            )
+            if has_user_override and has_skip_override_used:
+                # Re-fact-check at validator time (defense in depth).
+                # If a configured CrossAI CLI is installed, BLOCK regardless
+                # of override — the loop CAN run and must run.
+                try:
+                    sys.path.insert(0, str(REPO_ROOT / "scripts" / "lib"))
+                    from crossai_skip_validation import (  # type: ignore
+                        validate_skip_legitimate, format_rejection,
+                    )
+                    last_override = next(
+                        (e for e in stream_for_skip
+                         if e["event_type"] == "override.used"
+                         and "crossai" in str(e["payload"].get("flag", "")).lower()),
+                        None,
+                    )
+                    reason_text = (last_override or {}).get("payload", {}).get("reason", "") if last_override else ""
+                    result = validate_skip_legitimate(REPO_ROOT, reason_text)
+                    if not result.legitimate:
+                        out.add(Evidence(
+                            type="crossai_skip_rationalized",
+                            message=(
+                                "loop_user_override accepted with iter_count=0 "
+                                "but anti-rationalization fact-check at run-"
+                                "complete REJECTS the skip — a CrossAI CLI is "
+                                "configured AND installed, so the loop "
+                                "physically CAN run."
+                            ),
+                            expected="≥1 CrossAI CLI installed → loop must run (iter_count ≥ 1)",
+                            actual=(
+                                f"configured={result.configured_clis}, "
+                                f"installed={result.installed_clis}, "
+                                f"false_claims={len(result.false_claims)}"
+                            ),
+                            fix_hint=format_rejection(result),
+                        ))
+                        emit_and_exit(out)
+                except ImportError:
+                    pass
+                # Legitimate skip — pass silently
+                emit_and_exit(out)
+
             out.add(Evidence(
                 type="crossai_loop_never_ran",
                 message=(
@@ -154,7 +220,7 @@ def main() -> None:
                     "If exit 0 → loop is clean; main Claude emits "
                     "build.crossai_loop_complete to satisfy this gate.\n"
                     "If 5 hit without clean → prompt user for: continue / "
-                    "defer / skip+debt."
+                    "defer / skip+debt (legitimate ONLY when no CLI installed)."
                 ),
             ))
             emit_and_exit(out)

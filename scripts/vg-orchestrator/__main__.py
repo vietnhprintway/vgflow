@@ -2202,6 +2202,56 @@ def cmd_override(args) -> int:
         )
         return 2
 
+    # HOTFIX session 2 (2026-05-05) — anti-rationalization gate for
+    # `skip-*-crossai*` overrides. PV3 build 4.2 dogfood: AI emitted
+    # `--flag=skip-build-crossai --reason="...no Codex CLI configured..."`
+    # while Codex was BOTH configured in vg.config.md AND installed on PATH.
+    # Override-debt logged with FALSE claim. Now fact-check claims and
+    # reject if any configured CLI is installed (loop CAN run).
+    flag_text = (args.flag or "").lower()
+    if "crossai" in flag_text and ("skip" in flag_text):
+        try:
+            from lib.crossai_skip_validation import (  # type: ignore
+                validate_skip_legitimate, format_rejection,
+            )
+        except ImportError:
+            try:
+                # Fallback: orchestrator runs from .claude/scripts mirror
+                sys.path.insert(0, str(_REPO_ROOT / "scripts" / "lib"))
+                from crossai_skip_validation import (  # type: ignore
+                    validate_skip_legitimate, format_rejection,
+                )
+            except ImportError:
+                validate_skip_legitimate = None  # type: ignore
+                format_rejection = None  # type: ignore
+        if validate_skip_legitimate is not None:
+            result = validate_skip_legitimate(_REPO_ROOT, reason)
+            if not result.legitimate:
+                print(
+                    f"\033[38;5;208m{format_rejection(result)}\033[0m",
+                    file=sys.stderr,
+                )
+                # Telemetry — track rationalization attempts
+                try:
+                    db.append_event(
+                        run_id=current["run_id"],
+                        event_type="override.crossai_skip_rejected",
+                        phase=current["phase"],
+                        command=current["command"],
+                        actor="orchestrator",
+                        outcome="FAIL",
+                        payload={
+                            "flag": args.flag,
+                            "configured_clis": result.configured_clis,
+                            "installed_clis": result.installed_clis,
+                            "false_claims": result.false_claims,
+                            "reasoning": result.reasoning,
+                        },
+                    )
+                except Exception:
+                    pass
+                return 2
+
     # v2.5.2 Phase O — allow-flag human gate. For --allow-* flags (vs
     # --skip-*), verify caller is on a TTY or has VG_HUMAN_OPERATOR env
     # set. AI subagents running headless without the env get blocked.
