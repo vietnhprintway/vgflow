@@ -66,8 +66,18 @@ def _install_forwarded_hook_targets(root: Path) -> None:
 def test_codex_user_prompt_submit_pass_schema(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
+    _copy_file(
+        REPO_ROOT / "scripts" / "codex-hooks" / "vg_codex_hook_lib.py",
+        root / ".claude" / "scripts" / "codex-hooks" / "vg_codex_hook_lib.py",
+    )
+    entry = root / ".claude" / "scripts" / "vg-entry-hook.py"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text(
+        "import json\nprint(json.dumps({'decision': 'approve'}))\n",
+        encoding="utf-8",
+    )
     result = _run_hook(
-        REPO_ROOT / "scripts" / "vg-entry-hook.py",
+        CODEX_HOOKS / "vg-user-prompt-submit.py",
         root,
         {
             "session_id": "schema-sess",
@@ -78,6 +88,37 @@ def test_codex_user_prompt_submit_pass_schema(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"continue": True}
+
+def test_codex_user_prompt_submit_maps_claude_context_to_system_message(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    _copy_file(
+        REPO_ROOT / "scripts" / "codex-hooks" / "vg_codex_hook_lib.py",
+        root / ".claude" / "scripts" / "codex-hooks" / "vg_codex_hook_lib.py",
+    )
+    entry = root / ".claude" / "scripts" / "vg-entry-hook.py"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text(
+        "import json\n"
+        "print(json.dumps({'decision': 'approve', 'hookSpecificOutput': "
+        "{'hookEventName': 'UserPromptSubmit', 'additionalContext': 'registered'}}))\n",
+        encoding="utf-8",
+    )
+    result = _run_hook(
+        CODEX_HOOKS / "vg-user-prompt-submit.py",
+        root,
+        {
+            "session_id": "schema-sess",
+            "cwd": str(root),
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "/vg:build 1",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "continue": True,
+        "systemMessage": "registered",
+    }
 
 
 def test_codex_pre_tool_use_bash_noop_has_empty_stdout(tmp_path):

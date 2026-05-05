@@ -12,11 +12,25 @@ from typing import Any
 
 VG_HOOK_SCRIPT_MARKERS = (
     "vg-entry-hook.py",
+    "codex-hooks/vg-user-prompt-submit.py",
     "codex-hooks/vg-pre-tool-use-bash.py",
     "codex-hooks/vg-pre-tool-use-apply-patch.py",
     "codex-hooks/vg-post-tool-use-bash.py",
     "codex-hooks/vg-stop.py",
 )
+
+
+def _detect_python_cmd() -> str:
+    """Pick the python interpreter name to bake into hook commands."""
+    import shutil
+    if shutil.which("python3"):
+        return "python3"
+    if shutil.which("python"):
+        return "python"
+    return "python3"
+
+
+PYTHON_CMD = _detect_python_cmd()
 
 
 def _script_rel(root: Path, script_name: str) -> str:
@@ -29,14 +43,11 @@ def _script_rel(root: Path, script_name: str) -> str:
     return f".claude/scripts/{script_name}"
 
 
-def _repo_root_expr() -> str:
-    return '$(git rev-parse --show-toplevel 2>/dev/null || pwd)'
-
-
 def _command(root: Path, script_name: str) -> str:
-    root_expr = _repo_root_expr()
     rel = _script_rel(root, script_name)
-    return f'VG_RUNTIME=codex VG_REPO_ROOT="{root_expr}" python3 "{root_expr}/{rel}"'
+    # v2.50.2: Use platform-agnostic python command without Bash env prefixes.
+    # vg_codex_hook_lib.py handles VG_RUNTIME/VG_REPO_ROOT discovery.
+    return f'{PYTHON_CMD} "{rel}"'
 
 
 def desired_hooks(root: Path) -> dict[str, Any]:
@@ -47,7 +58,7 @@ def desired_hooks(root: Path) -> dict[str, Any]:
                     "hooks": [
                         {
                             "type": "command",
-                            "command": _command(root, "vg-entry-hook.py"),
+                            "command": _command(root, "codex-hooks/vg-user-prompt-submit.py"),
                             "timeout": 30,
                             "statusMessage": "VGFlow: starting run",
                         }
