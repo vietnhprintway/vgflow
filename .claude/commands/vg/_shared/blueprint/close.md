@@ -28,18 +28,75 @@ TEST-GOALS.md + user messages for learnings about the planning step.
 ```bash
 vg-orchestrator step-active 2e_bootstrap_reflection
 
+REFLECT_OUT=""
 if [ -d ".vg/bootstrap" ]; then
   REFLECT_STEP="blueprint"
   REFLECT_TS=$(date -u +%Y%m%dT%H%M%SZ)
   REFLECT_OUT="${PHASE_DIR}/reflection-${REFLECT_STEP}-${REFLECT_TS}.yaml"
-  echo "📝 Running end-of-blueprint reflection..."
+  VG_TMP="${VG_TMP:-${PHASE_DIR}/.tmp}"
+  mkdir -p "$VG_TMP" 2>/dev/null
 
-  # Spawn vg-reflector via Skill tool (existing skill from R0):
-  #   Skill(skill="vg-reflector", args="--phase ${PHASE_NUMBER} --command vg:blueprint --output ${REFLECT_OUT}")
-  #
-  # Reflector reads PLAN*.md + API-CONTRACTS.md + TEST-GOALS.md +
-  # last 30 user messages. Output: candidate learnings YAML.
-  # Interactive y/n/e/s prompt for each candidate, delegate to /vg:learn --promote.
+  # Slice last 30 user messages for reflector context (echo-chamber free).
+  USER_MSG_FILE="${VG_TMP}/reflect-user-msgs-${REFLECT_TS}.md"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator query-events \
+    --event-type user.message --run-only --tail 30 \
+    > "$USER_MSG_FILE" 2>/dev/null || true
+
+  # Telemetry slice for current run
+  TELEMETRY_SLICE="${VG_TMP}/reflect-telemetry-${REFLECT_TS}.jsonl"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator query-events \
+    --run-only --tail 200 --format jsonl \
+    > "$TELEMETRY_SLICE" 2>/dev/null || true
+
+  # Override-debt entries created during blueprint
+  OVERRIDE_SLICE="${VG_TMP}/reflect-overrides-${REFLECT_TS}.md"
+  grep -E '"step":"blueprint"' .vg/OVERRIDE-DEBT.md 2>/dev/null \
+    > "$OVERRIDE_SLICE" || true
+
+  bash scripts/vg-narrate-spawn.sh vg-reflector spawning \
+    "phase ${PHASE_NUMBER} blueprint reflection" 2>/dev/null || true
+  echo "📝 Running end-of-blueprint reflection..."
+fi
+```
+
+### Spawn reflector (isolated Haiku, fresh context)
+
+CRITICAL: `vg-reflector` is a **Skill** (`.claude/skills/vg-reflector/SKILL.md`),
+NOT a registered subagent type. Use `subagent_type="general-purpose"` and
+inline the skill instruction in the prompt — passing `subagent_type="vg-reflector"`
+will error with "Agent type not found" (PV3 blueprint 4.3 dogfood, 2026-05-05).
+
+```
+Agent(
+  description="End-of-step reflection for blueprint phase {PHASE_NUMBER}",
+  subagent_type="general-purpose",
+  prompt="""
+Use skill: vg-reflector
+
+Arguments:
+  STEP           = "blueprint"
+  PHASE          = "{PHASE_NUMBER}"
+  PHASE_DIR      = "{PHASE_DIR absolute path}"
+  USER_MSG_FILE  = "{USER_MSG_FILE}"
+  TELEMETRY_FILE = "{TELEMETRY_SLICE}"
+  OVERRIDE_FILE  = "{OVERRIDE_SLICE}"
+  ACCEPTED_MD    = ".vg/bootstrap/ACCEPTED.md"
+  REJECTED_MD    = ".vg/bootstrap/REJECTED.md"
+  OUT_FILE       = "{REFLECT_OUT}"
+
+Read .claude/skills/vg-reflector/SKILL.md and follow workflow exactly.
+Do NOT read parent conversation transcript — echo chamber forbidden.
+Output max 3 candidates with evidence to OUT_FILE.
+"""
+)
+```
+
+After spawn exits:
+
+```bash
+if [ -n "$REFLECT_OUT" ]; then
+  bash scripts/vg-narrate-spawn.sh vg-reflector returned \
+    "$([ -f "$REFLECT_OUT" ] && grep -c '^- id:' "$REFLECT_OUT" 2>/dev/null || echo 0) candidates" 2>/dev/null || true
 fi
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
