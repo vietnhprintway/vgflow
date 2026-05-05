@@ -16,13 +16,34 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PRE_HOOK = str(REPO_ROOT / "scripts/hooks/vg-pre-tool-use-bash.sh")
+PRE_HOOK = REPO_ROOT / "scripts/hooks/vg-pre-tool-use-bash.sh"
 DEPLOY_MD = REPO_ROOT / "commands/vg/deploy.md"
 EMIT_TASKLIST = REPO_ROOT / "scripts/emit-tasklist.py"
+
+
+def _bash_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    resolved = path.resolve()
+    posix = resolved.as_posix()
+    drive = resolved.drive.rstrip(":").lower()
+    rest = posix[2:] if resolved.drive else posix
+    bash_exe = _bash_exe().lower()
+    prefix = f"/mnt/{drive}" if "windows\\system32" in bash_exe or "windowsapps" in bash_exe else f"/{drive}"
+    return f"{prefix}{rest}"
+
+
+def _bash_exe() -> str:
+    if os.name == "nt":
+        git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe"
+        if git_bash.is_file():
+            return str(git_bash)
+    return shutil.which("bash") or "bash"
 
 
 def test_deploy_md_declares_tasklist_telemetry() -> None:
@@ -95,7 +116,7 @@ def test_deploy_step_active_blocks_without_evidence(tmp_path: Path) -> None:
     cmd = "python3 .claude/scripts/vg-orchestrator step-active 1_deploy_per_env"
     payload = json.dumps({"tool_input": {"command": cmd}})
     result = subprocess.run(
-        ["bash", PRE_HOOK],
+        [_bash_exe(), _bash_path(PRE_HOOK)],
         input=payload,
         env={
             **os.environ,
@@ -133,7 +154,7 @@ def test_deploy_bootstrap_step_passes_without_contract(tmp_path: Path) -> None:
     cmd = "python3 .claude/scripts/vg-orchestrator step-active 0_parse_and_validate"
     payload = json.dumps({"tool_input": {"command": cmd}})
     result = subprocess.run(
-        ["bash", PRE_HOOK],
+        [_bash_exe(), _bash_path(PRE_HOOK)],
         input=payload,
         env={
             **os.environ,

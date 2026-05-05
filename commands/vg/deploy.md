@@ -300,29 +300,8 @@ if [[ ",${SELECTED_ENVS}," =~ ,prod, ]]; then
 fi
 ```
 
-**AskUserQuestion (interactive prod gate, fires only if prod selected + no token):**
-
-```
-question: |
-  ⚠️ DEPLOY TỚI **PRODUCTION** — phase ${PHASE_NUMBER}.
-
-  Confirm bạn ĐÃ:
-    ✓ /vg:review PASS trên sandbox
-    ✓ /vg:test PASS trên sandbox
-    ✓ /vg:roam (nếu apply) PASS trên staging hoặc sandbox
-    ✓ /vg:accept human UAT đã làm
-
-  Chọn chính xác (KHÔNG tap nhanh):
-header: "PROD CONFIRM"
-multiSelect: false
-options:
-  - label: "ABORT — không deploy gì hết"
-    description: "An toàn nhất. Quit, kiểm tra lại trước khi thử lại."
-  - label: "NON-PROD-ONLY — bỏ prod, deploy các env khác"
-    description: "Deploy sandbox/staging trong selection, skip prod. Phù hợp khi muốn ship pre-prod trước, prod sau."
-  - label: "PROCEED — yes deploy to PROD (đọc kỹ rồi mới chọn)"
-    description: "Sẽ chạy deploy lên prod env. Live traffic sẽ thấy code mới. Chỉ chọn khi đã đủ 4 gate trên."
-```
+**AskUserQuestion (interactive prod gate):**
+Ask once with header `PROD CONFIRM`, no multi-select, options `ABORT`, `NON-PROD-ONLY`, `PROCEED`. Prompt must name prod + `${PHASE_NUMBER}` and require prior `/vg:review`, `/vg:test`, applicable `/vg:roam`, `/vg:accept`.
 
 ### Apply prod gate answer
 
@@ -512,14 +491,8 @@ Before `run-complete`, close the native tasklist:
 </process>
 
 <success_criteria>
-- Build complete prereq satisfied (or override-debt logged for `--allow-build-incomplete`)
-- Selected envs all exist in vg.config.md `environments.{env}` section
-- Prod env requires explicit confirmation (interactive AskUserQuestion OR `--prod-confirm-token` match)
-- Each env's deploy.{pre,build,restart,health,seed_command} commands run sequentially
-- Health check retries up to 30s (6× 5s) before marking failed
-- Failed env doesn't auto-abort siblings (interactive: ask user; non-interactive: continue)
-- DEPLOY-STATE.json `deployed.{env}` block populated per env, MERGES with existing keys (preserves preferred_env_for)
-- previous_sha captured for rollback hint
-- phase.deploy_completed telemetry emitted regardless of outcome (with payload listing ok/failed envs)
-- Per-env log file `${PHASE_DIR}/.deploy-log.{env}.txt` exists (truncated then appended per run)
+- Build prereq ok (or debt), selected envs exist, prod confirmed by AskUserQuestion or token.
+- Env commands run sequentially; health retries 30s; failed env does not auto-abort siblings.
+- DEPLOY-STATE.json merges `deployed.{env}`, preserves `preferred_env_for`, captures `previous_sha`.
+- `phase.deploy_completed` telemetry emits; `${PHASE_DIR}/.deploy-log.{env}.txt` exists per env.
 </success_criteria>

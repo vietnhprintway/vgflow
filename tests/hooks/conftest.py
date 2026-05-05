@@ -8,6 +8,7 @@ behavior.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -26,6 +27,26 @@ HOOK_SCRIPTS = {
     "user-prompt-submit": HOOK_DIR / "vg-user-prompt-submit.sh",
     "session-start": HOOK_DIR / "vg-session-start.sh",
 }
+
+
+def _bash_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    resolved = path.resolve()
+    posix = resolved.as_posix()
+    drive = resolved.drive.rstrip(":").lower()
+    rest = posix[2:] if resolved.drive else posix
+    bash_exe = _bash_exe().lower()
+    prefix = f"/mnt/{drive}" if "windows\\system32" in bash_exe or "windowsapps" in bash_exe else f"/{drive}"
+    return f"{prefix}{rest}"
+
+
+def _bash_exe() -> str:
+    if os.name == "nt":
+        git_bash = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin" / "bash.exe"
+        if git_bash.is_file():
+            return str(git_bash)
+    return shutil.which("bash") or "bash"
 
 
 @pytest.fixture
@@ -59,7 +80,7 @@ def run_hook(name: str, stdin: str = "", env_extra: dict | None = None,
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
-        ["bash", str(script)],
+        [_bash_exe(), _bash_path(script)],
         input=stdin,
         capture_output=True,
         text=True,

@@ -29,7 +29,7 @@ def skill_loader():
         path = COMMANDS_DIR / f"{name}.md"
         if not path.exists():
             raise FileNotFoundError(f"skill {name} not at {path}")
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         fm, body = _split_frontmatter(text)
         return {
             "name": name,
@@ -51,7 +51,7 @@ def agent_loader():
         path = md_path if md_path.exists() else (dir_path / "agent.md" if (dir_path / "agent.md").exists() else None)
         if path is None or not path.exists():
             raise FileNotFoundError(f"agent {name} not at {md_path} or {dir_path}/agent.md")
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         fm, body = _split_frontmatter(text)
         return {"name": name, "path": path, "text": text, "frontmatter": fm, "body": body}
     return _load
