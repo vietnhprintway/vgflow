@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.50.1 — Windows-safe Claude bash hook runner
+
+Patch release. Fixes Claude Code `UserPromptSubmit hook (failed)` on Windows machines where `bash` resolves to the WSL launcher (`C:\Windows\System32\bash.exe`) before Git Bash. WSL bash cannot consume `${CLAUDE_PROJECT_DIR}` Windows paths like `D:\Workspace\...`, so hooks failed before the script body started.
+
+### Fixed
+
+- Added `vg-run-bash-hook.py`, a tiny Python runner that preserves stdin/stdout/stderr/exit code while selecting Git Bash before WSL bash on Windows.
+- Regenerated `.claude/settings.json` so all bash hooks go through the runner instead of calling `bash "${CLAUDE_PROJECT_DIR}/..."` directly.
+- Updated `scripts/hooks/install-hooks.sh` so future `sync.sh` or hook reinstall operations keep emitting the Windows-safe runner command.
+- Runner normalizes Windows script paths to `D:/...` before invoking Git Bash, covering both placeholder and absolute install modes.
+
+### Verified
+
+- Reproduced old failure: `bash "${CLAUDE_PROJECT_DIR}/.claude/scripts/hooks/vg-user-prompt-submit.sh"` returned `rc=127` with `D:Workspace... No such file`.
+- Verified new settings command returns `rc=0` for both non-VG prompts and `/vg:build 1`.
+- `python -m py_compile` passes for the runner mirror pair.
+- `scripts/tests/test_bash_hook_runner.py` passes.
+
 ## v2.50.0 — VG harness R6+R7+R8+R9+Task5 closed-loop integrity (PR #108)
 
 Minor release. Squash-merge of **PR #108** delivering production hardening for native tasklist enforcement, mutating-tool gates, CrossAI skip validation, reflector spawning, and the first CrossAI multi-stage/multi-primary design + M1 infrastructure plan. This is a harness integrity release: the main theme is closing the remaining AI bypass paths seen during PrintwayV3 dogfood runs.
