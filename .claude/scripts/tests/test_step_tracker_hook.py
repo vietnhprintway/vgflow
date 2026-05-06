@@ -101,6 +101,25 @@ def test_detect_mark_step_helper(tmp_path):
     assert mod._detect_step_transition(cmd) == ("5d_codegen", "mark")
 
 
+def test_detect_mark_step_probe_not_step_two(tmp_path):
+    mod = _load_hook(tmp_path)
+    cmd = (
+        '(type -t mark_step >/dev/null 2>&1 && '
+        'mark_step "${PHASE_NUMBER:-unknown}" "0_session_lifecycle" "${PHASE_DIR}") '
+        '|| touch "${PHASE_DIR}/.step-markers/0_session_lifecycle.done"'
+    )
+    assert mod._detect_step_transition(cmd) == ("0_session_lifecycle", "done")
+
+
+def test_detect_mark_step_probe_without_touch_fallback(tmp_path):
+    mod = _load_hook(tmp_path)
+    cmd = (
+        'type -t mark_step >/dev/null 2>&1 && '
+        'mark_step "${PHASE_NUMBER:-unknown}" "0_session_lifecycle" "${PHASE_DIR}"'
+    )
+    assert mod._detect_step_transition(cmd) == ("0_session_lifecycle", "mark")
+
+
 def test_detect_orchestrator_mark_step(tmp_path):
     mod = _load_hook(tmp_path)
     cmd = "python .claude/scripts/vg-orchestrator mark-step build 8_execute_waves"

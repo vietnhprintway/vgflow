@@ -6899,7 +6899,9 @@ fi
 objective review is otherwise a silent quality downgrade.**
 
 Prepare context with RUNTIME-MAP + GOAL-COVERAGE-MATRIX + TEST-GOALS.
-Set `$LABEL="review-check"`. Follow crossai-invoke.md.
+Set `$LABEL="review-check"`. Follow crossai-invoke.md exactly: child CLIs run
+through the isolated CrossAI runner and the gate consumes normalized
+`${PHASE_DIR}/crossai/review-check.xml`, not raw child XML.
 
 Required evidence when not skipped:
 - `${PHASE_DIR}/crossai/review-check.xml`

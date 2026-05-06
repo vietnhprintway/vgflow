@@ -10,6 +10,21 @@ The calling command must prepare:
 2. `$OUTPUT_DIR` — path to save CLI results (e.g., `${PHASE_DIR}/crossai/`)
 3. `$LABEL` — descriptive label (e.g., `discuss-review`, `plan-review`, `total-check`)
 
+## Isolation rule (runtime bugfix)
+
+CrossAI child CLIs MUST run from an isolated temp working directory, not from
+the repo root. Reason: project-local `.claude/settings*.json` and `.codex/*`
+hook/config surfaces can leak into Gemini/Codex/Claude child runs and cause
+false infra failures such as:
+
+- `Invalid hook event name: "PostToolUse"`
+- `PreToolUse hook returned unsupported additionalContext`
+
+Keep the user's normal CLI auth home (`HOME`, `CODEX_HOME`, `CLAUDE_HOME`,
+`GEMINI_HOME`) so credentials still work, but scrub repo/session attachment
+vars and execute outside the repo. Use `.claude/scripts/crossai-runner.py`
+for every child spawn.
+
 ## Infrastructure brief auto-enrich (v1.14.4+)
 
 **Problem:** CrossAI CLIs spawn fresh — không có context về project infrastructure (MCP servers, Playwright lock manager, parallel capability, deploy topology). Thiếu = concern sai (vd: "Playwright không verify được 2 DSP instance trong 1 run" khi thực tế có 5 Playwright servers + lock manager).
@@ -84,8 +99,8 @@ PROMPT="Review artifacts and output crossai_review XML per format specified"
 
 # For each CLI in the spawn set:
 #   1. Substitute {prompt} → $PROMPT and {context} → $CONTEXT_FILE in cli.command
-#   2. Redirect stdout to "$OUTPUT_DIR/result-${cli.name}.xml" (parsed for verdict)
-#   3. Redirect stderr to "$OUTPUT_DIR/result-${cli.name}.err" (forensics only)
+#   2. Run via .claude/scripts/crossai-runner.py so cwd is isolated from repo hooks/config
+#   3. Runner writes "$OUTPUT_DIR/result-${cli.name}.xml|.err|.exit|.meta.json"
 #   4. Run as background process, capture PID
 #
 # Issue #27 (v2.21→v2.22): merging stderr into stdout (`2>&1`) polluted the
@@ -93,6 +108,10 @@ PROMPT="Review artifacts and output crossai_review XML per format specified"
 # causing the parser to either match on the prompt's example XML (false-
 # positive) or run out of timeout before reaching the real verdict.
 # Separate streams; parser reads .xml only.
+#
+# Issue #91 (dogfood 2026-05-06): child CLIs launched from repo root inherited
+# project hook/config and failed before producing XML. The runner fixes this by
+# executing from temp cwd while keeping user-level auth/config homes.
 
 # Example for a 3-CLI config:
 CROSSAI_TIMEOUT=120  # seconds — kill CLI if it hangs
@@ -101,12 +120,15 @@ declare -A CLI_STATUS  # name -> "ok|timeout|malformed|crash"
 
 for cli in "${CROSSAI_CLIS[@]}"; do
   CMD=$(echo "${cli.command}" | sed "s|{prompt}|${PROMPT}|g" | sed "s|{context}|${CONTEXT_FILE}|g")
-  # Run with explicit exit-code capture via wrapper file
+  # Run with explicit exit-code capture via isolated runner
   (
-    timeout ${CROSSAI_TIMEOUT} bash -c "$CMD" \
-      > "$OUTPUT_DIR/result-${cli.name}.xml" \
-      2> "$OUTPUT_DIR/result-${cli.name}.err"
-    echo "$?" > "$OUTPUT_DIR/result-${cli.name}.exit"
+    "${PYTHON_BIN:-python3}" .claude/scripts/crossai-runner.py \
+      --name "${cli.name}" \
+      --command "$CMD" \
+      --prompt "$PROMPT" \
+      --context-file "$CONTEXT_FILE" \
+      --output-dir "$OUTPUT_DIR" \
+      --timeout "${CROSSAI_TIMEOUT}"
   ) &
   PIDS+=($!)
 done
@@ -138,21 +160,19 @@ for cli in "${CROSSAI_CLIS[@]}"; do
   fi
 done
 
-# Count successful vs inconclusive
-OK_COUNT=0
-INCONCLUSIVE_COUNT=0
-for status in "${CLI_STATUS[@]}"; do
-  [ "$status" = "ok" ] && OK_COUNT=$((OK_COUNT + 1))
-  [ "$status" != "ok" ] && INCONCLUSIVE_COUNT=$((INCONCLUSIVE_COUNT + 1))
-done
+"${PYTHON_BIN:-python3}" .claude/scripts/crossai-normalize-results.py \
+  --output-dir "$OUTPUT_DIR" \
+  --label "$LABEL" \
+  --phase "${PHASE_NUMBER:-unknown}" \
+  --json > "$OUTPUT_DIR/${LABEL}.report.json"
 
-# HARD RULE: if ALL CLIs inconclusive → verdict = INCONCLUSIVE (blocks pipeline unless --allow-crossai-inconclusive)
-TOTAL_CLIS=${#CROSSAI_CLIS[@]}
-if [ "$OK_COUNT" -eq 0 ] && [ "$TOTAL_CLIS" -gt 0 ]; then
-  echo "⛔ All ${TOTAL_CLIS} CrossAI CLIs returned inconclusive (timeout/crash/malformed)."
+CROSSAI_VERDICT=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.load(open(sys.argv[1])).get('verdict','inconclusive'))" "$OUTPUT_DIR/${LABEL}.report.json" 2>/dev/null || echo "inconclusive")
+OK_COUNT=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.load(open(sys.argv[1])).get('ok_count',0))" "$OUTPUT_DIR/${LABEL}.report.json" 2>/dev/null || echo "0")
+TOTAL_CLIS=$(${PYTHON_BIN:-python3} -c "import json,sys; print(json.load(open(sys.argv[1])).get('total_clis',0))" "$OUTPUT_DIR/${LABEL}.report.json" 2>/dev/null || echo "0")
+
+if [ "${TOTAL_CLIS:-0}" -gt 0 ] && [ "${OK_COUNT:-0}" -eq 0 ]; then
+  echo "⛔ All ${TOTAL_CLIS} CrossAI CLIs returned inconclusive (auth/quota/TLS/hook/timeout/malformed)."
   echo "   Cannot treat silence as consensus."
-  CROSSAI_VERDICT="inconclusive"
-  # Caller must decide to block or proceed with override
 fi
 ```
 
@@ -216,6 +236,22 @@ Read the result files. Parse `<verdict>`, `<score>`, `<findings>` from each.
 ## Save Consensus
 
 Write consensus XML to `$OUTPUT_DIR/$LABEL.xml`. Format per vg-crossai SKILL.md.
+
+After raw CLI results are written, ALWAYS run:
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/crossai-normalize-results.py \
+  --output-dir "$OUTPUT_DIR" \
+  --label "$LABEL" \
+  --phase "${PHASE_NUMBER:-unknown}" \
+  --json > "$OUTPUT_DIR/${LABEL}.report.json"
+```
+
+This step is mandatory even when some CLIs returned valid XML, because the
+aggregator:
+- rewrites infra/auth/hook failures into valid `verdict=inconclusive` XML
+- emits the aggregate `${LABEL}.xml` file expected by runtime contracts
+- returns canonical `CROSSAI_VERDICT`, `OK_COUNT`, `TOTAL_CLIS`
 
 ## Emit verdict telemetry (v2.5 anti-forge — 2026-04-23)
 

@@ -12,7 +12,7 @@ no schema owner + XSD rigidity blocks legitimate variations). Enforced
 checks:
   1. Parses as valid XML
   2. Contains <crossai_review> root
-  3. <verdict> exists with value in {pass, flag, block}
+  3. <verdict> exists with value in {pass, flag, block, inconclusive}
   4. <score> exists with decimal 0-10 (or "N/10" format)
   5. <reviewer> exists and non-empty
   6. Optional: custom XPath expressions per-contract
@@ -41,7 +41,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 
-VALID_VERDICTS = frozenset({"pass", "flag", "block"})
+VALID_VERDICTS = frozenset({"pass", "flag", "block", "inconclusive"})
 
 
 def _parse_score(text: str) -> float | None:

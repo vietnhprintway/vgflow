@@ -112,6 +112,34 @@ def test_run_status_tolerates_active_state_without_run_id(
     assert status.stdout.strip() == "no-active-run"
 
 
+def test_mark_step_rejects_namespace_mismatch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    vg = repo / ".vg"
+    active_dir = vg / "active-runs"
+    active_dir.mkdir(parents=True)
+    active = {
+        "run_id": "scope-run-1",
+        "command": "vg:scope",
+        "phase": "4.5",
+        "started_at": "2026-05-05T00:00:00Z",
+        "session_id": "unknown",
+    }
+    active_dir.joinpath("unknown.json").write_text(
+        json.dumps(active),
+        encoding="utf-8",
+    )
+    vg.joinpath("current-run.json").write_text(
+        json.dumps(active),
+        encoding="utf-8",
+    )
+
+    marked = _run(repo, "mark-step", "blueprint", "2c_verify")
+
+    assert marked.returncode == 2
+    assert "namespace does not match active command" in marked.stderr
+    assert "Required namespace: scope" in marked.stderr
+
+
 def test_selftest_legacy_snapshot_does_not_mask_synthetic_active_run(
     tmp_path: Path,
 ) -> None:

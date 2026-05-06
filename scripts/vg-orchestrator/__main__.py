@@ -1551,6 +1551,22 @@ def cmd_mark_step(args) -> int:
         print("\033[38;5;208mNo active run. Call run-start first.\033[0m", file=sys.stderr)
         return 1
 
+    expected_namespace = str(current.get("command", "")).replace("vg:", "", 1)
+    if args.namespace != "shared" and expected_namespace and args.namespace != expected_namespace:
+        print(
+            "\033[38;5;208mmark-step namespace does not match active command.\033[0m",
+            file=sys.stderr,
+        )
+        print(
+            f"  Active command: {current.get('command')}\n"
+            f"  Requested mark-step namespace: {args.namespace}\n"
+            f"  Required namespace: {expected_namespace}\n\n"
+            "  This prevents a stale command body from writing another "
+            "workflow's marker namespace in the same phase.",
+            file=sys.stderr,
+        )
+        return 2
+
     phase_dir = contracts.resolve_phase_dir(current["phase"])
     if not phase_dir:
         print(f"⛔ Phase dir not found for phase={current['phase']}",
