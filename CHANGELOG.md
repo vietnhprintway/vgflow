@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.51.0 - Codex runtime parity and uninstall workflow
+
+Minor release. Ships PR #112, merged into `main` on 2026-05-06, plus the post-merge Windows/runtime test fixes needed to keep the release train green.
+
+### Added
+
+- Added `/vg:uninstall` plus `scripts/vg_uninstall.py` to remove VG-managed local Claude/Codex surfaces while preserving unrelated user config.
+- Added isolated CrossAI child runner + result normalizer coverage so Codex, Claude, and Gemini child CLIs no longer inherit project-local hook/config state.
+
+### Fixed
+
+- Blueprint close now syncs `blueprint-state.json` on `3_complete` before writing the completion marker, avoiding stale pending state after close.
+- Hardened CrossAI validator, step-tracker, orchestrator run-status, Codex sync deploy, and uninstall coverage landed from PR #112.
+- `scripts/crossai-runner.py` now prefers Git Bash over the WSL `bash.exe` launcher on Windows, matching the hook runner and keeping isolated child CLIs on a Windows-safe shell.
+- `.claude` mirror regression tests now resolve the real repo root when run from the source checkout, instead of constructing broken `.claude/.claude/...` paths.
+
+### Verified
+
+- `python -m pytest scripts/tests/test_crossai_runner.py scripts/tests/test_crossai_normalize_results.py scripts/tests/test_crossai_xml_validation.py scripts/tests/test_step_tracker_hook.py scripts/tests/test_blueprint_close_state.py scripts/tests/test_orchestrator_run_status.py scripts/tests/test_codex_sync_deploy.py scripts/tests/test_vg_uninstall.py -q`
+- `python -m pytest .claude/scripts/tests/test_crossai_runner.py .claude/scripts/tests/test_crossai_normalize_results.py .claude/scripts/tests/test_crossai_xml_validation.py .claude/scripts/tests/test_step_tracker_hook.py .claude/scripts/tests/test_blueprint_close_state.py .claude/scripts/tests/test_orchestrator_run_status.py .claude/scripts/tests/test_codex_sync_deploy.py .claude/scripts/tests/test_vg_uninstall.py -q`
+- `python scripts/verify-codex-mirror-equivalence.py --json`
+- `python scripts/validators/verify-codex-skill-mirror-sync.py --quiet --skip-global`
+- `git diff --check`
+
 ## v2.50.5 - Scope challenger and container hardening fixes
 
 Patch release. Fixes issue #110 and issue #107.

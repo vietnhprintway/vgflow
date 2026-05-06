@@ -20,7 +20,15 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "VERSION").exists() and (parent / ".git").exists():
+            return parent
+    return here.parents[2]
+
+
+REPO_ROOT = _find_repo_root()
 SYNC_SH = REPO_ROOT / "sync.sh"
 INSTALL_SH = REPO_ROOT / "install.sh"
 EQUIV = REPO_ROOT / "scripts" / "verify-codex-mirror-equivalence.py"

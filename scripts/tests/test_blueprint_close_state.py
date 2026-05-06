@@ -1,7 +1,15 @@
 from pathlib import Path
 
 
-REPO = Path(__file__).resolve().parents[2]
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "VERSION").exists() and (parent / ".git").exists():
+            return parent
+    return here.parents[2]
+
+
+REPO = _find_repo_root()
 
 
 def test_blueprint_close_updates_state_before_marker_write() -> None:

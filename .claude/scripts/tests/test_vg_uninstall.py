@@ -9,6 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import vg_uninstall  # type: ignore  # noqa: E402
 
 
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "VERSION").exists() and (parent / ".git").exists():
+            return parent
+    return here.parents[3]
+
+
 def _write_settings(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -125,7 +133,7 @@ def test_uninstall_does_not_touch_global_codex_config(tmp_path: Path, monkeypatc
 
 
 def test_command_and_mirror_exist() -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = _find_repo_root()
     assert (root / "commands" / "vg" / "uninstall.md").is_file()
     assert (root / ".claude" / "commands" / "vg" / "uninstall.md").is_file()
     assert (root / "codex-skills" / "vg-uninstall" / "SKILL.md").is_file()

@@ -32,7 +32,15 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "VERSION").exists() and (parent / ".git").exists():
+            return parent
+    return here.parents[3]
+
+
+REPO_ROOT = _find_repo_root()
 XML_VALIDATOR = REPO_ROOT / ".claude" / "scripts" / "validators" / \
     "validate-crossai-review-xml.py"
 MULTI_CLI_VALIDATOR = REPO_ROOT / ".claude" / "scripts" / "validators" / \

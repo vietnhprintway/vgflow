@@ -32,11 +32,67 @@ SCRUB_ENV_KEYS = {
 }
 
 
+def _is_wsl_launcher(path: str) -> bool:
+    normalized = path.replace("/", "\\").lower()
+    return (
+        "\\windows\\system32\\bash.exe" in normalized
+        or "\\appdata\\local\\microsoft\\windowsapps\\bash.exe" in normalized
+    )
+
+
+def _existing(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in paths:
+        if not raw:
+            continue
+        path = os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
+        key = os.path.normcase(path)
+        if key in seen or not os.path.isfile(path):
+            continue
+        seen.add(key)
+        out.append(path)
+    return out
+
+
 def _shell_binary() -> str:
-    for name in ("bash", "sh"):
-        path = shutil.which(name)
-        if path:
-            return path
+    env_bash = os.environ.get("VG_BASH", "")
+    path_bash = shutil.which("bash") or shutil.which("bash.exe") or ""
+
+    if os.name != "nt":
+        candidates = _existing([env_bash, path_bash, "/usr/bin/bash", "/bin/bash"])
+        if candidates:
+            return candidates[0]
+        sh_path = shutil.which("sh")
+        if sh_path:
+            return sh_path
+        raise FileNotFoundError("bash/sh not found in PATH")
+
+    program_files = [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        os.environ.get("LocalAppData", ""),
+    ]
+    git_candidates: list[str] = []
+    for root in program_files:
+        if not root:
+            continue
+        git_candidates.extend(
+            [
+                str(Path(root) / "Git" / "bin" / "bash.exe"),
+                str(Path(root) / "Git" / "usr" / "bin" / "bash.exe"),
+                str(Path(root) / "Programs" / "Git" / "bin" / "bash.exe"),
+                str(Path(root) / "Programs" / "Git" / "usr" / "bin" / "bash.exe"),
+            ]
+        )
+
+    candidates = [env_bash, *git_candidates]
+    if path_bash and not _is_wsl_launcher(path_bash):
+        candidates.append(path_bash)
+    candidates.append(path_bash)
+    existing = _existing(candidates)
+    if existing:
+        return existing[0]
     raise FileNotFoundError("bash/sh not found in PATH")
 
 
