@@ -42,6 +42,7 @@ from pathlib import Path
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
 CURRENT_RUN = REPO_ROOT / ".vg" / "current-run.json"
 SESSION_CONTEXT = REPO_ROOT / ".vg" / ".session-context.json"
+SESSION_CONTEXTS = REPO_ROOT / ".vg" / "session-contexts"
 ORCH = REPO_ROOT / ".claude" / "scripts" / "vg-orchestrator"
 LOG = REPO_ROOT / ".vg" / "hook-entry.log"
 
@@ -72,7 +73,25 @@ def approve(context: str | None = None) -> None:
     sys.exit(0)
 
 
-def _write_session_context(run_id: str, command: str, phase: str) -> None:
+def _session_context_path(session_id: str | None) -> Path | None:
+    if not session_id:
+        return None
+    return SESSION_CONTEXTS / f"{_safe_session_filename(session_id)}.json"
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+def _write_session_context(
+    run_id: str,
+    command: str,
+    phase: str,
+    session_id: str | None = None,
+) -> None:
     """Initialize .vg/.session-context.json for Layer 2 step tracker.
 
     Schema (consumed by vg-step-tracker.py PostToolUse hook):
@@ -89,6 +108,7 @@ def _write_session_context(run_id: str, command: str, phase: str) -> None:
     SESSION_CONTEXT.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "run_id": run_id,
+        "session_id": session_id,
         "command": command,
         "phase": phase,
         "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -96,7 +116,10 @@ def _write_session_context(run_id: str, command: str, phase: str) -> None:
         "step_history": [],
         "telemetry_emitted": [],
     }
-    SESSION_CONTEXT.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _atomic_write_json(SESSION_CONTEXT, payload)
+    per_session = _session_context_path(session_id)
+    if per_session is not None:
+        _atomic_write_json(per_session, payload)
 
 
 def _safe_session_filename(sid: str) -> str:
@@ -304,7 +327,12 @@ def main() -> int:
             # updates current_step when AI runs `touch .step-markers/N.done`.
             # Best-effort: never fail run-start on session-context write error.
             try:
-                _write_session_context(run_id, command, phase_token)
+                _write_session_context(
+                    run_id,
+                    command,
+                    phase_token,
+                    session_id=session_id,
+                )
             except Exception as e:
                 log(f"session-context init failed (non-fatal): {e}")
 
