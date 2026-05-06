@@ -39,7 +39,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 
-VALID_VERDICTS = frozenset({"pass", "flag", "block"})
+VALID_VERDICTS = frozenset({"pass", "flag", "block", "inconclusive"})
 
 
 def _extract_fields(path: Path) -> dict:

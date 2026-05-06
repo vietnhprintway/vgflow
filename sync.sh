@@ -263,6 +263,120 @@ PY
   fi
 }
 
+prune_legacy_claude_local_hooks() {
+  local root="$1"
+  local settings="$root/.claude/settings.local.json"
+
+  [ -f "$settings" ] || return 0
+  if [ -z "$PYTHON_BIN" ]; then
+    note "MISSING python: cannot prune legacy Claude local hooks"
+    MISSING=$((MISSING + 1))
+    return
+  fi
+
+  local result
+  result="$("$PYTHON_BIN" - "$settings" "$MODE_CHECK" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+check = sys.argv[2] == "true"
+
+legacy_scripts = (
+    "vg-verify-claim.py",
+    "vg-edit-warn.py",
+    "vg-entry-hook.py",
+    "vg-step-tracker.py",
+    "vg-agent-spawn-guard.py",
+)
+hook_runner_markers = (
+    "vg-run-bash-hook.py",
+    "vg-user-prompt-submit.sh",
+    "vg-session-start.sh",
+    "vg-pre-tool-use-bash.sh",
+    "vg-pre-tool-use-write.sh",
+    "vg-pre-tool-use-agent.sh",
+    "vg-post-tool-use-todowrite.sh",
+    "vg-stop.sh",
+    ".claude/scripts/hooks/",
+)
+vg_hook_markers = (*legacy_scripts, *hook_runner_markers)
+
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+except Exception:
+    print("unreadable")
+    raise SystemExit(0)
+
+hooks = data.get("hooks")
+if not isinstance(hooks, dict):
+    print("clean")
+    raise SystemExit(0)
+
+changed = False
+new_hooks = {}
+for event, entries in hooks.items():
+    if not isinstance(entries, list):
+        new_hooks[event] = entries
+        continue
+    kept_entries = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            kept_entries.append(entry)
+            continue
+        hook_list = entry.get("hooks")
+        if not isinstance(hook_list, list):
+            kept_entries.append(entry)
+            continue
+        kept_hook_list = []
+        for hook in hook_list:
+            command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+            is_legacy_vg = any(marker in command for marker in vg_hook_markers)
+            if is_legacy_vg:
+                changed = True
+            else:
+                kept_hook_list.append(hook)
+        if kept_hook_list:
+            updated = dict(entry)
+            updated["hooks"] = kept_hook_list
+            kept_entries.append(updated)
+        elif hook_list:
+            changed = True
+    if kept_entries:
+        new_hooks[event] = kept_entries
+    elif entries:
+        changed = True
+
+if not changed:
+    print("clean")
+    raise SystemExit(0)
+
+if not check:
+    if new_hooks:
+        data["hooks"] = new_hooks
+    else:
+        data.pop("hooks", None)
+    settings_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+print("changed")
+PY
+)"
+
+  case "$result" in
+    changed)
+      note "UPDATED: claude-hooks:.claude/settings.local.json VG hooks pruned"
+      CHANGED=$((CHANGED + 1))
+      if [ "$MODE_CHECK" = "false" ]; then
+        echo "  OK: VG hooks pruned from .claude/settings.local.json"
+      fi
+      ;;
+    unreadable)
+      note "WARN: cannot parse .claude/settings.local.json for legacy hook pruning"
+      ;;
+  esac
+}
+
 echo "VGFlow sync"
 echo "  source: $SCRIPT_DIR"
 echo "  target: $TARGET_ROOT"
@@ -310,34 +424,8 @@ if [ "$MODE_CHECK" = "false" ]; then
 fi
 echo ""
 
-echo "2b. Ensure Claude enforcement hooks"
-if [ -z "$PYTHON_BIN" ]; then
-  note "MISSING python: cannot verify/install Claude hooks"
-  MISSING=$((MISSING + 1))
-elif [ -f "$TARGET_ROOT/.claude/scripts/vg-hooks-install.py" ]; then
-  if [ "$MODE_CHECK" = "true" ]; then
-    if ! ( cd "$TARGET_ROOT" && "$PYTHON_BIN" .claude/scripts/vg-hooks-install.py --check >/dev/null 2>&1 ); then
-      note "UPDATED: claude-hooks:.claude/settings.local.json"
-      CHANGED=$((CHANGED + 1))
-    fi
-  else
-    if ( cd "$TARGET_ROOT" && "$PYTHON_BIN" .claude/scripts/vg-hooks-install.py >/tmp/vgflow-hooks-install.log 2>&1 ); then
-      echo "  OK: hooks installed/repaired in .claude/settings.local.json"
-      if [ -f "$TARGET_ROOT/.claude/scripts/vg-hooks-selftest.py" ]; then
-        if ( cd "$TARGET_ROOT" && "$PYTHON_BIN" .claude/scripts/vg-hooks-selftest.py >/tmp/vgflow-hooks-selftest.log 2>&1 ); then
-          echo "  OK: hook self-test passed"
-        else
-          echo "  WARN: hook self-test failed; run: cd \"$TARGET_ROOT\" && $PYTHON_BIN .claude/scripts/vg-hooks-selftest.py"
-        fi
-      fi
-    else
-      note "FAILED: claude-hooks install; run cd $TARGET_ROOT && $PYTHON_BIN .claude/scripts/vg-hooks-install.py"
-    fi
-  fi
-else
-  note "MISSING target hook installer: .claude/scripts/vg-hooks-install.py"
-  MISSING=$((MISSING + 1))
-fi
+echo "2b. Remove legacy Claude local hooks"
+prune_legacy_claude_local_hooks "$TARGET_ROOT"
 if [ "$MODE_CHECK" = "false" ]; then
   find "$TARGET_ROOT/.claude/scripts" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   find "$TARGET_ROOT/.claude/scripts" -type f -name '*.pyc' -delete 2>/dev/null || true

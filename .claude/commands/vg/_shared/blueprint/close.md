@@ -216,6 +216,14 @@ git commit -m "blueprint(${PHASE_NUMBER}): plans + contracts + goals — CrossAI
 ### 6.2.4 — write 3_complete marker
 
 ```bash
+STATE_FILE="${PHASE_DIR}/blueprint-state.json"
+if [ -f "$STATE_FILE" ]; then
+  jq '.steps_status["3_complete"] = "completed" |
+      .current_step = "complete" |
+      .updated_at = (now|strftime("%FT%TZ"))' \
+     "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE"
+fi
+
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "3_complete" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/3_complete.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 3_complete 2>/dev/null || true

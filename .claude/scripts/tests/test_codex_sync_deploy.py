@@ -108,6 +108,39 @@ def _agent_names(root: Path) -> set[str]:
     return {p.name for p in agent_root.glob("*.toml")}
 
 
+def _write_stale_claude_local_hooks(root: Path) -> None:
+    settings = root / ".claude" / "settings.local.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["Bash(echo:*)"]},
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "python .claude/scripts/vg-entry-hook.py"},
+                                {"type": "command", "command": "echo user-hook"},
+                            ]
+                        }
+                    ],
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "python3 .claude/scripts/hooks/vg-run-bash-hook.py .claude/scripts/hooks/vg-stop.sh",
+                                }
+                            ]
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _canonical_codex_skill_count() -> int:
     return sum(
         1
@@ -161,7 +194,7 @@ def _assert_toml_smoke(path: Path) -> None:
 
 
 def _assert_claude_hooks_installed(root: Path) -> None:
-    settings = root / ".claude" / "settings.local.json"
+    settings = root / ".claude" / "settings.json"
     assert settings.is_file(), f"missing Claude hook settings: {settings}"
     data = json.loads(settings.read_text(encoding="utf-8"))
     commands: list[str] = []
@@ -170,14 +203,31 @@ def _assert_claude_hooks_installed(root: Path) -> None:
             for hook in matcher.get("hooks", []):
                 commands.append(hook.get("command", ""))
     joined = "\n".join(commands)
-    assert "vg-entry-hook.py" in joined
-    assert "vg-verify-claim.py" in joined
-    assert "vg-edit-warn.py" in joined
-    assert "vg-step-tracker.py" in joined
+    assert "vg-run-bash-hook.py" in joined
+    assert "vg-user-prompt-submit.sh" in joined
+    assert "vg-stop.sh" in joined
+    assert "vg-pre-tool-use-bash.sh" in joined
+    assert "vg-post-tool-use-todowrite.sh" in joined
     assert "UserPromptSubmit" in data["hooks"]
     assert "Stop" in data["hooks"]
-    post_tool = data["hooks"]["PostToolUse"]
-    assert any(matcher.get("matcher") == "Bash" for matcher in post_tool)
+    pre_tool = data["hooks"]["PreToolUse"]
+    assert any(matcher.get("matcher") == "Bash" for matcher in pre_tool)
+
+    local_settings = root / ".claude" / "settings.local.json"
+    if local_settings.exists():
+        local = json.loads(local_settings.read_text(encoding="utf-8"))
+        local_commands: list[str] = []
+        for matchers in local.get("hooks", {}).values():
+            for matcher in matchers:
+                for hook in matcher.get("hooks", []):
+                    local_commands.append(hook.get("command", ""))
+        local_joined = "\n".join(local_commands)
+        assert "vg-entry-hook.py" not in local_joined
+        assert "vg-verify-claim.py" not in local_joined
+        assert "vg-step-tracker.py" not in local_joined
+        assert "vg-run-bash-hook.py" not in local_joined
+        assert "vg-stop.sh" not in local_joined
+        assert "echo user-hook" in local_joined
 
 
 def _assert_no_python_cache_synced(root: Path) -> None:
@@ -269,6 +319,7 @@ def test_sync_deploys_full_codex_surface_to_project_and_fake_global_when_opted_i
     stale_global.parent.mkdir(parents=True)
     stale_local.write_text("stale", encoding="utf-8")
     stale_global.write_text("stale", encoding="utf-8")
+    _write_stale_claude_local_hooks(target)
 
     repo_bash = _bash_path(bash, REPO_ROOT)
     target_bash = _bash_path(bash, target)
@@ -469,6 +520,7 @@ def test_install_deploys_full_claude_and_codex_surfaces(tmp_path):
     stale_global.parent.mkdir(parents=True)
     stale_local.write_text("stale", encoding="utf-8")
     stale_global.write_text("stale", encoding="utf-8")
+    _write_stale_claude_local_hooks(target)
 
     repo_bash = _bash_path(bash, REPO_ROOT)
     target_bash = _bash_path(bash, target)

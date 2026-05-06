@@ -589,6 +589,8 @@ else
   } > "$CROSSAI_CTX"
 
   # Set up + delegate to crossai-invoke.md
+  # Important: shared invoker isolates child CLI cwd from repo hooks/config and
+  # canonicalizes failures through crossai-normalize-results.py.
   export CONTEXT_FILE="$CROSSAI_CTX"
   export OUTPUT_DIR="${PHASE_DIR}/crossai"
   export LABEL="blueprint-review"

@@ -96,13 +96,21 @@ def _detect_step_transition(command: str) -> tuple[str, str] | None:
     """
     if not command:
         return None
-    m = TOUCH_MARKER_RE.search(command)
+    # Avoid treating shell capability probes as real step transitions.
+    # Example: `type -t mark_step >/dev/null 2>&1 && mark_step ...`
+    # previously matched `mark_step >/dev/null 2` and recorded step "2".
+    probe_scrubbed = re.sub(
+        r"(?:^|[;&|()\s])(?:type\s+-t|command\s+-v)\s+mark_step\b[^\n;&|)]*",
+        " ",
+        command,
+    )
+    m = TOUCH_MARKER_RE.search(probe_scrubbed)
     if m:
         return (m.group("step"), m.group("transition"))
-    m = MARK_STEP_HELPER_RE.search(command)
+    m = MARK_STEP_HELPER_RE.search(probe_scrubbed)
     if m:
         return (m.group("step"), "mark")
-    m = MARK_STEP_CMD_RE.search(command)
+    m = MARK_STEP_CMD_RE.search(probe_scrubbed)
     if m:
         return (m.group("step"), "mark")
     return None

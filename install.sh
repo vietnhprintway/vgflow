@@ -171,7 +171,8 @@ if [ -d "$SCRIPT_DIR/scripts" ]; then
   #                    lock.py, journal.py, db.py (run-start/abort, HMAC gate)
   # tests/        — regression suite (so CI can run pytest .claude/scripts/tests/)
   # lib/          — v2.10 Phase 15 — threshold-resolver.py + future helpers
-  for subdir in validators vg-orchestrator tests lib; do
+  # hooks/        — Windows-safe Claude hook runner + canonical hook scripts
+  for subdir in validators vg-orchestrator tests lib hooks; do
     if [ -d "$SCRIPT_DIR/scripts/$subdir" ]; then
       mkdir -p "$TARGET/.claude/scripts/$subdir"
       cp -r "$SCRIPT_DIR/scripts/$subdir/"* "$TARGET/.claude/scripts/$subdir/" 2>/dev/null || true
@@ -180,6 +181,8 @@ if [ -d "$SCRIPT_DIR/scripts" ]; then
 
   chmod +x "$TARGET/.claude/scripts/"*.py 2>/dev/null || true
   chmod +x "$TARGET/.claude/scripts/"*.sh 2>/dev/null || true
+  chmod +x "$TARGET/.claude/scripts/hooks/"*.sh 2>/dev/null || true
+  chmod +x "$TARGET/.claude/scripts/hooks/"*.py 2>/dev/null || true
   chmod +x "$TARGET/.claude/scripts/validators/"*.py 2>/dev/null || true
   chmod +x "$TARGET/.claude/scripts/vg-orchestrator/"*.py 2>/dev/null || true
   chmod +x "$TARGET/.claude/scripts/lib/"*.py 2>/dev/null || true
@@ -539,25 +542,86 @@ fi
 # Hooks run at Stop (verify runtime_contract) + PostToolUse (warn on skill edit).
 # Project-local install so enforcement travels with the repo.
 echo "[5b/7] Enforcement hooks..."
-if [ -f "$TARGET/.claude/scripts/vg-hooks-install.py" ]; then
-  ( cd "$TARGET" && python .claude/scripts/vg-hooks-install.py ) && {
-    echo "  → Stop hook: verify runtime_contract side-effects"
-    echo "  → PostToolUse hook: warn on VG skill edit (reload required)"
-    echo "  → UserPromptSubmit hook: pre-seed vg-orchestrator run-start"
-    echo "  → PostToolUse Bash hook: track step markers into events.db"
+if [ -f "$TARGET/.claude/scripts/hooks/install-hooks.sh" ]; then
+  bash "$TARGET/.claude/scripts/hooks/install-hooks.sh" \
+    --target "$TARGET/.claude/settings.json" && {
+    echo "  → Canonical hooks: .claude/settings.json"
+    echo "  → Stop/UserPromptSubmit/PreToolUse/PostToolUse via scripts/hooks runner"
+  } || echo "  ⚠ Hooks install failed. Re-run: bash $TARGET/.claude/scripts/hooks/install-hooks.sh --target $TARGET/.claude/settings.json"
 
-    # Self-test — prove the hooks actually execute (not just installed)
-    if [ -f "$TARGET/.claude/scripts/vg-hooks-selftest.py" ]; then
-      echo "  Running hook self-test..."
-      if ( cd "$TARGET" && python .claude/scripts/vg-hooks-selftest.py >/dev/null 2>&1 ); then
-        echo "  ✓ Hook self-test passed (hooks confirmed functional)"
-      else
-        echo "  ⚠ Hook self-test failed. Re-run: cd $TARGET && python .claude/scripts/vg-hooks-selftest.py"
-      fi
-    fi
-  } || echo "  ⚠ Hooks install failed. Re-run: cd $TARGET && python .claude/scripts/vg-hooks-install.py"
+  if [ -n "${PYTHON_BIN:-}" ] && [ -f "$TARGET/.claude/settings.local.json" ]; then
+    "$PYTHON_BIN" - "$TARGET/.claude/settings.local.json" <<'PY' >/dev/null 2>&1 || true
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+legacy_scripts = (
+    "vg-verify-claim.py",
+    "vg-edit-warn.py",
+    "vg-entry-hook.py",
+    "vg-step-tracker.py",
+    "vg-agent-spawn-guard.py",
+)
+hook_runner_markers = (
+    "vg-run-bash-hook.py",
+    "vg-user-prompt-submit.sh",
+    "vg-session-start.sh",
+    "vg-pre-tool-use-bash.sh",
+    "vg-pre-tool-use-write.sh",
+    "vg-pre-tool-use-agent.sh",
+    "vg-post-tool-use-todowrite.sh",
+    "vg-stop.sh",
+    ".claude/scripts/hooks/",
+)
+vg_hook_markers = (*legacy_scripts, *hook_runner_markers)
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+hooks = data.get("hooks")
+if not isinstance(hooks, dict):
+    raise SystemExit(0)
+new_hooks = {}
+changed = False
+for event, entries in hooks.items():
+    if not isinstance(entries, list):
+        new_hooks[event] = entries
+        continue
+    kept_entries = []
+    for entry in entries:
+        hook_list = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(hook_list, list):
+            kept_entries.append(entry)
+            continue
+        kept_hooks = []
+        for hook in hook_list:
+            command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+            if any(marker in command for marker in vg_hook_markers):
+                changed = True
+            else:
+                kept_hooks.append(hook)
+        if kept_hooks:
+            updated = dict(entry)
+            updated["hooks"] = kept_hooks
+            kept_entries.append(updated)
+        elif hook_list:
+            changed = True
+    if kept_entries:
+        new_hooks[event] = kept_entries
+    elif entries:
+        changed = True
+if changed:
+    if new_hooks:
+        data["hooks"] = new_hooks
+    else:
+        data.pop("hooks", None)
+    settings_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    echo "  → VG hooks pruned from .claude/settings.local.json"
+  fi
 else
-  echo "  → vg-hooks-install.py not copied — skipping (check scripts step)"
+  echo "  → scripts/hooks/install-hooks.sh not copied — skipping (check scripts step)"
 fi
 find "$TARGET/.claude/scripts" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 find "$TARGET/.claude/scripts" -type f -name '*.pyc' -delete 2>/dev/null || true

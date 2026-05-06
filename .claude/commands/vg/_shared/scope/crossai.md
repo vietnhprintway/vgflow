@@ -81,7 +81,7 @@ Review the discussion output. Find gaps between SPECS requirements and CONTEXT d
 ---
 ```
 
-Set `$CONTEXT_FILE`, `$OUTPUT_DIR="${PHASE_DIR}/crossai"`, `$LABEL="scope-review"`. Read and follow `.claude/commands/vg/_shared/crossai-invoke.md`.
+Set `$CONTEXT_FILE`, `$OUTPUT_DIR="${PHASE_DIR}/crossai"`, `$LABEL="scope-review"`. Read and follow `.claude/commands/vg/_shared/crossai-invoke.md` exactly: child CLIs must run via isolated runner and the final verdict must come from `crossai-normalize-results.py`, not raw `result-*.xml`.
 
 ## §3. Handle CrossAI findings
 

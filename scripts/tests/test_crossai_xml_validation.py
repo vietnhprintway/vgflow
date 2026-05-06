@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 XML_VALIDATOR = REPO_ROOT / ".claude" / "scripts" / "validators" / \
     "validate-crossai-review-xml.py"
 MULTI_CLI_VALIDATOR = REPO_ROOT / ".claude" / "scripts" / "validators" / \
@@ -75,6 +75,12 @@ class TestXmlValidator:
     def test_valid_xml_passes(self, tmp_path):
         f = tmp_path / "result-codex.xml"
         _write_xml(f)
+        r = _run(XML_VALIDATOR, ["--path", str(f), "--quiet"])
+        assert r.returncode == 0
+
+    def test_inconclusive_xml_passes_schema(self, tmp_path):
+        f = tmp_path / "result-codex.xml"
+        _write_xml(f, verdict="inconclusive", score="0", reviewer="Codex")
         r = _run(XML_VALIDATOR, ["--path", str(f), "--quiet"])
         assert r.returncode == 0
 
@@ -260,3 +266,16 @@ class TestMultiCliConsensus:
         ])
         # Only 1 parseable → can't reach consensus of 2
         assert r.returncode == 1
+
+    def test_all_inconclusive_is_parseable_consensus(self, tmp_path):
+        _write_xml(tmp_path / "result-codex.xml", reviewer="Codex", verdict="inconclusive", score="0")
+        _write_xml(tmp_path / "result-gemini.xml", reviewer="Gemini", verdict="inconclusive", score="0")
+
+        r = _run(MULTI_CLI_VALIDATOR, [
+            "--glob", str(tmp_path / "result-*.xml"),
+            "--min-consensus", "2",
+            "--json",
+        ])
+        data = json.loads(r.stdout)
+        assert r.returncode == 0
+        assert data["consensus"]["consensus_verdict"] == "inconclusive"

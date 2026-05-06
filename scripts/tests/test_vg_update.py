@@ -56,8 +56,11 @@ def test_update_command_merges_all_known_file_types():
 def test_update_command_repairs_enforcement_hooks():
     text = UPDATE_MD.read_text(encoding="utf-8")
     assert '<step name="7b_repair_hooks">' in text
-    assert "vg-hooks-install.py" in text
-    assert "vg-hooks-selftest.py" in text
+    assert "scripts/hooks/install-hooks.sh" in text
+    assert "settings.local.json" in text
+    assert "vg_uninstall.py" in text
+    assert "prune-hooks" in text
+    assert "double hooks can create duplicate UserPromptSubmit" in text
     assert "UserPromptSubmit" in text
     assert "PostToolUse" in text
     assert ".vg/events.db" in text
