@@ -175,6 +175,61 @@ PY
   printf '%s' "$payload"
 }
 
+# Issue Codex #9 / Stage 4 task 4 — render loader JSON output as 2-section
+# markdown. Used by Stage 4 inject sites (build/deploy/accept preflight) to
+# render rules from bootstrap-loader.py --emit rules consistently.
+#
+# Args:
+#   $1 = JSON string from bootstrap-loader.py --emit rules
+#
+# Output (markdown to stdout):
+#   ### Declarative Rules (MUST do / MUST NOT do)
+#   - **{title}**: {prose}
+#   ...
+#
+#   ### Procedural Recipes (worked previously, ADVISORY)
+#   - **{title}**: {prose}
+#     - Sequence: cmd1 -> cmd2 -> ...
+#   ...
+#
+# Empty JSON (or invalid) → empty stdout (caller's `if [ -n "$X" ]` short-circuits).
+vg_bootstrap_render_split() {
+  local rules_json="${1:-}"
+  # Pipe JSON via stdin (safer than embedded heredoc-string interpolation —
+  # arbitrary loader output may contain quotes / apostrophes / backslashes).
+  printf '%s' "$rules_json" | ${PYTHON_BIN:-python3} -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read() or '{}')
+except Exception:
+    data = {}
+parts = []
+decl = data.get('rules_declarative', []) or []
+proc = data.get('rules_procedural', []) or []
+if decl:
+    parts.append('### Declarative Rules (MUST do / MUST NOT do)')
+    parts.append('')
+    for r in decl:
+        title = r.get('title', r.get('id', '?'))
+        prose = (r.get('prose') or '')[:200]
+        parts.append(f'- **{title}**: {prose}')
+    parts.append('')
+if proc:
+    parts.append('### Procedural Recipes (worked previously, ADVISORY)')
+    parts.append('')
+    for r in proc:
+        title = r.get('title', r.get('id', '?'))
+        prose = (r.get('prose') or '')[:200]
+        seq = r.get('sequence', []) or []
+        seq_str = ' -> '.join([s.get('cmd','?') for s in seq][:5])
+        parts.append(f'- **{title}**: {prose}')
+        if seq_str:
+            parts.append(f'  - Sequence: {seq_str}')
+    parts.append('')
+sys.stdout.write('\n'.join(parts))
+"
+}
+
 # Emit telemetry event for each rule actually rendered into a prompt. Called AFTER
 # vg_bootstrap_render_block succeeds and BEFORE Agent spawn, so downstream tools
 # (`/vg:bootstrap --trace L-042`, `/vg:telemetry --gate bootstrap.rule_fired`)
