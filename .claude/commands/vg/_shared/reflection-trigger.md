@@ -224,3 +224,21 @@ fail. Run: `python .claude/scripts/verify-reflection-coverage.py`
 **Wiring site:** commands/vg/roam.md.
 
 Note: roam catches bugs review/test miss → high-signal reflector input (Codex #2).
+
+## post-amend (NEW v1.1, Stage 2 task 5/5)
+
+**Trigger event:** `phase.amend_committed` (any outcome).
+
+**Inputs to reflector:**
+- AMENDMENT-LOG.md
+- diff between old/new CONTEXT.md decisions
+
+**Candidate target:** type=retract — invalidate rules whose preconditions reference removed decisions.
+
+**Fingerprint:** hash(removed_decision_ids + repo_id).
+
+**Gating:** vg.config.md → meta_memory_mode != "disabled". Default disabled.
+
+**Wiring site:** commands/vg/amend.md.
+
+Critical: without this, rules learned from prior scope persist after scope change → contradiction (Codex #2).
