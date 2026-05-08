@@ -25,6 +25,7 @@ Subcommands:
   --phase orient [--json]      Phase 1: snapshot bootstrap state directory
   --phase gather [--json]      Phase 2: aggregate signal from events.db
   --phase consolidate [--apply] Phase 3: in-place merge into overlay/ACCEPTED/log
+  --phase prune [--apply]      Phase 4: rebuild MEMORY.md <=200 lines, demote to topics/
 """
 from __future__ import annotations
 
@@ -645,6 +646,251 @@ def consolidate(state_dir: Path, gather_report: dict, apply: bool) -> dict:
     return report
 
 
+# ---------------------------------------------------------------------------
+# Phase 4 - Prune & Index (Task 5.5)
+#
+# Rebuild .vg/bootstrap/MEMORY.md so its line count <= MEMORY_MAX_LINES
+# (Anthropic Dreams startup cutoff: 200 lines per design Section 13.1).
+# When the index would overflow, demote the oldest / lowest-priority rules
+# into per-topic files at .vg/bootstrap/topics/{target_step}.md, leaving a
+# 1-line pointer in MEMORY.md.
+#
+# Index entry shape (one line per rule):
+#   - {slug} ({tier}/{priority}) target={target_step} -> topics/{target_step}.md
+#
+# Selection for demotion when over budget:
+#   1. Group rules by target_step (e.g. "deploy", "test", "accept", "build").
+#   2. Sort within group by (priority asc, mtime asc) -> demote lowest-priority
+#      and oldest first.
+#   3. Pop until len(MEMORY.md lines) <= MEMORY_MAX_LINES.
+#
+# Default mode = dry-run; --apply required for writes (consistent with
+# Phase 3). Topic files are append-managed: existing topic content is
+# preserved, demoted rules are appended fresh under the date header.
+# ---------------------------------------------------------------------------
+
+MEMORY_MAX_LINES = 200
+MEMORY_HEADER = (
+    "# .vg/bootstrap/MEMORY.md\n"
+    "\n"
+    "Index of accepted bootstrap rules. Capped at 200 lines (Anthropic\n"
+    "Dreams startup cutoff). Verbose entries demoted to topics/.\n"
+    "\n"
+)
+
+
+PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
+def _parse_rule_frontmatter(path: Path) -> dict:
+    """Return YAML frontmatter dict for a rule file. Empty dict on parse fail
+    so prune is robust against partially-written files."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}
+    front_text = text[4:end]
+    try:
+        import yaml
+        loaded = yaml.safe_load(front_text)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        # Minimal fallback: parse top-level "key: value" lines (no nesting).
+        out: dict = {}
+        for line in front_text.splitlines():
+            if ":" in line and not line.startswith(" "):
+                k, _, v = line.partition(":")
+                out[k.strip()] = v.strip().strip('"').strip("'")
+        return out
+
+
+def _rule_summary_line(slug: str, front: dict, target: str) -> str:
+    title = front.get("title", "").strip()
+    tier = front.get("tier", "?")
+    prio = front.get("priority", "?")
+    summary = title if title else slug
+    # Trim summary so each index line stays compact (~120 chars).
+    if len(summary) > 80:
+        summary = summary[:77] + "..."
+    return (f"- {slug} ({tier}/{prio}) target={target} "
+            f"-> topics/{target}.md  # {summary}")
+
+
+def prune(state_dir: Path, apply: bool) -> dict:
+    """Phase 4 - rebuild MEMORY.md + topic files.
+
+    Returns dry-run/apply report dict. Mutates filesystem ONLY on apply=True.
+    """
+    rules_dir = state_dir / "rules"
+    memory_path = state_dir / "MEMORY.md"
+    topics_dir = state_dir / "topics"
+
+    rule_paths: list[Path] = []
+    if rules_dir.exists() and rules_dir.is_dir():
+        rule_paths = sorted(p for p in rules_dir.glob("*.md") if p.is_file())
+
+    # Build (slug, frontmatter, target, mtime, priority_rank) list.
+    rule_meta: list[dict] = []
+    for p in rule_paths:
+        front = _parse_rule_frontmatter(p)
+        slug = front.get("slug") or p.stem
+        target = (front.get("target_step") or front.get("target")
+                  or "general")
+        prio = (front.get("priority") or "low").lower()
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        rule_meta.append({
+            "path": p,
+            "slug": slug,
+            "front": front,
+            "target": target,
+            "mtime": mtime,
+            "prio_rank": PRIORITY_RANK.get(prio, 0),
+        })
+
+    # Header line count: MEMORY_HEADER is multi-line. MEMORY.md cap is HARD
+    # (Anthropic Dreams 200-line startup cutoff). Budget = cap - header -
+    # demoted-pointer-section overhead. Demoted rules are NOT listed
+    # individually in MEMORY.md; instead one collective pointer per target
+    # group ("see topics/{target}.md") so the index stays compact.
+    header_lines = MEMORY_HEADER.count("\n")
+
+    # Sort by demotion priority: lowest prio_rank first, oldest mtime first,
+    # then slug for stability. Best candidates are LAST in this order.
+    ranked = sorted(
+        rule_meta,
+        key=lambda r: (r["prio_rank"], r["mtime"], r["slug"]),
+    )
+
+    # Greedy fit: start with empty kept set, add rules from highest priority
+    # first until we hit the budget. Anything left over is demoted.
+    # Budget for kept index lines = MEMORY_MAX_LINES - header - reserve
+    # (demoted-section header + per-target pointer lines).
+    targets_seen: set[str] = set()
+    for r in rule_meta:
+        targets_seen.add(r["target"])
+    # Reserve: blank line + "## Demoted" + per-target pointer lines.
+    # If no demotion, reserve = 0.
+    # We compute the reserve assuming worst case (all targets demoted), then
+    # tighten after we know which actually got demoted. Two-pass keeps the
+    # math simple.
+    worst_case_reserve = 2 + len(targets_seen) if targets_seen else 0
+    budget = MEMORY_MAX_LINES - header_lines - worst_case_reserve
+    if budget < 0:
+        budget = 0
+
+    # Walk best-priority-first (reverse of demotion order).
+    kept_meta: list[dict] = []
+    demoted: list[dict] = []
+    for r in reversed(ranked):
+        if len(kept_meta) < budget:
+            kept_meta.append(r)
+        else:
+            demoted.append(r)
+
+    # Recompute reserve based on actual demoted target groups.
+    demoted_targets = sorted({r["target"] for r in demoted})
+    if demoted_targets:
+        actual_reserve = 2 + len(demoted_targets)  # blank + header + pointers
+        # If actual_reserve smaller, we may be able to keep MORE rules.
+        # Re-budget once.
+        new_budget = MEMORY_MAX_LINES - header_lines - actual_reserve
+        if new_budget > len(kept_meta):
+            # Promote some demoted rules back into kept (highest-priority of
+            # the demoted set first).
+            promote_back = sorted(
+                demoted,
+                key=lambda r: (-r["prio_rank"], -r["mtime"], r["slug"]),
+            )[:new_budget - len(kept_meta)]
+            promote_set = {id(r) for r in promote_back}
+            kept_meta.extend(promote_back)
+            demoted = [r for r in demoted if id(r) not in promote_set]
+            demoted_targets = sorted({r["target"] for r in demoted})
+
+    # Stable-order kept lines by original sort (priority desc, then slug).
+    kept_meta.sort(key=lambda r: (-r["prio_rank"], r["slug"]))
+
+    kept_lines = [
+        _rule_summary_line(r["slug"], r["front"], r["target"])
+        for r in kept_meta
+    ]
+
+    pointer_lines: list[str] = []
+    if demoted_targets:
+        for t in demoted_targets:
+            count = sum(1 for r in demoted if r["target"] == t)
+            pointer_lines.append(
+                f"- {t}: {count} rules -> topics/{t}.md")
+
+    body_lines = list(kept_lines)
+    if pointer_lines:
+        body_lines.append("")
+        body_lines.append("## Demoted (full content in topics/)")
+        body_lines.extend(pointer_lines)
+
+    final_text = MEMORY_HEADER + "\n".join(body_lines)
+    if not final_text.endswith("\n"):
+        final_text += "\n"
+    final_lines = final_text.count("\n")
+
+    # Group demoted by target for topic-file writes.
+    topics_to_write: dict[str, list[dict]] = {}
+    for r in demoted:
+        topics_to_write.setdefault(r["target"], []).append(r)
+
+    report = {
+        "phase": "prune",
+        "apply": apply,
+        "state_dir": str(state_dir),
+        "rules_total": len(rule_meta),
+        "memory_md_lines_before": _count_lines(memory_path),
+        "memory_md_lines_after": final_lines,
+        "demoted_count": len(demoted),
+        "demoted_slugs": [r["slug"] for r in demoted],
+        "topics_written": sorted(topics_to_write.keys()),
+        "files_modified": [],
+    }
+
+    if not apply:
+        return report
+
+    files_modified: list[str] = []
+    state_dir.mkdir(parents=True, exist_ok=True)
+    memory_path.write_text(final_text, encoding="utf-8")
+    files_modified.append("MEMORY.md")
+
+    if topics_to_write:
+        topics_dir.mkdir(parents=True, exist_ok=True)
+        ts = _utc_iso_now()
+        for target, group in topics_to_write.items():
+            tp = topics_dir / f"{target}.md"
+            existing = tp.read_text(encoding="utf-8") if tp.exists() else (
+                f"# {target} rules (demoted from MEMORY.md)\n\n")
+            section = [f"\n## Demoted at {ts}\n"]
+            for r in group:
+                try:
+                    body = r["path"].read_text(encoding="utf-8")
+                except OSError:
+                    body = ""
+                section.append(
+                    f"### {r['slug']} (priority={r['front'].get('priority','?')})")
+                section.append("")
+                section.append(body)
+                section.append("")
+            tp.write_text(existing + "\n".join(section), encoding="utf-8")
+            files_modified.append(f"topics/{target}.md")
+
+    report["files_modified"] = sorted(files_modified)
+    return report
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Bootstrap consolidation gate (Task 5.1)")
     parser.add_argument("--check-gate", action="store_true", help="Check trigger gate")
@@ -655,7 +901,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--increment-sessions", action="store_true",
                         help="Increment sessions_since_last counter")
     parser.add_argument("--phase",
-                        choices=["orient", "gather", "consolidate"],
+                        choices=["orient", "gather", "consolidate", "prune"],
                         default=None,
                         help="Run a 4-phase consolidation step")
     parser.add_argument("--since-days", type=int, default=DEFAULT_GATHER_SINCE_DAYS,
@@ -745,6 +991,22 @@ def main(argv: list[str]) -> int:
                   f"-> {report['promotions']}")
             print(f"  contradictions: {len(report['contradictions'])} "
                   f"-> {report['contradictions']}")
+            print(f"  files_modified: {report['files_modified']}")
+        return 0
+
+    if args.phase == "prune":
+        report = prune(state_dir, apply=args.apply)
+        if args.json:
+            print(json.dumps(report))
+        else:
+            mode = "apply" if args.apply else "dry-run"
+            print(f"phase=prune mode={mode} state_dir={report['state_dir']}")
+            print(f"  rules_total: {report['rules_total']}")
+            print(f"  MEMORY.md lines before: {report['memory_md_lines_before']}"
+                  f", after: {report['memory_md_lines_after']}")
+            print(f"  demoted: {report['demoted_count']} "
+                  f"-> {report['demoted_slugs']}")
+            print(f"  topics_written: {report['topics_written']}")
             print(f"  files_modified: {report['files_modified']}")
         return 0
 
