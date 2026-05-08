@@ -1,5 +1,63 @@
 # Changelog
 
+## v2.56.0 - Meta-memory v1.1 Stage 4: 4 inject sites + loader v1.1 flags
+
+Minor release. Stage 4 wires bootstrap rules end-to-end into skill prompts. 5 commits (Task 4.0 foundation + 4 inject sites). Gated by `meta_memory_mode != "disabled"` (default disabled — no behavior change yet, Stage 6 flips flag).
+
+### Task 4.0 — bootstrap-loader v1.1 flags (foundation, commit `9d3d1db`)
+
+`bootstrap-loader.py` extended with 4 new CLI flags:
+
+- `--target-step <step>` (repeatable) — filter by frontmatter `target_step`. `global` always matches.
+- `--include-procedural` — include rules with `type=procedural` (default excludes for clean payload)
+- `--filter-preconditions <json>` — substring key/value match against rule's `preconditions` block
+- `--max-bytes <N>` — total budget cap, drops procedural → declarative → legacy in priority order, appends `_truncated: true` marker
+
+Output JSON keys split rules: `rules_declarative[]` + `rules_procedural[]` + legacy `rules[]` (back-compat). 12 new pytest cases.
+
+### Stage 4 inject sites (4 commits)
+
+| Task | Commit | Site | Filter |
+|---|---|---|---|
+| 4.1 | `2980189` | build preflight STEP 1.5c → `.build-context.md` | `--target-step build,deploy --include-procedural` + phase context |
+| 4.2 | `d3ee439` | deploy pre-spawn → `BOOTSTRAP_RULES_BLOCK` env var | `--target-step deploy --include-procedural` + `{env, has_dockerfile}` |
+| 4.3 | `a2a707e` | accept preflight `0b_meta_memory_inject` step → `.accept-context.md` | `--target-step accept` + `{phase_type}` |
+| 4.4 | `a7525a9` | `bootstrap-inject.sh` `vg_bootstrap_render_split()` helper | renders JSON → 2-section markdown |
+
+Each inject site:
+- Gated by `vg.config.md → meta_memory_mode != "disabled"` (default disabled)
+- Calls loader with appropriate filters
+- Renders JSON output via Python heredoc into 2-section markdown:
+  - `### Declarative Rules (MUST do / MUST NOT do)`
+  - `### Procedural Recipes (worked previously, ADVISORY)`
+- Mirror byte-identical (canonical ↔ `.claude/`)
+- Wiring tests added (5 implementer-chosen adaptations from spec)
+
+### Implementer adaptations from plan
+
+1. **JSON parsing via stdin pipe** (not heredoc) — quote-safe for arbitrary loader output
+2. **STEP naming convention** — build uses `STEP 1.5c` (matches existing `STEP 1.X` convention, not spec's `0.5b`)
+3. **Accept inject wrapped with `step-active`/`mark-step`** — preserves HARD-GATE marker discipline + telemetry events
+4. **CRLF/LF line endings preserved per file** — preflight.md CRLF, bootstrap-inject.sh LF
+5. **Loader output remains JSON** (not markdown) — preserves API back-compat for existing scope-based callers
+
+### Verified
+
+- 29 new pytest cases across 5 test files all PASS
+- 51 regression assertions PASS (Stage 3 + 4 cumulative)
+- Mirrors byte-identical
+- 8 pre-existing test failures (`test_rcrurd_preflight_runner`, `test_preflight_invariants_runner`) verified unrelated (WinError 10106 socket env issue, identical fail at parent commit)
+
+### Migration
+
+No breaking changes. `meta_memory_mode` flag still defaults `disabled`. End-users see zero behavior change. Existing 8 `bootstrap-loader.py` callers unaffected (new flags opt-in only).
+
+For developers: rules with `type: procedural` now invisible to loader by default — pass `--include-procedural` to surface them. Ensures clean payload for declarative-only callers.
+
+### Next
+
+Stage 5 (Dreams 4-phase consolidation: orient → gather → consolidate → prune + `/vg:learn --consolidate` mode) ships v2.57-v2.58. Stage 6 (rollout flag + E2E + flip default) ships v2.59.
+
 ## v2.55.0 - Meta-memory v1.1 Stage 3: Causal attribution HARD GATE COMPLETE
 
 Minor release. Stage 3 of meta-memory v1.1 — the **CRITICAL HARD GATE** before Stage 4 inject sites can ship. Closes Codex #9 finding (causal misattribution → cargo-cult learning) per design Section 13.4.
