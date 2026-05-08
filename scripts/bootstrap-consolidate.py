@@ -23,6 +23,7 @@ Subcommands:
   --update-state          Update state.json after consolidation
   --increment-sessions    Increment sessions_since_last counter
   --phase orient [--json] Phase 1: snapshot bootstrap state directory
+  --phase gather [--json] Phase 2: aggregate signal from events.db
 """
 from __future__ import annotations
 
@@ -240,6 +241,205 @@ def orient(state_dir: Path) -> dict:
     return snap
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 - Gather Signal (Task 5.3)
+#
+# Aggregate evidence from events.db and (later) narrow JSONL transcripts.
+# Per Anthropic Auto Dream design (Section 13.1) + Codex #9 attribution gate
+# (Section 13.4):
+#
+#   For procedural rules:
+#     * outcomes WITHOUT attribution.executed_step_ids are DROPPED
+#       (cargo-cult prevention — executor bypassed sequence). The CLI gate
+#       in vg-orchestrator emit-event already rejects these at write time,
+#       but we double-gate at read time so a manually-inserted row can't
+#       poison consolidation either.
+#     * outcomes WITH non-empty executed_step_ids count toward attributed_pass
+#       or attributed_fail by event.outcome column.
+#
+#   For declarative rules: outcome counted as-is (no attribution required).
+#
+# Window: bounded by --since-days (default 30) AND --max-events (default
+# 5000). Whichever fires first. Matches Anthropic's "last N days OR last
+# 100 sessions, whichever smaller" pattern adapted for this repo's scale.
+#
+# Tier proposal:
+#   tier_proposed = "A" iff attributed_pass >= 3 AND contradiction is False
+#   contradiction = True iff attributed_pass >= 3 AND attributed_fail >= 3
+#                  (PASS streak followed by recurring FAIL → propose retract,
+#                  but NEVER auto-retract — Phase 3 invariant)
+#
+# Test isolation: VG_EVENTS_DB_PATH overrides .vg/events.db location.
+# ---------------------------------------------------------------------------
+
+DEFAULT_GATHER_SINCE_DAYS = 30
+DEFAULT_GATHER_MAX_EVENTS = 5000
+
+
+def _events_db_path() -> Path:
+    """Resolve events.db path. VG_EVENTS_DB_PATH wins for tests; otherwise
+    .vg/events.db at CWD (matches vg-orchestrator/db.py production layout)."""
+    env = os.environ.get("VG_EVENTS_DB_PATH")
+    if env:
+        return Path(env).resolve()
+    return Path.cwd() / ".vg" / "events.db"
+
+
+def _query_outcome_events(db_path: Path, since_days: int,
+                          max_events: int) -> list[dict]:
+    """Pull bootstrap.outcome_recorded events within [now - since_days, now].
+
+    Returns list of dicts with keys: outcome (column), payload (parsed dict).
+    Empty list if db absent or schema missing (graceful degrade — Phase 2 must
+    not raise on a fresh repo with no events.db yet).
+    """
+    if not db_path.exists():
+        return []
+    import sqlite3
+    cutoff = time.time() - since_days * 86400
+    # ts column is "%Y-%m-%dT%H:%M:%SZ" UTC string. ORDER BY id DESC LIMIT
+    # max_events caps work; we then filter by ts >= cutoff in Python so a
+    # malformed ts doesn't break the SQL.
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
+        return []
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT outcome, payload_json, ts FROM events "
+                "WHERE event_type = ? ORDER BY id DESC LIMIT ?",
+                ("bootstrap.outcome_recorded", max_events),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+    finally:
+        conn.close()
+
+    import datetime
+    out: list[dict] = []
+    for r in rows:
+        ts_str = r["ts"]
+        try:
+            ts_dt = datetime.datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ")
+            ts_epoch = ts_dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+        except (ValueError, TypeError):
+            ts_epoch = 0.0
+        if ts_epoch < cutoff:
+            continue
+        try:
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except json.JSONDecodeError:
+            payload = {}
+        out.append({"outcome": r["outcome"], "payload": payload})
+    return out
+
+
+def _classify_outcome(outcome_col: str, payload: dict) -> str:
+    """Map (event.outcome column, payload.outcome) -> normalized PASS/FAIL/OTHER.
+
+    Some emitters set outcome via the column (--outcome PASS); others put it
+    in the payload (payload['outcome']='success'). We accept both. Anything
+    that isn't a clean PASS or FAIL surfaces as OTHER and is ignored for
+    tier promotion (tracked separately in raw_event_count).
+    """
+    raw = (outcome_col or "").upper()
+    if raw in {"PASS", "SUCCESS"}:
+        return "PASS"
+    if raw in {"FAIL", "BLOCK", "FAILURE"}:
+        return "FAIL"
+    payload_oc = str(payload.get("outcome", "")).lower()
+    if payload_oc in {"pass", "success"}:
+        return "PASS"
+    if payload_oc in {"fail", "failure", "block"}:
+        return "FAIL"
+    return "OTHER"
+
+
+def gather(state_dir: Path, since_days: int = DEFAULT_GATHER_SINCE_DAYS,
+           max_events: int = DEFAULT_GATHER_MAX_EVENTS) -> dict:
+    """Phase 2 - aggregate rule signals from events.db.
+
+    Returns dict with:
+      phase: "gather"
+      events_window_sec
+      events_processed   # rows kept after window + parse
+      rule_signals: { slug: { rule_type, attributed_pass, attributed_fail,
+                              dropped_no_attribution, tier_proposed,
+                              contradiction } }
+      transcript_signals  # placeholder for future narrow-grep work
+      events_db: str
+    """
+    db_path = _events_db_path()
+    events = _query_outcome_events(db_path, since_days, max_events)
+
+    rule_signals: dict[str, dict] = {}
+    dropped_total = 0
+
+    for ev in events:
+        payload = ev["payload"] or {}
+        slug = payload.get("slug") or payload.get("rule_id")
+        if not slug:
+            continue
+        rule_type = payload.get("rule_type", "declarative")
+        sig = rule_signals.setdefault(slug, {
+            "rule_type": rule_type,
+            "attributed_pass": 0,
+            "attributed_fail": 0,
+            "dropped_no_attribution": 0,
+            "tier_proposed": None,
+            "contradiction": False,
+        })
+        # Keep the most-specific rule_type if we see it later (procedural
+        # wins over declarative — declarative is the safe default fallback
+        # for legacy events without rule_type).
+        if rule_type == "procedural":
+            sig["rule_type"] = "procedural"
+
+        # Codex #9 attribution gate (read-side enforcement):
+        #   procedural rules require non-empty executed_step_ids.
+        if sig["rule_type"] == "procedural":
+            attribution = payload.get("attribution") or {}
+            executed = (
+                attribution.get("executed_step_ids")
+                if isinstance(attribution, dict) else None
+            )
+            if not executed:
+                sig["dropped_no_attribution"] += 1
+                dropped_total += 1
+                continue
+
+        norm = _classify_outcome(ev["outcome"], payload)
+        if norm == "PASS":
+            sig["attributed_pass"] += 1
+        elif norm == "FAIL":
+            sig["attributed_fail"] += 1
+        # OTHER -> intentionally ignored (no signal, no drop counter)
+
+    # Tier proposal pass — done after counting so contradiction wins over
+    # tier-A promotion when both fire.
+    for slug, sig in rule_signals.items():
+        ap = sig["attributed_pass"]
+        af = sig["attributed_fail"]
+        if ap >= 3 and af >= 3:
+            sig["contradiction"] = True
+            sig["tier_proposed"] = None  # consolidate phase will warn-only
+        elif ap >= 3 and af == 0:
+            sig["tier_proposed"] = "A"
+        # else: leave tier_proposed=None (insufficient evidence)
+
+    return {
+        "phase": "gather",
+        "events_db": str(db_path),
+        "events_window_sec": since_days * 86400,
+        "events_processed": len(events),
+        "events_dropped_no_attribution": dropped_total,
+        "rule_signals": rule_signals,
+        "transcript_signals": [],  # placeholder; narrow-grep deferred
+    }
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Bootstrap consolidation gate (Task 5.1)")
     parser.add_argument("--check-gate", action="store_true", help="Check trigger gate")
@@ -249,8 +449,12 @@ def main(argv: list[str]) -> int:
                         help="Update state.json after successful consolidation")
     parser.add_argument("--increment-sessions", action="store_true",
                         help="Increment sessions_since_last counter")
-    parser.add_argument("--phase", choices=["orient"], default=None,
+    parser.add_argument("--phase", choices=["orient", "gather"], default=None,
                         help="Run a 4-phase consolidation step")
+    parser.add_argument("--since-days", type=int, default=DEFAULT_GATHER_SINCE_DAYS,
+                        help="Phase 2 window in days (default 30)")
+    parser.add_argument("--max-events", type=int, default=DEFAULT_GATHER_MAX_EVENTS,
+                        help="Phase 2 max events to scan (default 5000)")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args(argv[1:])
 
@@ -299,6 +503,23 @@ def main(argv: list[str]) -> int:
             print(f"  ACCEPTED.md exists: {snap['accepted_md_exists']}")
             print(f"  oversized files: {len(snap['oversized_files'])}")
             print(f"  orphan files: {len(snap['orphan_files'])}")
+        return 0
+
+    if args.phase == "gather":
+        report = gather(state_dir, args.since_days, args.max_events)
+        if args.json:
+            print(json.dumps(report))
+        else:
+            print(f"phase=gather events_db={report['events_db']}")
+            print(f"  events_processed: {report['events_processed']}")
+            print(f"  events_dropped_no_attribution: "
+                  f"{report['events_dropped_no_attribution']}")
+            print(f"  rule_signals:")
+            for slug, sig in sorted(report["rule_signals"].items()):
+                print(f"    {slug}: pass={sig['attributed_pass']} "
+                      f"fail={sig['attributed_fail']} "
+                      f"tier={sig['tier_proposed']} "
+                      f"contradiction={sig['contradiction']}")
         return 0
 
     parser.print_help()
