@@ -33,6 +33,8 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
+import json
 import os
 import re
 import subprocess
@@ -44,6 +46,42 @@ from _common import Evidence, Output, timer, emit_and_exit  # noqa: E402
 from _i18n import t  # noqa: E402
 
 REPO_ROOT = Path(os.environ.get("VG_REPO_ROOT") or os.getcwd()).resolve()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# v2.67.0 #163 — severity classification per evidence type.
+#
+# Pre-v2.67.0: Evidence emissions had no severity field, output went to a
+# .tmp/ log only. 77 cookie files flagged in PrintwayV3 dogfood produced 0
+# fix tasks because the AUTO-FIX-TASKS routing pipeline never saw them.
+#
+# Now each evidence type carries a severity (CRITICAL/HIGH/MEDIUM) and is
+# merged into REVIEW-FINDINGS.json via merge_to_review_findings(), where
+# route-findings-to-build.py picks them up (envelope_drift / openapi_invalid
+# / auth_misconfigured / prereq_missing in ALWAYS_ROUTE_FINDING_TYPES — see
+# v2.67.0 #162).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+SEVERITY_BY_EVIDENCE_TYPE = {
+    # CRITICAL — TLS broken / explicit downgrade / MITM exposure
+    "tls_outdated": "CRITICAL",
+    "tls_config_not_found": "MEDIUM",      # advisory — could not find any TLS config
+    "secret_in_example": "CRITICAL",        # real-secret leak in committed file
+    "cors_wildcard_credentials": "CRITICAL",  # wildcard origin + credentials = bypass
+    # HIGH — security control missing where required
+    "hsts_missing": "HIGH",
+    "headers_missing": "HIGH",
+    # MEDIUM — defense-in-depth gaps
+    "cookie_flags_missing": "MEDIUM",
+    "cors_maxage_high": "MEDIUM",
+    "lockfile_missing": "MEDIUM",
+}
+
+
+def _sev(evidence_type: str) -> str:
+    """Look up severity for an evidence type. Default MEDIUM if unknown."""
+    return SEVERITY_BY_EVIDENCE_TYPE.get(evidence_type, "MEDIUM")
 
 # ─────────────────────────────────────────────────────────────────────────
 # Config parsing
@@ -191,6 +229,7 @@ def _check_tls(cfg: dict, out: Output) -> None:
             type="tls_config_not_found",
             message=t("sec_baseline.tls_config_not_found.message"),
             fix_hint=t("sec_baseline.tls_config_not_found.fix_hint"),
+            severity="MEDIUM",
         ))
         return
 
@@ -226,6 +265,7 @@ def _check_tls(cfg: dict, out: Output) -> None:
             ),
             actual=sample,
             fix_hint=t("sec_baseline.tls_outdated.fix_hint"),
+            severity="CRITICAL",
         ))
         return
 
@@ -235,6 +275,7 @@ def _check_tls(cfg: dict, out: Output) -> None:
             type="tls_config_not_found",
             message=t("sec_baseline.tls_config_not_found.message"),
             fix_hint=t("sec_baseline.tls_config_not_found.fix_hint"),
+            severity="MEDIUM",
         ))
 
 
@@ -292,6 +333,7 @@ def _check_headers(cfg: dict, out: Output) -> None:
             type="headers_missing",
             message=t("sec_baseline.headers_missing.message"),
             fix_hint=t("sec_baseline.headers_missing.fix_hint"),
+            severity="HIGH",
         ))
 
     if cfg["require_hsts"] and not has_hsts:
@@ -299,6 +341,7 @@ def _check_headers(cfg: dict, out: Output) -> None:
             type="hsts_missing",
             message=t("sec_baseline.hsts_missing.message"),
             fix_hint=t("sec_baseline.hsts_missing.fix_hint"),
+            severity="HIGH",
         ))
 
 
@@ -397,6 +440,7 @@ def _check_env_example(out: Output) -> None:
             ),
             actual=sample,
             fix_hint=t("sec_baseline.secret_in_example.fix_hint"),
+            severity="CRITICAL",
         ))
 
 
@@ -457,6 +501,7 @@ def _check_cookie_flags(cfg: dict, out: Output) -> None:
             ),
             actual="; ".join(sample_parts),
             fix_hint=t("sec_baseline.cookie_flags_missing.fix_hint"),
+            severity="MEDIUM",
         ))
 
 
@@ -528,6 +573,7 @@ def _check_cors(cfg: dict, out: Output) -> None:
             ),
             actual=sample,
             fix_hint=t("sec_baseline.cors_wildcard_credentials.fix_hint"),
+            severity="CRITICAL",
         ))
 
     if high_maxage_hits:
@@ -542,6 +588,7 @@ def _check_cors(cfg: dict, out: Output) -> None:
             ),
             actual=sample,
             fix_hint=t("sec_baseline.cors_maxage_high.fix_hint"),
+            severity="MEDIUM",
         ))
 
 
@@ -580,7 +627,93 @@ def _check_lockfile(out: Output) -> None:
         type="lockfile_missing",
         message=t("sec_baseline.lockfile_missing.message"),
         fix_hint=t("sec_baseline.lockfile_missing.fix_hint"),
+        severity="MEDIUM",
     ))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# v2.67.0 #163 — REVIEW-FINDINGS.json merge
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _resolve_phase_dir(phase: str | None) -> Path | None:
+    """Resolve phase argument to a phase directory under .vg/phases/.
+
+    Mirrors find_phase_dir() in _common.py without taking a hard dependency
+    (this script is occasionally invoked without that helper present).
+    """
+    if not phase:
+        return None
+    phases_dir = REPO_ROOT / ".vg" / "phases"
+    if not phases_dir.exists():
+        return None
+    # Exact match (e.g. "07.13-foo") then prefix-with-dash
+    for p in phases_dir.iterdir():
+        if not p.is_dir():
+            continue
+        if p.name == phase or p.name.startswith(f"{phase}-"):
+            return p
+    # Zero-padded integer fallback (e.g. "7" → "07-foo")
+    if phase.isdigit():
+        zfilled = phase.zfill(2)
+        for p in phases_dir.iterdir():
+            if p.is_dir() and p.name.startswith(f"{zfilled}-"):
+                return p
+    return None
+
+
+def merge_to_review_findings(out: Output, findings_path: Path) -> int:
+    """v2.67.0 #163 — append security baseline findings into REVIEW-FINDINGS.json
+    so route-findings-to-build.py picks them up for AUTO-FIX-TASKS routing.
+
+    Each Evidence becomes a finding with:
+      - finding_type = "security_baseline"
+      - severity from Evidence.severity (or default MEDIUM)
+      - confidence = "high"
+      - title from message, evidence/fix_hint preserved.
+
+    Returns the number of findings written.
+    """
+    if not out.evidence:
+        return 0
+    try:
+        if findings_path.is_file():
+            payload = json.loads(findings_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                payload = {"findings": []}
+        else:
+            payload = {"findings": []}
+    except (OSError, json.JSONDecodeError):
+        payload = {"findings": []}
+
+    findings = payload.setdefault("findings", [])
+    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    written = 0
+    for ev in out.evidence:
+        sev = (ev.severity or _sev(ev.type) or "MEDIUM").upper()
+        entry = {
+            "id": f"sec-baseline-{ev.type}-{written}",
+            "finding_type": "security_baseline",
+            "severity": sev,
+            "confidence": "high",
+            "cleanup_status": "completed",
+            "title": ev.message,
+            "evidence_type": ev.type,
+            "actual": ev.actual,
+            "fix_hint": ev.fix_hint,
+            "source_validator": "verify-security-baseline",
+            "merged_at": now,
+            "dedupe_key": f"security_baseline:{ev.type}",
+        }
+        findings.append(entry)
+        written += 1
+
+    findings_path.parent.mkdir(parents=True, exist_ok=True)
+    findings_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return written
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -593,6 +726,12 @@ def main() -> None:
     ap.add_argument("--phase", required=False, default=None)
     ap.add_argument("--scope", choices=["repo", "deploy", "all"],
                     default="all")
+    # v2.67.0 #163 — opt-out flag for the merge wiring (default: ON)
+    ap.add_argument(
+        "--no-merge-findings",
+        action="store_true",
+        help="Skip writing security findings to REVIEW-FINDINGS.json",
+    )
     args = ap.parse_args()
 
     out = Output(validator="verify-security-baseline")
@@ -610,6 +749,19 @@ def main() -> None:
             _check_cookie_flags(cfg, out)
             _check_cors(cfg, out)
             _check_lockfile(out)
+
+    # v2.67.0 #163 — merge findings into REVIEW-FINDINGS.json so the
+    # AUTO-FIX-TASKS pipeline (route-findings-to-build.py) can route them.
+    if not args.no_merge_findings:
+        phase_dir = _resolve_phase_dir(args.phase)
+        if phase_dir is not None:
+            findings_path = phase_dir / "REVIEW-FINDINGS.json"
+            try:
+                merge_to_review_findings(out, findings_path)
+            except OSError:
+                # Don't fail the validator on a write error — emit_and_exit
+                # below still ships the canonical .tmp/ output.
+                pass
 
     emit_and_exit(out)
 

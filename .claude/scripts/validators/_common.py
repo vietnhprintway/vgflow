@@ -20,6 +20,11 @@ class Evidence:
     expected: Any = None
     actual: Any = None
     fix_hint: str | None = None
+    # v2.67.0 #163 — severity field so Evidence can route into the
+    # AUTO-FIX-TASKS pipeline (REVIEW-FINDINGS.json) with proper triage.
+    # CRITICAL / HIGH / MEDIUM / LOW. Optional — older callers continue
+    # to work without it.
+    severity: str | None = None
 
 
 @dataclass
