@@ -70,6 +70,19 @@ runtime_contract:
     - path: "${PHASE_DIR}/crossai/result-*.xml"
       glob_min_count: 1
       required_unless_flag: "--skip-crossai"
+    # F3 v2.62.0 (Bug D4) — FORM-API-MAP.md cross-references HTML form
+    # name attrs (from design_assets structural.html) with API-CONTRACTS
+    # request schema field names. Closes the field-level drift gap left
+    # by call-graph + BLOCK 5 validators (which only check URL/method
+    # match + schema completeness). profile_aware: only enforced for
+    # profiles with FE forms. severity=warn keeps F3 advisory in v2.62
+    # — full L4-form gate integration deferred to v2.63+.
+    - path: "${PHASE_DIR}/FORM-API-MAP.md"
+      content_min_bytes: 100
+      content_required_sections: ["# Form ↔ API field map"]
+      required_unless_flag: "--skip-form-api-map"
+      profile_aware: true
+      severity: "warn"
   must_touch_markers:
     - "0_design_discovery"
     - "0_amendment_preflight"
