@@ -914,6 +914,10 @@ def dispatch_auto(plan: list[dict[str, Any]], phase_dir: Path,
                 res = spawn_one_worker(entry, phase_dir, mcp_slot=slot)
             return idx, res
         except Exception as exc:  # noqa: BLE001 — preserve any worker failure
+            # Error dict shape mirrors the timeout/FileNotFoundError paths in
+            # spawn_one_worker — exit_code < 0 is the canonical error sentinel
+            # (no "status" field, to keep all error shapes consistent so a
+            # single ``r["exit_code"] < 0`` check covers timeout/notfound/raise).
             err: dict[str, Any] = {
                 "exit_code": -3,
                 "duration_seconds": 0.0,
@@ -921,7 +925,6 @@ def dispatch_auto(plan: list[dict[str, Any]], phase_dir: Path,
                 "mcp_slot": slot,
                 "lens": entry.get("lens", "lens-unknown"),
                 "selector": elem.get("selector"),
-                "status": "error",
                 "error": str(exc),
                 "_idx": idx,
             }

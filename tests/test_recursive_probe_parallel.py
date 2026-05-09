@@ -146,8 +146,12 @@ def test_parallel_partial_failure_returns_error_dict(
 
     The sentinel ``mock_sleep_s == -1`` triggers a RuntimeError in the
     monkeypatched mock. We pass 5 entries where index 2 is poisoned; the
-    other 4 must come back as successful mocks, and entry 2 must surface
-    as an error-shaped dict (selector + lens + status="error" + error).
+    other 4 must come back as successful mocks (exit_code=0), and entry 2
+    must surface as an error-shaped dict (selector + lens + exit_code=-3
+    + error). The ``exit_code < 0`` sentinel is the canonical error signal
+    — same shape used by the timeout (-1) and FileNotFoundError (-2) paths
+    in ``spawn_one_worker``, so downstream consumers can use a single
+    ``r["exit_code"] < 0`` check across all failure modes.
     """
     real_mock = probe_module._mock_spawn_one
 
@@ -183,14 +187,20 @@ def test_parallel_partial_failure_returns_error_dict(
         assert r.get("exit_code") == 0, (
             f"results[{i}] expected successful mock (exit_code=0); got {r!r}"
         )
-        assert r.get("status") != "error", (
-            f"results[{i}] should not be marked error; got {r!r}"
+        assert "error" not in r, (
+            f"results[{i}] should not have error key; got {r!r}"
         )
 
     # Entry 2 surfaced as an error-shaped dict matching the canonical
-    # field set downstream consumers read.
+    # field set downstream consumers read. ``exit_code == -3`` is the
+    # sentinel for worker-raised exceptions (mirrors timeout=-1 and
+    # FileNotFoundError=-2 in spawn_one_worker — all error paths share
+    # the ``exit_code < 0`` shape, no separate "status" field).
     err = results[2]
-    assert err["status"] == "error", f"poisoned entry not flagged: {err!r}"
+    assert err["exit_code"] == -3, (
+        f"poisoned entry should have exit_code=-3 (worker-raise sentinel); "
+        f"got {err!r}"
+    )
     assert "simulated worker crash" in err["error"], (
         f"error message not propagated: {err!r}"
     )
