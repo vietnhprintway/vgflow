@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.66.1 — Plan-fidelity followup + 2 deferred issues (2026-05-10)
+
+### Bug fixes (closes 2 deferred dogfood issues — ALL 8/8 closed)
+- **#153 MEDIUM:** Review aggregator now clusters findings by API endpoint shape via new `cluster_by_api_endpoint()` + `normalize_api_endpoint()` in `scripts/derive-findings.py`. 1 missing backend endpoint → 1 ROOT finding (severity escalated to MAJOR) + N child references — instead of N MINOR leaves that hid the upstream root cause. Findings without `api_endpoint` key pass through unchanged.
+- **#154 MEDIUM:** `crossai_review.done` marker write now verdict-gated via new shared writer `scripts/crossai-marker-write.py`. When verdict ∈ {pass, flag, ok, partial} AND `ok_count > 0` → `.done` (exit 0). Otherwise → `.inconclusive` (exit 2) so `/vg:next` re-runs CrossAI on subsequent invocations.
+
+### Plan-fidelity (B2-B4)
+- **B2:** Implementer (`.claude/agents/vg-build-task-executor/SKILL.md`) RELAXED — may ask questions when capsule + plan slice are genuinely ambiguous (was: forbidden absolutely). Added mandatory 7-item self-review checklist before commit (scope creep, missing tests, mirror byte-identity, no VERSION bump, no --no-verify/amend, test count matches spec).
+- **B3:** Planner (`.claude/agents/vg-blueprint-planner/SKILL.md`) now enforces 5-step TDD task body structure (failing test → confirm FAIL → minimal impl → confirm PASS → mirror + commit). Required for all `PLAN/task-NN.md` outputs.
+- **B4:** New `.claude/agents/vg-build-final-reviewer/SKILL.md` cumulative reviewer agent. Runs once at end of build (STEP 7.1.5 in `commands/vg/_shared/build/close.md`), reads PLAN.md goal + entire phase commit range + L-gate results. Verdict: PASS/PARTIAL/FAIL. Severity=warn (advisory in v2.66.1). Will flip to block in v2.67.0 after telemetry calibration.
+
+### Test coverage
+**14 new tests across 5 suites.** All pass. Zero regression on v2.66.0 + prior.
+
+### Migration
+- **#153/#154:** Transparent bug fixes. No migration.
+- **B2/B3/B4:** Behavioral changes only affect new builds. Existing in-progress phases unaffected. v2.67.0 will tighten B4 to blocking — operators have one minor cycle to adapt.
+
+### Closes 8/8 dogfood issues
+With v2.66.1, all 8 PrintwayV3 dogfood issues from 2026-05-09 are closed. Roadmap continues with v2.67.0 C-tier strict review research adoptions (Evidence Gate + QA-Checker + Discourse + Sandbox + Hybrid + Min-budget).
+
 ## v2.66.0 — Plan-fidelity B1 + CrossAI hotfix bundle + Prereq strict (2026-05-09)
 
 ### Breaking changes
