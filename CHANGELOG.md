@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.59.0 — Supply chain bug fixes + meta-memory helper (2026-05-09)
+
+Patch-style minor release. 3 P0/HIGH bug fixes confirmed by 2-agent supply-chain audit + 2 meta-memory dogfood enablers (helper command + Stop hook reminder). No breaking changes; meta-memory remains opt-in (default `disabled`).
+
+### Bug fixes (3 P0/HIGH confirmed by 2-agent supply-chain audit)
+
+| ID | File | Fix | Why |
+|---|---|---|---|
+| **P0-1** | `commands/vg/_shared/build/close.md:540` | Write `steps.build.status = "built-complete"` instead of `"done"` | Deploy whitelist accepts `{accepted, tested, reviewed, built-with-debt, built-complete, complete}`. `"done"` was NOT in whitelist → every `/vg:deploy` hard-blocked unless `--allow-build-incomplete`. Commit `4c238ef`. |
+| **P0-2** | `commands/vg/build.md` (must_write) | Declare `${PHASE_DIR}/PIPELINE-STATE.json` with `content_required_sections: ["steps.build.status", "built-complete"]` | PIPELINE-STATE.json consumed by deploy/review/test/accept but missing from every must_write contract. Resume after compact silently broke downstream gates. Commit `fc4cc1f`. |
+| **#142** | `scripts/vg-orchestrator/{contracts,__main__}.py` + `commands/vg/review.md` | Add `profile_aware: bool` field (default true). Review wraps `RUNTIME-MAP.json` + `GOAL-COVERAGE-MATRIX.md` with `profile_aware: false` | `_PROFILE_REQUIRED_ARTIFACTS["feature"]` omitted both files → orchestrator silently downgraded missing must_write to WARN → review emit `run.completed PASS` even when must_write violated. Reproducer: phase 7.15 run_id `de16229c` (linux, vg 2.52.2). Commit `31e01ce`. |
+
+### Features
+
+- **`/vg:meta-memory enable|disable|reflect-only|status`** (commit `db7e062`) — slash command + Python helper for safe `meta_memory_mode` flag control. Atomic write via `tempfile.replace`. Initializes from template if config absent. Replaces error-prone manual edits of `.claude/vg.config.md`.
+- **Stop hook soft reminder — Hướng C** (commit `a95b68d`) — when `meta_memory_mode != "disabled"` AND `bootstrap-consolidate.py --check-gate` exits 0 (24h + 5 sessions accumulated), Stop hook prints once-per-session reminder: `🌙 Meta-memory: consolidation gate met. Run /vg:learn --consolidate --apply to merge promoted rules.` Does NOT auto-mutate — user remains in control.
+
+### Test additions (~30 new pytest assertions)
+
+- `tests/test_build_deploy_status_handoff.py` (3 tests)
+- `tests/test_pipeline_state_must_write.py` (4 tests)
+- `tests/test_profile_aware_must_write.py` (8 tests)
+- `tests/test_meta_memory_set.py` (10 tests)
+- `tests/test_dream_reminder.py` (10 tests)
+
+### Migration
+
+No breaking changes:
+- Build status transition (P0-1) only affects new `/vg:build` runs. Existing PIPELINE-STATE.json files with `"done"` status will be overwritten on next build.
+- PIPELINE-STATE.json must_write enforcement (P0-2) tightens the gate but build already writes the file inline — no behavior change beyond gate visibility.
+- profile_aware field (#142) defaults `true` for back-compat. Only review's RUNTIME-MAP + COVERAGE-MATRIX flip to `false`. Other commands unaffected.
+- Meta-memory features remain opt-in via `meta_memory_mode` flag (default `disabled`). v2.59.0 ships dogfood helper but doesn't flip the default.
+
+### Cumulative test count
+
+v2.58.0 baseline + ~30 new = ~180+ pytest assertions covering meta-memory v1.1 + supply-chain gates.
+
 ## v2.58.0 - Meta-memory v1.1 IMPLEMENTATION COMPLETE — Stage 6 (rollout flag + E2E + docs)
 
 Minor release. Stage 6 closes meta-memory v1.1 — rollout flag + E2E tests + cross-platform smoke + final docs. **All 6 stages of meta-memory v1.1 SHIPPED.**

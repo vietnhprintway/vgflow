@@ -432,6 +432,25 @@ The script scans `PLAN.md <design-ref slug="...">` citations to classify each sl
 | `/vg:sync` | Dev-side source↔mirror sync (maintainer only) |
 | `/vg:telemetry` | Summarize workflow telemetry |
 
+## Meta-memory dogfood (opt-in)
+
+Enable AI's auto-learning loop:
+
+```bash
+/vg:meta-memory enable        # full loop: reflect + inject as advice
+/vg:meta-memory reflect-only  # reflector only (drafts, no inject)
+/vg:meta-memory status
+```
+
+This sets `meta_memory_mode: inject-as-advice` in `.claude/vg.config.md`. The harness then:
+- Reflects after `/vg:deploy /vg:test /vg:accept /vg:roam /vg:amend`
+- Persists promoted rules into `.vg/bootstrap/rules/`
+- Injects them as advisory rules into build / accept / deploy preflight
+
+Stop hook reminds you to run `/vg:learn --consolidate --apply` when 24h + 5 sessions accumulate. Does NOT auto-mutate — you stay in control.
+
+Default remains `disabled` — no behavior change unless you explicitly opt in.
+
 ## Repository layout
 
 ```
