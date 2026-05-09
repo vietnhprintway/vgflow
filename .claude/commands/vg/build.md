@@ -96,6 +96,12 @@ runtime_contract:
     # severity=warn so a clean build (no evidence) doesn't fail contract check.
     - name: "8_5_in_scope_fix_loop"
       severity: "warn"
+    # v2.66.0 Task 7 (B1) — per-task spec compliance reviewer
+    # (vg-build-spec-reviewer Agent spawn) runs after STEP 5 L-gates.
+    # severity=warn — informational signal, fix protocol handles failures.
+    # Telemetry-driven flip to hard-block gated on v2.67.0.
+    - name: "5_1_spec_compliance_review"
+      severity: "warn"
     # Task 18 (pre-test gate) — STEP 6.5 between CrossAI loop and close.
     # Hard contract per Codex round 2 fix #9: NOT severity=warn — required
     # unless --skip-pre-test override is logged via override-use.
@@ -336,6 +342,24 @@ On return:
 bash scripts/vg-narrate-spawn.sh vg-build-post-executor returned "${N} gates passed, summary written"
 ```
 DO NOT verify L gates inline.
+
+### STEP 5.1 — B1 per-task spec compliance review (v2.66.0)
+For each task in the current wave that produced commits, spawn one
+`vg-build-spec-reviewer` to verify code matches PLAN.md spec exactly.
+Read `_shared/build/post-execution-overview.md` STEP 5.1 section for
+the per-task spawn loop. Per-task (NOT per-wave) — separate from
+quality review:
+```bash
+for task_id in "${WAVE_TASKS[@]}"; do
+  COMMIT_SHA=$(git log --grep="task-${task_id}\\|${task_id}:" -n1 --format=%H)
+  bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer spawning "spec-review task-${task_id}"
+  # Then: Agent(subagent_type="vg-build-spec-reviewer", prompt=<task_id, commit_sha, phase_dir>)
+done
+```
+On FAIL: route to STEP 5.5 in-scope-fix-loop OR re-spawn implementer
+per existing fix protocol. Marker `5_1_spec_compliance_review` is
+severity=warn (informational signal — telemetry-driven flip to
+hard-block gated on v2.67.0).
 
 ### STEP 5.5 — In-scope warning auto-fix (HEAVY, conditional)
 

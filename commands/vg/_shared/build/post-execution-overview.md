@@ -1038,6 +1038,52 @@ echo "✓ API-DOCS.md generated and validated for review/test consumption"
 
 ---
 
+## STEP 5.1 — B1 per-task spec compliance review (v2.66.0)
+
+After the post-executor's L-gate slate (L2/L3/L5/L6 + truthcheck) passes
+and SUMMARY.md is written, run the B1 per-task spec compliance reviewer
+to verify each implemented task's code matches the PLAN.md spec exactly
+(separate concern from code quality, which is reviewed elsewhere).
+
+This step is **per-task**: spawn one `vg-build-spec-reviewer` Agent()
+call per task that produced commits in the current wave. The reviewer
+reads the task block in PLAN.md plus `git show <commit_sha>` and emits
+PASS or FAIL with specific gaps.
+
+```bash
+# WAVE_TASKS holds task IDs that produced commits in the current wave.
+# When using vg-load list output, derive task_id from the basename.
+for task_id in "${WAVE_TASKS[@]}"; do
+  COMMIT_SHA=$(git log --grep="task-${task_id}\\|${task_id}:" -n1 --format=%H)
+  if [ -z "$COMMIT_SHA" ]; then
+    echo "⚠ STEP 5.1: no commit found for ${task_id} — skipping spec-review"
+    continue
+  fi
+  bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer spawning "spec-review task-${task_id}"
+  # Then call (single Agent tool call per task — sequential, not parallel):
+  #   Agent(subagent_type="vg-build-spec-reviewer",
+  #         prompt=<rendered with task_id, commit_sha, phase_dir>)
+  bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer returned "task-${task_id}: <verdict>"
+done
+```
+
+Each spec-reviewer return: PASS or FAIL. On FAIL, route to the
+in-scope-fix-loop OR re-spawn the implementer per the existing fix
+protocol (STEP 5.5). Do NOT block here — the marker is severity=warn
+in build.md (informational signal, telemetry-driven flip to hard-block
+gated on v2.67.0).
+
+Marker: `5_1_spec_compliance_review` (severity: warn — informational
+signal, not a hard block, since fix protocol handles failures).
+
+```bash
+mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+touch "${PHASE_DIR}/.step-markers/5_1_spec_compliance_review.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 5_1_spec_compliance_review 2>/dev/null || true
+```
+
+---
+
 ## Step exit + marker
 
 ```bash
