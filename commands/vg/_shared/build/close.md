@@ -541,7 +541,7 @@ s['pipeline_step'] = 'build-complete'
 s['updated_at'] = now
 prev = s.get('steps', {}).get('build', {})
 prev.update({
-    'status': 'done',
+    'status': 'built-complete',
     'finished_at': now,
     'reason': 'CrossAI loop and run-complete passed',
 })
