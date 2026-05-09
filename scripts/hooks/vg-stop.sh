@@ -9,8 +9,12 @@ set -euo pipefail
 session_id="$(vg_resolve_session_id)"
 run_file=".vg/active-runs/${session_id}.json"
 
-# No active VG run — no-op (don't block ordinary work).
+# No active VG run — no-op for run-specific checks, but still emit dream reminder
+# (consolidation gate is project-level, independent of any specific run).
 if [ ! -f "$run_file" ]; then
+  DREAM_HELPER=".claude/scripts/vg-dream-reminder.py"
+  [ -f "$DREAM_HELPER" ] || DREAM_HELPER="scripts/vg-dream-reminder.py"
+  [ -f "$DREAM_HELPER" ] && python3 "$DREAM_HELPER" 2>&1 || true
   exit 0
 fi
 
@@ -93,5 +97,10 @@ if [ "${#failures[@]}" -gt 0 ]; then
     "$gate_id" "${#failures[@]}" "$run_id" "$command" "$block_file" >&2
   exit 2
 fi
+
+# Soft reminder: meta-memory consolidation gate (independent of run-file guard).
+DREAM_HELPER=".claude/scripts/vg-dream-reminder.py"
+[ -f "$DREAM_HELPER" ] || DREAM_HELPER="scripts/vg-dream-reminder.py"
+[ -f "$DREAM_HELPER" ] && python3 "$DREAM_HELPER" 2>&1 || true
 
 exit 0
