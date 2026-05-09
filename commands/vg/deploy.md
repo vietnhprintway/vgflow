@@ -476,6 +476,8 @@ done
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER}" "1_deploy_per_env" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/1_deploy_per_env.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy 1_deploy_per_env 2>/dev/null || true
 ```
+
+**MANDATORY POST-WAVE CONTINUATION:** After ALL per-env executor calls return (vg-deploy-executor across each selected env), you MUST IMMEDIATELY proceed to the NEXT STEP (Step 2 — persist summary + emit telemetry) IN THE SAME ASSISTANT TURN. Do NOT end the turn after per-env subagents return. The harness gates require sequential execution. See `vg-meta-skill.md` "Red Flags — Post-wave continuation" for rationale.
 </step>
 
 <step name="2_persist_summary">

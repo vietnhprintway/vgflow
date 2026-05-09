@@ -300,6 +300,8 @@ After subagent completes, orchestrator reads:
 On L2 escalations from subagent: call AskUserQuestion with subagent's
 escalation message, then re-spawn with user answer injected.
 
+**MANDATORY POST-WAVE CONTINUATION:** After ALL wave Agent calls return (goal-verifier + codegen subagents), you MUST IMMEDIATELY proceed to the NEXT STEP IN THE SAME ASSISTANT TURN. Do NOT end the turn after wave subagents return. The harness gates require sequential execution. See `vg-meta-skill.md` "Red Flags — Post-wave continuation" for rationale.
+
 ### STEP 6 — fix loop + auto escalate
 
 Read `_shared/test/fix-loop.md` and follow it exactly.

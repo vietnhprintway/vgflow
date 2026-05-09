@@ -273,6 +273,8 @@ bash scripts/vg-narrate-spawn.sh vg-build-task-executor returned "task-${N} comm
 ```
 DO NOT execute waves inline. Spawn-guard (Task 1) blocks shortfall.
 
+**MANDATORY POST-WAVE CONTINUATION:** After ALL wave Agent calls return AND `IS_FINAL_WAVE=true` (or this command has no per-wave concept), you MUST IMMEDIATELY proceed to the NEXT STEP IN THE SAME ASSISTANT TURN. Do NOT end the turn after wave subagents return. The harness gates require sequential execution. See `vg-meta-skill.md` "Red Flags — Post-wave continuation" for rationale.
+
 ### Post-wave gate (final-wave detection)
 
 After STEP 4 returns to entry, BEFORE entering STEP 5, check whether this run

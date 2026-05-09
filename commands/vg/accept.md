@@ -293,6 +293,7 @@ After return, the MAIN AGENT runs 3 hard-exit gates (in `overview.md`):
 The Stop hook then verifies all 17 markers, must_write paths, and
 must_emit_telemetry events.
 
+**MANDATORY POST-WAVE CONTINUATION:** After ALL wave Agent calls return (vg-accept-uat-builder + vg-accept-cleanup), you MUST IMMEDIATELY proceed to the NEXT STEP (Gate A/B/C + reflector trigger) IN THE SAME ASSISTANT TURN. Do NOT end the turn after wave subagents return. The harness gates require sequential execution. See `vg-meta-skill.md` "Red Flags — Post-wave continuation" for rationale.
 
 ### Post-accept reflector trigger (Section 13.5 / meta-memory v1.1)
 
