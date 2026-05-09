@@ -1099,11 +1099,47 @@ def main():
                         lines.append(f"  Read: {sp}")
                 else:
                     lines.append(f"  ⚠ MISSING ON DISK: {entry.get('screenshot_missing','?')}")
-                if entry.get("structural"):
-                    lines.append(f"  Structural ref: {entry['structural']}")
-                if entry.get("interactions"):
-                    lines.append(f"  Interactions: {entry['interactions']}")
                 lines.append("")
+
+            # Structural HTML section — strong mandate matching PNG section (F2 v2.62.0)
+            has_structural = any(e.get("structural") for e in slug_entries)
+            if has_structural:
+                lines.append("## Structural HTML — READ EACH PATH AND COPY MARKUP VERBATIM")
+                lines.append("")
+                lines.append("Structural HTML is the FE source of truth for forms, inputs,")
+                lines.append("buttons, and interactive components. The PNG shows what it LOOKS like;")
+                lines.append("the HTML is what FE code MUST PRODUCE byte-for-byte:")
+                lines.append("")
+                lines.append("- Form `<input name=...>` attributes MUST match exactly. A form")
+                lines.append("  field named `user_email` in HTML must be `name=\"user_email\"` in")
+                lines.append("  generated FE code, NOT `name=\"email\"` or `name=\"userEmail\"`. The")
+                lines.append("  BE API contract (BLOCK 5 + FORM-API-MAP.md) cross-references these")
+                lines.append("  names — drift = save form 422 errors.")
+                lines.append("- Hidden inputs (`<input type=\"hidden\" name=\"_csrf\">`), CSRF tokens,")
+                lines.append("  ARIA attrs, validation `pattern=`, `required`, `min`/`max` MUST be")
+                lines.append("  preserved verbatim. The post-build form-API gate (L4-form via")
+                lines.append("  verify-form-api-field-match.py) will detect mismatches.")
+                lines.append("- See UI-SPEC.md (## Forms section) for verbatim markup of top-5")
+                lines.append("  forms; remaining forms reference these structural.html paths.")
+                lines.append("")
+                for entry in slug_entries:
+                    if not entry.get("structural"):
+                        continue
+                    lines.append(f"### {entry['slug']}")
+                    lines.append(f"  Read: {entry['structural']}")
+                    if entry.get("interactions"):
+                        lines.append(f"  Interactions: {entry['interactions']}")
+                    lines.append("")
+            elif any(e.get("interactions") for e in slug_entries):
+                # Interactions-only fallback (no structural HTML available)
+                lines.append("## Interactions notes — read for component behavior")
+                lines.append("")
+                for entry in slug_entries:
+                    if entry.get("interactions"):
+                        lines.append(f"### {entry['slug']}")
+                        lines.append(f"  Read: {entry['interactions']}")
+                        lines.append("")
+
             lines.append("## L2 forcing function — WRITE LAYOUT-FINGERPRINT.md before any UI code")
             lines.append("")
             lines.append(
