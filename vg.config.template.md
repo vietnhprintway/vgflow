@@ -398,6 +398,15 @@ flow_compliance:
   severity: "warn"                  # warn | block — promote to block after dogfood
   template_path: ".claude/commands/vg/_shared/templates/FLOW-COMPLIANCE.yaml"
 
+# v2.65.0 A5 — concurrent worker cap for parallelizable review ops:
+#   - A1: lens probe dispatch (scripts/spawn_recursive_probe.py --parallel N)
+#   - A2: API contract probe (scripts/review-api-contract-probe.py --parallel N)
+#   - A3: codex-inline scanner workers (codex-spawn --tier scanner)
+# Default 5 — balances throughput vs context-switch overhead. Set to 1 to
+# disable parallelism (full back-compat with v2.64.x sequential behavior).
+# Set higher (8-12) on machines with many cores + good network.
+parallel_workers: 5
+
 review:
   # ─── Scanner spawn mode (v1.9.4 R3.3 — mobile sequential gate) ──────
   # Controls how Phase 2b-2 spawns Haiku scanner agents:
