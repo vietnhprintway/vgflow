@@ -42,10 +42,16 @@ HOOK_INSTALL="${REPO_ROOT}/.claude/scripts/hooks/install-hooks.sh"
 UNINSTALL_HELPER="${REPO_ROOT}/.claude/scripts/vg_uninstall.py"
 
 if [ -f "$HOOK_INSTALL" ]; then
-  if bash "$HOOK_INSTALL" --target "${REPO_ROOT}/.claude/settings.json"; then
-    echo "Claude hooks: canonical settings.json installed/repaired"
+  # v2.88.0: pass --mode matching project marker. Default project (legacy).
+  # Global path runs separately in 0b_marker_branch and exits before reaching here.
+  HOOK_MODE="project"
+  if [ -f "${REPO_ROOT}/.vg/.install-target" ]; then
+    HOOK_MODE="$(tr -d '[:space:]' < "${REPO_ROOT}/.vg/.install-target")"
+  fi
+  if bash "$HOOK_INSTALL" --target "${REPO_ROOT}/.claude/settings.json" --mode "$HOOK_MODE"; then
+    echo "Claude hooks: canonical settings.json installed/repaired (mode=${HOOK_MODE})"
   else
-    echo "⚠ Claude hooks: install failed; run bash \"$HOOK_INSTALL\" --target .claude/settings.json"
+    echo "⚠ Claude hooks: install failed; run bash \"$HOOK_INSTALL\" --target .claude/settings.json --mode ${HOOK_MODE}"
   fi
 else
   echo "⚠ Claude hooks: canonical installer missing after update"

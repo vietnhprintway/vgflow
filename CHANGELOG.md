@@ -1,5 +1,61 @@
 # Changelog
 
+## v2.88.0 — marker-aware /vg:update (closes 5 v3.0.0 audit gaps) (2026-05-10)
+
+### Bug
+[caveman:cavecrew-investigator audit](https://github.com/vietdev99/vgflow) of `/vg:update` flow against v3.0.0 global-install contract identified 5 critical gaps:
+
+| # | Question | Finding |
+|---|---|---|
+| 1 | Does /vg:update read `.vg/.install-target`? | NO — zero marker awareness |
+| 2 | Does it update `~/.vgflow/` when marker=global? | NO — only merges into `.claude/` |
+| 3 | Does it clean stale `.claude/{commands/vg, skills/vg-*}` post-mode-switch? | NO |
+| 4 | Does it rewrite hook entries after mode switch? | NO — install-hooks called without `--mode` |
+| 5 | Does it self-repair stale hook paths? | NO |
+
+User flagged via [PrintwayV3 dogfood](https://github.com/vietdev99/vgflow): "ở các lần update mới tới, các máy khác khi update thì có cập nhật global, dọn dẹp lại hook ở config, dọn dẹp lại các skill nằm trong các project không". Codex audit confirmed all 5 gaps would leave corrupted state on machines that switched install target via `/vg:install --target=switch`.
+
+### Fix
+
+**`commands/vg/_shared/update/preflight.md`** — adds 2 changes:
+
+1. **Read marker** at step `0_preflight`: `INSTALL_TARGET=$(tr -d '[:space:]' < ${REPO_ROOT}/.vg/.install-target)`. Echoes for visibility.
+2. **NEW step `0b_marker_branch`**: when `INSTALL_TARGET=global`, runs the global update path:
+   - Try `git pull --ff-only origin main` in `~/.vgflow/.git/` (dev clone)
+   - Fallback `npm install -g vgflow@latest`
+   - Re-install hooks at `~/.claude/settings.json` with `--mode global`
+   - Clean stale project-local `.claude/{commands/vg, scripts, schemas, templates/vg}` + `.claude/skills/vg-*` (backup to `.vg/.backup-<ts>-stale-cleanup/` first)
+   - Bump `.vg/.global-vgflow-version` tracker
+   - Exit 0 (skip legacy 3-way merge)
+
+When marker is `project` or absent, falls through to legacy v2.x project-local 3-way-merge flow unchanged.
+
+**`commands/vg/_shared/update/rotate-and-repair.md`** — install-hooks call now passes `--mode "$HOOK_MODE"` where `HOOK_MODE` reads marker (default `project`). Previously hardcoded `${CLAUDE_PROJECT_DIR}/.claude/scripts/hooks/...` paths even when marker=global, leaving inconsistent settings.json.
+
+### Test coverage
+12 new tests in `tests/test_v2_88_marker_aware_update.py`, all PASS:
+- `test_preflight_reads_install_target_marker`
+- `test_preflight_skips_helper_check_when_global` (vg_update.py only required for project-mode merge)
+- `test_preflight_has_marker_branch_step`
+- `test_marker_branch_does_git_pull_when_clone` / `test_marker_branch_falls_back_to_npm`
+- `test_marker_branch_reinstalls_hooks_with_mode_global`
+- `test_marker_branch_cleans_stale_project_local_dirs` / `test_marker_branch_backs_up_before_cleanup`
+- `test_marker_branch_exits_after_global_path` (critical — must short-circuit so legacy merge doesn't run on top)
+- `test_rotate_and_repair_passes_mode_to_install_hooks`
+- 2× mirror byte-identity
+
+Bash syntax verified via file-mode `bash -n` check; codex equivalence: 59 pairs OK.
+
+### Migration
+None. Existing project-mode users see zero behavior change. Existing global-mode users (those who ran `/vg:install --target=global` previously) now get correct global-aware behavior on next `/vg:update`.
+
+### Roadmap
+- v2.76.0–v2.87.0 — Stages 1-7 partial (resolver, helpers, hook installer, vg CLI, install skill, deploy decouple, migration helpers, vg-migrate chains deploy merge)
+- v2.88.0 (this) — marker-aware /vg:update (closes audit gaps)
+- **v3.0.0** — Stage 9: VERSION 3.0.0 + README rewrite + npm publish
+
+---
+
 ## v2.87.0 — v3.0.0 Stage 7 chained: vg-migrate-v3 auto-merges deploy state (2026-05-10)
 
 ### Goal
