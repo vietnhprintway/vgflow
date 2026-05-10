@@ -31,9 +31,19 @@ MIRROR = REPO_ROOT / ".claude" / "commands" / "vg" / "review.md"
 
 @pytest.fixture(scope="module")
 def review_md() -> str:
-    """Canonical review.md text content."""
+    """Canonical review.md text content.
+
+    v2.70.0 split (T1+T2+T3): preflight + phase-p-variants + code-scan sections
+    moved to _shared/review/*.md sub-files. Concatenate all of them so assertions
+    that look for gate language remain layout-independent.
+    """
     assert CANONICAL.exists(), f"missing {CANONICAL}"
-    return CANONICAL.read_text(encoding="utf-8")
+    parts = [CANONICAL.read_text(encoding="utf-8")]
+    shared_review = REPO_ROOT / "commands" / "vg" / "_shared" / "review"
+    if shared_review.is_dir():
+        for p in sorted(shared_review.glob("*.md")):
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
