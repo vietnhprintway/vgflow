@@ -1,5 +1,54 @@
 # Changelog
 
+## v3.6.2 — followup: generator preserve curated content, /vg:update chmod hooks (2026-05-11)
+
+### Bug 1 — generator `--force` wipes Codex-curated content
+
+CI run 25637574359 failed on the v3.6.1 commit with:
+```
+AssertionError: vg-build: missing <HARD-GATE-CODEX> reminder block (v2.65.0 A9)
+AssertionError: vg-review: missing manual mark-step calls for 4/4 HARD markers
+... (×7 skills)
+```
+
+Cause: `scripts/generate-codex-skills.sh --force` regenerated 14 codex-skills/*/SKILL.md with default `adapter_mode=generic`, which strips and rewrites everything between frontmatter and source body. The HARD-GATE-CODEX reminder blocks + explicit `mark-step` enumerations added by commit 765e9e5 (A9 Codex parity work) lived in that region and were lost.
+
+Fix (v3.6.2):
+- `scripts/generate-codex-skills.sh` adds `target_has_curated_codex_content()` detector that returns true when target SKILL.md contains `HARD-GATE-CODEX` marker OR ≥8 `vg-orchestrator mark-step` lines (A9 enumeration heuristic).
+- `write_codex_skill()` checks the detector BEFORE overwriting. If curated content detected, refuse the regen and log `Skipped (curated content detected): <name> — use --force-overwrite-curated to override`. Operator must explicitly opt in via the new flag.
+- New CLI flag `--force-overwrite-curated` (implies `--force`) for intentional curated-content rewrites.
+
+Result: a future `--force` regen for unrelated changes (e.g. v3.6.1's vg-LIFECYCLE YAML fix) no longer wipes the A9 work.
+
+### Bug 2 — `/vg:update` did not chmod hook scripts after merge
+
+v3.6.1 fixed `sync.sh` chmod for fresh installs, but `/vg:update` runs its own merge pipeline (`commands/vg/_shared/update/{fetch-and-merge,rotate-and-repair}.md`) that does NOT call `sync.sh`. Existing macOS/Linux installs ran `/vg:update`, got new `.sh` hook files merged from git, and saw the Stop hook fail with `Permission denied` because the merged files lacked `+x`.
+
+Fix: `commands/vg/_shared/update/rotate-and-repair.md` step `7b_repair_hooks` now runs the same `chmod +x` set as `sync.sh` BEFORE invoking `install-hooks.sh`. Covers:
+- `.claude/scripts/hooks/*.sh`
+- `.claude/scripts/hooks/*.py`
+- `.claude/scripts/*.{sh,py}`
+- `.claude/scripts/validators/*.py`
+- `.claude/scripts/vg-orchestrator/*.py`
+- `.claude/scripts/lib/*.py`
+- `.claude/scripts/blueprint/*.py`
+- `.claude/commands/vg/_shared/lib/*.sh`
+
+### Test coverage
+6 tests in `tests/test_v3_6_2_followup.py`:
+- generator declares curated-content detector (5 content checks)
+- write_codex_skill skips curated targets unless override flag
+- CLI accepts `--force-overwrite-curated`
+- rotate-and-repair.md chmods 8 hook script categories
+- chmod runs BEFORE `install-hooks.sh` invocation
+- canonical/mirror byte-identity for rotate-and-repair.md
+- Linux-only functional smoke: regen with curated source produces zero diff
+
+### Compatibility
+- Operators running `--force` to refresh non-curated skills work unchanged (clean targets regenerate).
+- Operators who genuinely want to wipe curated content can pass `--force-overwrite-curated` (logged in stderr for audit).
+- `/vg:update` from any pre-v3.6.2 install repairs hook permissions in one pass alongside the existing settings.json refresh.
+
 ## v3.6.1 — bugfix: vg-LIFECYCLE YAML, Stop hook permission, Codex skill duplicates (2026-05-11)
 
 ### Bug 1 — vg-LIFECYCLE/SKILL.md frontmatter invalid YAML

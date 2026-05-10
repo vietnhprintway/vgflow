@@ -15,9 +15,17 @@
 set -euo pipefail
 
 FORCE=false
+FORCE_OVERWRITE_CURATED=false
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=true ;;
+    --force-overwrite-curated)
+      # v3.6.2 — explicit opt-in to overwrite Codex-curated content
+      # (HARD-GATE-CODEX blocks, manual mark-step enumerations). Default
+      # --force regen preserves curated content to prevent CI failures.
+      FORCE=true
+      FORCE_OVERWRITE_CURATED=true
+      ;;
     -h|--help)
       sed -n '1,22p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -28,6 +36,7 @@ for arg in "$@"; do
       ;;
   esac
 done
+export FORCE_OVERWRITE_CURATED
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -238,6 +247,28 @@ print(match.group(0))
 PY
 }
 
+# v3.6.2 — detect Codex-curated content that --force regeneration must NOT
+# clobber. Specifically: HARD-GATE-CODEX reminder blocks and explicit
+# `mark-step` enumerations added in 765e9e5 (A9) for Codex parity.
+# When detected, force adapter_mode=preserve so the curated section survives.
+target_has_curated_codex_content() {
+  local target="$1"
+  if [ ! -f "$target" ]; then
+    return 1
+  fi
+  if grep -q "HARD-GATE-CODEX" "$target" 2>/dev/null; then
+    return 0
+  fi
+  # Heuristic: skill body explicitly lists `vg-orchestrator mark-step <ns> <step>`
+  # lines (8+ occurrences = clearly the A9 manual-mark enumeration).
+  local count
+  count=$(grep -c "vg-orchestrator mark-step" "$target" 2>/dev/null || echo 0)
+  if [ "${count:-0}" -ge 8 ]; then
+    return 0
+  fi
+  return 1
+}
+
 write_codex_skill() {
   local src="$1"
   local target="$2"
@@ -262,6 +293,27 @@ write_codex_skill() {
   if [ -f "$target" ] && [ "$FORCE" = "false" ]; then
     SKIPPED=$((SKIPPED + 1))
     return
+  fi
+
+  # v3.6.2 — refuse to clobber Codex-curated content even with --force.
+  # HARD-GATE-CODEX reminder blocks + explicit mark-step enumerations
+  # (765e9e5 A9 work) live OUTSIDE the <codex_skill_adapter> block, so
+  # preserve_existing_adapter cannot save them. Default --force regen
+  # therefore wipes the curated section and CI fails with "missing
+  # <HARD-GATE-CODEX> reminder block" (run 25637574359 fail).
+  #
+  # When curated content is detected:
+  #   - Default behavior: skip the regen (treat target as authoritative).
+  #     Operator must use --force-overwrite-curated to intentionally rewrite.
+  #   - Force adapter_mode=preserve so the codex_skill_adapter block also
+  #     survives, in case it carries provider-mapping customizations.
+  if target_has_curated_codex_content "$target"; then
+    if [ "${FORCE_OVERWRITE_CURATED:-false}" != "true" ]; then
+      SKIPPED=$((SKIPPED + 1))
+      echo "Skipped (curated content detected): ${skill_name} — use --force-overwrite-curated to override"
+      return
+    fi
+    adapter_mode="preserve"
   fi
 
   mkdir -p "$(dirname "$target")"

@@ -38,6 +38,22 @@ echo "VGFLOW-VERSION = ${LATEST}"
 # telemetry still writes .vg/events.db after repair.
 echo ""
 echo "Repairing Claude enforcement hooks..."
+
+# v3.6.2 — ensure hook scripts are executable BEFORE install-hooks.sh
+# writes settings.json. On macOS/Linux a freshly merged .sh from git
+# lacks +x by default; Claude Code's Stop hook then fails with
+# `/bin/sh: vg-stop.sh: Permission denied` because the host shell
+# respects POSIX execute bits. Same chmod set that sync.sh applies.
+chmod +x "${REPO_ROOT}/.claude/scripts/hooks/"*.sh 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/hooks/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/"*.sh 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/validators/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/vg-orchestrator/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/lib/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/scripts/blueprint/"*.py 2>/dev/null || true
+chmod +x "${REPO_ROOT}/.claude/commands/vg/_shared/lib/"*.sh 2>/dev/null || true
+
 HOOK_INSTALL="${REPO_ROOT}/.claude/scripts/hooks/install-hooks.sh"
 UNINSTALL_HELPER="${REPO_ROOT}/.claude/scripts/vg_uninstall.py"
 
