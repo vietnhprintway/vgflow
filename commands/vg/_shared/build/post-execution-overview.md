@@ -1051,30 +1051,41 @@ reads the task block in PLAN.md plus `git show <commit_sha>` and emits
 PASS or FAIL with specific gaps.
 
 ```bash
-# WAVE_TASKS holds task IDs that produced commits in the current wave.
-# When using vg-load list output, derive task_id from the basename.
-for task_id in "${WAVE_TASKS[@]}"; do
-  COMMIT_SHA=$(git log --grep="task-${task_id}\\|${task_id}:" -n1 --format=%H)
-  if [ -z "$COMMIT_SHA" ]; then
-    echo "⚠ STEP 5.1: no commit found for ${task_id} — skipping spec-review"
-    continue
-  fi
-  bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer spawning "spec-review task-${task_id}"
-  # Then call (single Agent tool call per task — sequential, not parallel):
-  #   Agent(subagent_type="vg-build-spec-reviewer",
-  #         prompt=<rendered with task_id, commit_sha, phase_dir>)
-  bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer returned "task-${task_id}: <verdict>"
-done
+# v2.69.0 T1 (B1) — --skip-spec-review escape hatch.
+# When SKIP_SPEC_REVIEW=1, short-circuit per-task spawn loop, touch the
+# marker, and proceed. Override-debt was already logged in preflight when
+# the flag was parsed. Marker still touched so contract validator sees it.
+if [ "${SKIP_SPEC_REVIEW:-0}" = "1" ]; then
+  echo "▸ STEP 5.1: --skip-spec-review set, skipping per-task spec compliance review (debt-tracked)" >&2
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  touch "${PHASE_DIR}/.step-markers/5_1_spec_compliance_review.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 5_1_spec_compliance_review 2>/dev/null || true
+else
+  # WAVE_TASKS holds task IDs that produced commits in the current wave.
+  # When using vg-load list output, derive task_id from the basename.
+  for task_id in "${WAVE_TASKS[@]}"; do
+    COMMIT_SHA=$(git log --grep="task-${task_id}\\|${task_id}:" -n1 --format=%H)
+    if [ -z "$COMMIT_SHA" ]; then
+      echo "⚠ STEP 5.1: no commit found for ${task_id} — skipping spec-review"
+      continue
+    fi
+    bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer spawning "spec-review task-${task_id}"
+    # Then call (single Agent tool call per task — sequential, not parallel):
+    #   Agent(subagent_type="vg-build-spec-reviewer",
+    #         prompt=<rendered with task_id, commit_sha, phase_dir>)
+    bash scripts/vg-narrate-spawn.sh vg-build-spec-reviewer returned "task-${task_id}: <verdict>"
+  done
+fi
 ```
 
-Each spec-reviewer return: PASS or FAIL. On FAIL, route to the
-in-scope-fix-loop OR re-spawn the implementer per the existing fix
-protocol (STEP 5.5). Do NOT block here — the marker is severity=warn
-in build.md (informational signal, telemetry-driven flip to hard-block
-gated on v2.67.0).
+Each spec-reviewer return: PASS or FAIL. On FAIL (v2.69.0 onward), the
+build BLOCKS unless `--skip-spec-review --override-reason=<text>` was
+passed. Route to the in-scope-fix-loop OR re-spawn the implementer per
+the existing fix protocol (STEP 5.5) before marking the step complete.
 
-Marker: `5_1_spec_compliance_review` (severity: warn — informational
-signal, not a hard block, since fix protocol handles failures).
+Marker: `5_1_spec_compliance_review` (v2.69.0:
+`required_unless_flag: --skip-spec-review` — hard-block flipped from
+v2.66.0 advisory severity=warn).
 
 ```bash
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null

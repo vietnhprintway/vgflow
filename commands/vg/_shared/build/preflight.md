@@ -148,7 +148,7 @@ vg-orchestrator step-active 1_parse_args
 #   --allow-coverage-regression      (close.md PR-D route schema coverage)
 # All gate-skip flags route through forbidden_without_override (entry
 # frontmatter); --allow-coverage-regression is informational + accept-and-log.
-VALID_FLAGS_PATTERN='^--(wave|only|status|gaps-only|interactive|auto|reset-queue|skip-design-check|skip-design-pixel-gate|skip-uimap-injection-audit|skip-task-fidelity-audit|skip-context-rebuild|resume|skip-truthcheck|skip-compliance|skip-reflection|skip-cross-phase-ripple|skip-ux-gates|allow-missing-commits|allow-missing-fixtures|allow-r5-violation|allow-verify-divergence|allow-coverage-regression|allow-rule-not-implemented|allow-ux-violations|override-reason|force|help)$'
+VALID_FLAGS_PATTERN='^--(wave|only|status|gaps-only|interactive|auto|reset-queue|skip-design-check|skip-design-pixel-gate|skip-uimap-injection-audit|skip-task-fidelity-audit|skip-context-rebuild|resume|skip-truthcheck|skip-compliance|skip-reflection|skip-cross-phase-ripple|skip-ux-gates|skip-spec-review|allow-missing-commits|allow-missing-fixtures|allow-r5-violation|allow-verify-divergence|allow-coverage-regression|allow-rule-not-implemented|allow-ux-violations|override-reason|force|help)$'
 UNKNOWN_FLAGS=""
 for tok in ${ARGUMENTS:-}; do
   case "$tok" in
@@ -179,8 +179,21 @@ RESET_QUEUE=false
 STATUS_ONLY=false
 ONLY_TASKS=""
 WAVE_FILTER=""
+SKIP_SPEC_REVIEW=0
 [[ "${ARGUMENTS:-}" =~ --reset-queue ]] && RESET_QUEUE=true
 [[ "${ARGUMENTS:-}" =~ --status ]] && STATUS_ONLY=true
+
+# v2.69.0 T1 (B1) — --skip-spec-review escape hatch.
+# When set, STEP 5.1 (post-execution-overview.md) short-circuits the
+# vg-build-spec-reviewer per-task spawn loop, touches the marker, and
+# logs an override-debt entry so operators can see which phases routinely
+# bypass spec compliance review.
+if [[ " ${ARGUMENTS:-} " =~ [[:space:]]--skip-spec-review([[:space:]]|$) ]]; then
+  SKIP_SPEC_REVIEW=1
+  type -t log_override_debt >/dev/null 2>&1 && \
+    log_override_debt "skip-spec-review" "${PHASE_NUMBER:-unknown}" "build.spec_review" "${PHASE_DIR:-.}"
+fi
+export SKIP_SPEC_REVIEW
 if [[ "${ARGUMENTS:-}" =~ --only[[:space:]]*=?[[:space:]]*([0-9,]+) ]]; then
   ONLY_TASKS="${BASH_REMATCH[1]}"
 fi

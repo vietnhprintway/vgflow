@@ -1,7 +1,7 @@
 ---
 name: vg:build
 description: Execute phase plans with contract-aware wave-based parallel execution
-argument-hint: "<phase> [--wave N] [--only 15,16,17] [--gaps-only] [--interactive] [--auto] [--reset-queue] [--status] [--skip-truthcheck] [--skip-pre-test]"
+argument-hint: "<phase> [--wave N] [--only 15,16,17] [--gaps-only] [--interactive] [--auto] [--reset-queue] [--status] [--skip-truthcheck] [--skip-pre-test] [--skip-spec-review]"
 allowed-tools:
   - Read
   - Write
@@ -98,10 +98,11 @@ runtime_contract:
       severity: "warn"
     # v2.66.0 Task 7 (B1) — per-task spec compliance reviewer
     # (vg-build-spec-reviewer Agent spawn) runs after STEP 5 L-gates.
-    # severity=warn — informational signal, fix protocol handles failures.
-    # Telemetry-driven flip to hard-block gated on v2.67.0.
+    # v2.69.0: flipped from severity=warn to required_unless_flag —
+    # build now BLOCKs when reviewer FAILs and --skip-spec-review absent.
+    # Escape hatch logs override-debt entry.
     - name: "5_1_spec_compliance_review"
-      severity: "warn"
+      required_unless_flag: "--skip-spec-review"
     # Task 18 (pre-test gate) — STEP 6.5 between CrossAI loop and close.
     # Hard contract per Codex round 2 fix #9: NOT severity=warn — required
     # unless --skip-pre-test override is logged via override-use.
@@ -189,6 +190,8 @@ runtime_contract:
     - "--allow-verify-divergence"
     # Task 18 (pre-test gate) — escape hatch for STEP 6.5 (T1+T2+deploy+smoke)
     - "--skip-pre-test"
+    # v2.69.0 T1 (B1) — escape hatch for STEP 5.1 spec compliance reviewer
+    - "--skip-spec-review"
 ---
 
 
