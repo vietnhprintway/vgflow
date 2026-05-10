@@ -1,5 +1,49 @@
 # Changelog
 
+## v2.75.1 — hotfix: auto-refresh global ~/.codex on /vg:update (2026-05-10)
+
+### Bug fix
+**Duplicate-flow bug.** `/vg:update` previously only refreshed project-local `.codex/skills/`. If user had run `install.sh --global-codex` before, `~/.codex/skills/` stayed stale. Codex CLI loads skills from BOTH locations → each flow registered TWICE = duplicate-flow registration.
+
+### Behavior change
+`commands/vg/_shared/update/sync-and-report.md` step `8_sync_codex` now uses tri-state `VG_UPDATE_GLOBAL_CODEX` (default = `auto`):
+
+| Value | Behavior |
+|---|---|
+| `1` (legacy opt-in) | Always refresh `~/.codex/skills/` |
+| `0` (explicit opt-out) | Skip global refresh; warn if stale `~/.codex/skills/vg-update` detected |
+| unset / `auto` (NEW default) | Auto-refresh global ONLY when `~/.codex/skills/vg-update` already exists (i.e., user previously installed vgflow globally) |
+
+Detection probe: `[ -d "$HOME/.codex/skills/vg-update" ]`. If present, /vg:update assumes prior global install and refreshes to keep both layers in sync.
+
+### Test coverage
+8 new tests in `tests/test_v2_75_1_global_codex_autorefresh.py`:
+- `test_sync_file_has_autodetect_block`
+- `test_sync_file_has_tristate_decision`
+- `test_sync_file_handles_auto_default`
+- `test_sync_file_warns_on_explicit_optout_with_stale_global`
+- `test_sync_file_message_for_auto_refresh`
+- `test_sync_file_mirror_byte_identity`
+- `test_codex_skill_routes_to_sync_subfile`
+- `test_legacy_optin_still_supported`
+
+### Migration
+No migration. After upgrading to v2.75.1, the next `/vg:update` will auto-detect and refresh global vgflow if present. Manual cleanup for users who already have duplicate registration:
+
+```bash
+# Either rerun /vg:update (auto-refresh kicks in)
+/vg:update
+
+# Or force one-time refresh
+VG_UPDATE_GLOBAL_CODEX=1 /vg:update
+
+# Or manually remove stale global vgflow skills:
+rm -rf ~/.codex/skills/vg-* \
+       ~/.codex/skills/{api-contract,flow-codegen,flow-runner,flow-scan,flow-spec,sandbox-test,test-depth,test-gen,test-review,test-scan,write-test-spec}
+```
+
+---
+
 ## v2.75.0 — specs + debug splits + codex sync (2026-05-10)
 
 ### Refactor
