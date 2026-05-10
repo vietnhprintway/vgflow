@@ -1,5 +1,57 @@
 # Changelog
 
+## v2.76.0 — symmetric VG_UPDATE_PROJECT_CODEX env var (2026-05-10)
+
+### Feature
+**Tri-state `VG_UPDATE_PROJECT_CODEX`** — symmetric counterpart to `VG_UPDATE_GLOBAL_CODEX` (added v2.75.1). Lets users opt the project `.codex/` mirror out of `/vg:update` deploy without manual cleanup after each release.
+
+### Background
+v2.75.1 added auto-refresh for `~/.codex/skills/` (global) to fix duplicate-flow bug when user previously ran `install.sh --global-codex`. But step `8_sync_codex` still **unconditionally** deployed to project `.codex/skills/`. Users who chose to keep vgflow in `~/.codex` global only had no way to stop `/vg:update` from re-creating `.codex/skills/vg-*` + `.codex/agents/vgflow-*.toml` every release → duplicate flow registration on the project side instead of the global side.
+
+### Behavior
+`commands/vg/_shared/update/sync-and-report.md` step `8_sync_codex` now uses tri-state `VG_UPDATE_PROJECT_CODEX` (default = `auto`):
+
+| Value | Behavior |
+|---|---|
+| `1` (legacy/explicit) | Always deploy to project `.codex/` |
+| `0` (explicit opt-out) | Skip project deploy; warn if stale `.codex/skills/vg-update` detected |
+| unset / `auto` (NEW default) | Auto-deploy ONLY when `.codex/skills/vg-update` already exists (i.e., project previously installed vgflow locally) |
+
+Detection probe: `[ -d "${REPO_ROOT}/.codex/skills/vg-update" ]`. Symmetric with `VG_UPDATE_GLOBAL_CODEX`.
+
+### Migration
+Non-breaking. After upgrading to v2.76.0:
+- Projects with existing `.codex/skills/vg-update` continue to refresh on `/vg:update` (auto-detect kicks in).
+- Future `install.sh` runs still populate `.codex/skills/vg-update`, then auto-detect refreshes on subsequent updates.
+- Users who keep vgflow only in `~/.codex` global can now permanently opt out:
+  ```bash
+  rm -rf .codex/skills/vg-* \
+         .codex/skills/{api-contract,flow-codegen,flow-runner,flow-scan,flow-spec,sandbox-test,test-depth,test-gen,test-review,test-scan,write-test-spec} \
+         .codex/agents/vgflow-*.toml
+  # auto-detect picks up the absence and skips redeploy
+  /vg:update
+  # OR opt out explicitly per-run
+  VG_UPDATE_PROJECT_CODEX=0 /vg:update
+  ```
+
+### Test coverage
+11 new tests in `tests/test_v2_76_0_project_codex_autorefresh.py`:
+- `test_sync_file_has_project_autodetect_block`
+- `test_sync_file_has_project_tristate_decision`
+- `test_sync_file_handles_project_auto_default`
+- `test_sync_file_warns_on_project_explicit_optout_with_stale`
+- `test_sync_file_message_for_project_auto_deploy`
+- `test_sync_file_legacy_optin_still_supported`
+- `test_sync_file_project_skip_auto_message`
+- `test_global_codex_gate_unchanged` (regression guard for v2.75.1 global gate)
+- `test_sync_file_mirror_byte_identity`
+- `test_codex_slim_documents_project_tristate`
+- `test_codex_slim_mirror_byte_identity`
+
+All v2.73 + v2.75.1 sync-and-report tests still pass (regression-free).
+
+---
+
 ## v2.75.2 — hotfix: CI Test workflow green (2026-05-10)
 
 ### Bug fix
