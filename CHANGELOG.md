@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.82.1 — v3.0.0 Stage 6 finish: flock + phase auto-detect (2026-05-10)
+
+### Goal
+Complete Stage 6 with the two helpers deferred from v2.82.0: per-env deploy lock and phase context auto-detection. Stage 6 fully shipped — Stage 7 (consumer migrations) next.
+
+### Changes
+
+**`scripts/deploy/lock.py` NEW (Task 6.4)**
+
+`deploy_lock(project_root, env, holder_meta=...)` context manager:
+- Per-env lock file `.vg/deploy/.deploy.lock.<env>` (slashes/parent-traversal sanitized)
+- POSIX: `fcntl.flock(LOCK_EX | LOCK_NB)`; Windows: `msvcrt.locking(LK_NBLCK)`
+- Non-blocking acquire — raises `DeployLockHeld(env, holder)` when contended
+- Holder metadata (pid, started_at, env, caller-supplied) written for stale-lock diagnostics
+- Lock file removed on exit (always — even after exception)
+
+**`scripts/deploy/phase_context.py` NEW (Task 6.5)**
+
+`detect_phase_context(project_root, override=None)` returns phase number or None:
+1. Explicit override (CLI flag) — short-circuits
+2. Newest `.vg/active-runs/*.json` `phase` field
+3. Git branch matching `phase-<N>`, `vg-<N>`, `vg/<N>`, or `p<N>`
+4. Last `/vg:scope` row in `.vg/events.db` (sqlite std-lib query)
+5. None — caller persists deploy without phase_context
+
+All branches soft-fail; never raises. Audit-only — runtime gates MUST NOT branch on result.
+
+### Test coverage
+17 new tests across 2 files:
+- `tests/test_deploy_lock.py` — 7 tests (4 PASS on all platforms; 3 skipped on Windows due to msvcrt strict read-lock semantics — POSIX flock allows shared reads, validated on CI Linux)
+- `tests/test_deploy_phase_context.py` — 10 tests (override, active-runs newest-wins, branch patterns, events.db fallback)
+
+### Migration
+None. Helpers added, no consumer migrations yet.
+
+### Roadmap
+- v2.76.0–v2.82.0 — Stages 1-6 partial
+- v2.82.1 (this) — Stage 6 finish (lock + phase auto-detect)
+- v2.83.x — Stage 7: deploy migration script + ~10 consumer migrations (`commands/vg/deploy.md`, scope env-preference, build pre-test gate, etc.)
+- **v3.0.0** — Stages 8-9: full migration script + npm publish
+
+---
+
 ## v2.82.0 — v3.0.0 Stage 6: deploy decouple foundation (2026-05-10)
 
 ### Goal
