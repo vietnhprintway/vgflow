@@ -152,6 +152,13 @@ deploy_profiles:
 #   6+    → 3 CLIs (Codex + Gemini + Claude — full consensus, quality priority)
 # ⟪ CROSSAI_CLIS_BLOCK ⟫
 
+# === Budget floor (v2.68.0 C6) ===
+# Per-phase cost cap in USD. When the budget tracker (scripts/vg-budget-tracker.py)
+# detects total per-phase token cost has exceeded this floor, the orchestrator
+# aborts the phase to prevent runaway spend. Set to 0 (or omit) to disable
+# (no floor → no abort). Default behavior is unchanged from v2.67.x.
+min_budget_floor_usd: 10.00
+
 # === Paths (relative to project root) ===
 paths:
   planning: ".vg"
