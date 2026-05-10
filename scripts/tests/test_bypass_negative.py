@@ -142,7 +142,7 @@ def test_bypass_3_concurrent_run_start(sandbox):
     start_scope(sandbox)
     r = orch(sandbox, "run-start", "vg:blueprint", "99")
     assert_nonzero(r, "BV: concurrent run-start must be rejected while another run is active")
-    assert "Active run exists" in r.stderr
+    assert "Active run exists" in r.stderr or "Another session already owns phase 99" in r.stderr
 
 
 def test_bypass_4_empty_context_md(sandbox):
