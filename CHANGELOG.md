@@ -1,5 +1,47 @@
 # Changelog
 
+## v2.73.0 — Deploy sync + update.md split (2026-05-10)
+
+### Refactor
+Closes last codex-skills sync drift after v2.72.0. deploy.md split + slim codex vg-deploy. update.md split + slim codex vg-update.
+
+### Claude-side splits
+- **commands/vg/deploy.md: 574 → 121 lines (79% reduction)** — extracted into `_shared/deploy/`:
+  - `preflight.md` (238 lines) — 0_parse_and_validate, 0a_env_select_and_confirm
+  - `execute.md` (144 lines) — 1_deploy_per_env
+  - `persist-and-close.md` (83 lines) — 2_persist_summary, complete
+  - (existing: overview.md, per-env-executor-contract.md)
+- **commands/vg/update.md: 676 → 103 lines (85% reduction)** — NEW `_shared/update/` (5 sub-files):
+  - `preflight.md` (43 lines) — 0_preflight, 1_check_only_mode
+  - `version-and-changelog.md` (142 lines) — 2_version_compare, 3_changelog_preview, 4_breaking_gate
+  - `fetch-and-merge.md` (195 lines) — 5_fetch_tarball, 6_three_way_merge_per_file, 6b_verify_gate_integrity
+  - `rotate-and-repair.md` (64 lines) — 7_rotate_ancestor_and_version, 7b_repair_hooks
+  - `sync-and-report.md` (199 lines) — 8_sync_codex, 8b_repair_playwright_mcp, 8c_ensure_graphify, 9_report
+
+### Codex slims
+- **codex-skills/vg-deploy/SKILL.md: 669 → 286 lines (57% reduction)** — routes to v2.73.0 `_shared/deploy/*`
+- **codex-skills/vg-update/SKILL.md: 818 → ~300 lines (~63% reduction)** — routes to NEW v2.73.0 `_shared/update/*`
+
+### Test infrastructure improvement
+- `tests/skills/conftest.py` — `skill_loader` now auto-merges `_shared/<name>/*.md` into body (`text` field). `lines` field stays canonical-only so slim-size gates still enforce. Universal fix for all future splits.
+
+### Behavior
+**Zero behavior change.** Verbatim extraction. Markers, telemetry, bash logic preserved. Mirror byte-identity verified.
+
+### Test coverage
+**55 new tests across 12 suites** (T1-T4: 21 deploy split, T5: 4 codex deploy, T6-T10: 30 update split, T11: 3 update ceiling, T12: 4 codex update). All pass.
+
+### Migration
+No migration. Operators continue calling `/vg:deploy`, `/vg:update` — entries route through slim files transparently.
+
+### Reduction summary across v2.70-v2.73
+| Side | review | project | migrate | deploy | update | Total saved |
+|---|---|---|---|---|---|---|
+| Claude before | 8159 | 1590 | 1301 | 574 | 676 | 12300 |
+| Claude after | 539 | 222 | 79 | 121 | 103 | 1064 (-91%) |
+| Codex before | 7757 | 1728 | 1440 | 669 | 818 | 12412 |
+| Codex after | 488 | 363 | 224 | 286 | ~300 | 1661 (-87%) |
+
 ## v2.72.0 — Codex-skills sync + migrate.md split (2026-05-10)
 
 ### Refactor — eliminates codex-skills/claude-commands drift after v2.70.0/v2.71.0
