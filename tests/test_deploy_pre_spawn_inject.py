@@ -10,46 +10,61 @@ from pathlib import Path
 
 CANONICAL = Path("commands/vg/deploy.md")
 MIRROR = Path(".claude/commands/vg/deploy.md")
+SHARED_DIR = Path("commands/vg/_shared/deploy")
+
+
+def _deploy_text_full() -> str:
+    """v2.73.0 — deploy logic split across deploy.md + _shared/deploy/*.md."""
+    parts = [CANONICAL.read_text(encoding="utf-8")]
+    if SHARED_DIR.is_dir():
+        for p in sorted(SHARED_DIR.glob("*.md")):
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
 
 
 def test_deploy_md_invokes_bootstrap_loader():
-    f = CANONICAL.read_text(encoding="utf-8")
+    f = _deploy_text_full()
     assert "bootstrap-loader" in f
     assert "meta_memory_mode" in f
 
 
 def test_deploy_loads_target_step_deploy():
-    f = CANONICAL.read_text(encoding="utf-8")
+    f = _deploy_text_full()
     assert "--target-step deploy" in f
 
 
 def test_deploy_includes_procedural_flag():
-    f = CANONICAL.read_text(encoding="utf-8")
+    f = _deploy_text_full()
     assert "--include-procedural" in f
 
 
 def test_deploy_exports_bootstrap_rules_block_env():
     """Pre-spawn inject must export BOOTSTRAP_RULES_BLOCK so executor capsule sees rules."""
-    f = CANONICAL.read_text(encoding="utf-8")
+    f = _deploy_text_full()
     assert "BOOTSTRAP_RULES_BLOCK" in f
     # Must be exported (env var to subprocess)
     assert "export BOOTSTRAP_RULES_BLOCK" in f
 
 
 def test_deploy_inject_block_consumes_loader_json():
-    f = CANONICAL.read_text(encoding="utf-8")
+    f = _deploy_text_full()
     # JSON parsing reference required
     assert ("import json" in f) or ("jq" in f)
 
 
 def test_deploy_max_bytes_cap_present():
-    f = CANONICAL.read_text(encoding="utf-8")
+    f = _deploy_text_full()
     assert "--max-bytes" in f
 
 
 def test_deploy_inject_before_executor_spawn():
-    """Inject MUST appear before the vg-deploy-executor Agent invocation comment."""
-    f = CANONICAL.read_text(encoding="utf-8")
+    """Inject MUST appear before the vg-deploy-executor Agent invocation comment.
+
+    v2.73.0 — both the inject block and the spawn live in
+    _shared/deploy/execute.md (Step 1). Verify ordering inside that file.
+    """
+    execute_md = SHARED_DIR / "execute.md"
+    f = execute_md.read_text(encoding="utf-8") if execute_md.exists() else CANONICAL.read_text(encoding="utf-8")
     inject_pos = f.find("BOOTSTRAP_RULES_BLOCK")
     spawn_pos = f.find('subagent_type="vg-deploy-executor"')
     if spawn_pos == -1:

@@ -31,11 +31,25 @@ def skill_loader():
             raise FileNotFoundError(f"skill {name} not at {path}")
         text = path.read_text(encoding="utf-8")
         fm, body = _split_frontmatter(text)
+
+        # `lines` reflects the canonical file only (used by slim-size tests).
+        canonical_lines = text.count("\n") + (0 if text.endswith("\n") else 1)
+
+        # v2.72.0/v2.73.0 — merge in `_shared/<name>/*.md` sub-files so static
+        # tests asserting on body content survive the slim-routing extractions.
+        # The slim entry in <name>.md still routes to these files, so semantically
+        # the body now includes both the slim entry and the routed-to content.
+        shared_dir = COMMANDS_DIR / "_shared" / name
+        if shared_dir.is_dir():
+            for sub in sorted(shared_dir.glob("*.md")):
+                body += "\n" + sub.read_text(encoding="utf-8")
+                text += "\n" + sub.read_text(encoding="utf-8")
+
         return {
             "name": name,
             "path": path,
             "text": text,
-            "lines": text.count("\n") + (0 if text.endswith("\n") else 1),
+            "lines": canonical_lines,
             "frontmatter": fm,
             "body": body,
         }
