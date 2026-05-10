@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.84.1 — hotfix: vg-migrate-v3 detects untracked files (2026-05-10)
+
+### Bug
+v2.83.0 Test CI failed at `tests/test_vg_migrate_v3.py::test_dirty_tree_refused` (rc=5 expected rc=2). Root cause: `vg-migrate-v3.sh` pre-flight only checked `git diff --quiet` and `git diff --cached --quiet` — both return clean when files are merely **untracked**. An untracked file under `.claude/` would silently move to `.vg/.backup-<ts>/` during step 1, leaving the user staring at a confusing "where did my file go?" diff.
+
+### Fix
+Pre-flight now uses `git status --porcelain` (covers modified + staged + untracked + renamed). Refuses fast with rc=2.
+
+Files:
+- `scripts/migrate/vg-migrate-v3.sh` + `.claude` mirror
+
+Smoke verified on Git Bash: untracked file in committed repo → rc=2 with "working tree dirty" message.
+
+---
+
 ## v2.84.0 — v3.0.0 Stage 7 critical: config-loader dual-mode read (2026-05-10)
 
 ### Goal

@@ -77,7 +77,10 @@ if [ ! -d "${REPO_ROOT}/.git" ]; then
 fi
 
 if [ "$DRY_RUN" = "0" ]; then
-  if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+  # Check for modified, staged, AND untracked files. Untracked files would
+  # silently move to .vg/.backup-<ts>/ if they sat under .claude/, leaving a
+  # confusing "where did my file go?" diff. Refuse fast.
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
     echo "⛔ working tree dirty — commit or stash before migrating" >&2
     git -C "$REPO_ROOT" status --short >&2
     exit 2
