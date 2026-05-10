@@ -1,7 +1,7 @@
 ---
 name: vg:review
 description: Post-build review — code scan + browser discovery + fix loop + goal comparison → RUNTIME-MAP
-argument-hint: "<phase> [--target-env=local|staging|sandbox|prod | --local | --sandbox | --staging | --prod] [--mode=full|delta|regression|schema-verify|link-check|infra-smoke] [--scanner=haiku-only|codex-inline|codex-supplement|gemini-supplement|council-all] [--skip-deepscan] [--with-deepscan] [--non-interactive] [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--evaluate-only] [--retry-failed] [--re-scan-goals=G-XX,G-YY] [--dogfood] [--force] [--full-scan] [--allow-no-crud-surface] [--skip-lens-plan-gate]"
+argument-hint: "<phase> [--target-env=local|staging|sandbox|prod | --local | --sandbox | --staging | --prod] [--mode=full|delta|regression|schema-verify|link-check|infra-smoke] [--scanner=haiku-only|codex-inline|codex-supplement|gemini-supplement|council-all] [--skip-deepscan] [--with-deepscan] [--non-interactive] [--skip-scan] [--skip-discovery] [--fix-only] [--skip-crossai] [--skip-qa-check] [--evaluate-only] [--retry-failed] [--re-scan-goals=G-XX,G-YY] [--dogfood] [--force] [--full-scan] [--allow-no-crud-surface] [--skip-lens-plan-gate]"
 allowed-tools:
   - Read
   - Write
@@ -159,6 +159,14 @@ runtime_contract:
       severity: "warn"
     - name: "phase3_fix_loop"
       severity: "warn"
+    # v2.68.0 C2 — QA-Checker meta-verification (vg-review-qa-checker).
+    # The dedicated fix-loop tail spawn checks that fix commits actually
+    # address the original review finding (not suppression hacks / false
+    # fixes). v2.69.0 T3: marker added to frontmatter (was doc-only) +
+    # flipped to required_unless_flag. Review BLOCKs when QA-Checker
+    # FAILs and --skip-qa-check absent. Escape hatch logs override-debt.
+    - name: "phase3d_5_qa_checker"
+      required_unless_flag: "--skip-qa-check"
     - name: "phase4_goal_comparison"
       severity: "warn"
 
@@ -303,6 +311,8 @@ runtime_contract:
     - "--allow-no-bugref"
     - "--allow-empty-bugfix"
     - "--skip-crossai"
+    # v2.69.0 T3 (C2) — escape hatch for QA-Checker meta-verification (Phase fix-loop tail)
+    - "--skip-qa-check"
 ---
 
 
@@ -596,6 +606,7 @@ NON_INTERACTIVE=""
 FORCE_RERUN=""
 SKIP_DEEPSCAN=""           # v2.65.0 A7 — explicit opt-out for default-ON deepscan
 WITH_DEEPSCAN_LEGACY=""    # v2.65.0 A7 — track legacy flag for deprecation notice
+SKIP_QA_CHECK=""           # v2.69.0 T3 — opt-out for Phase 3d.5 QA-Checker meta-verification
 
 for tok in $ARGS_RAW; do
   case "$tok" in
@@ -614,6 +625,11 @@ for tok in $ARGS_RAW; do
     --non-interactive)         NON_INTERACTIVE=1 ;;
     --skip-deepscan)           SKIP_DEEPSCAN=1 ;;
     --with-deepscan)           WITH_DEEPSCAN_LEGACY=1 ;;
+    --skip-qa-check)
+      SKIP_QA_CHECK=1
+      type -t log_override_debt >/dev/null 2>&1 && \
+        log_override_debt "skip-qa-check" "${PHASE_NUMBER:-unknown}" "review.qa_check" "${PHASE_DIR:-.}"
+      ;;
   esac
 done
 
@@ -625,7 +641,8 @@ fi
 
 export RETRY_FAILED RE_SCAN_GOALS DOGFOOD SKIP_SCAN SKIP_DISCOVERY FIX_ONLY \
        EVALUATE_ONLY FULL_SCAN WITH_PROBES SKIP_CROSSAI ALLOW_NO_CRUD_SURFACE \
-       NON_INTERACTIVE FORCE_RERUN SKIP_DEEPSCAN WITH_DEEPSCAN_LEGACY
+       NON_INTERACTIVE FORCE_RERUN SKIP_DEEPSCAN WITH_DEEPSCAN_LEGACY \
+       SKIP_QA_CHECK
 ```
 
 **Phase profile detection (P5, v1.9.2) — FIRST ACTION before any blanket check:**
@@ -6231,7 +6248,11 @@ After fix+redeploy, spawn Sonnet agents to re-verify affected views + ripple zon
    - Log current build SHA in PIPELINE-STATE.json `steps.review.last_fix_sha`
 ```
 
-### 3d.5: QA-Checker meta-verification (v2.68.0 C2)
+### 3d.5: QA-Checker meta-verification (v2.68.0 C2, hardened v2.69.0)
+
+**v2.69.0 T3 escape hatch:** `SKIP_QA_CHECK=1` short-circuits this step
+(set by parse loop when `--skip-qa-check` is passed; logs override-debt).
+When unset, full QA-Checker spawn runs.
 
 After Phase 3 fix-loop converges (verdict=ok or max_iter reached), spawn QA-Checker
 to verify each fix commit ACTUALLY addresses the original review finding it was
@@ -6239,17 +6260,27 @@ meant to fix — not just makes tests pass. Detects suppression hacks, false fix
 and test reverts.
 
 ```bash
-bash scripts/vg-narrate-spawn.sh vg-review-qa-checker spawning "QA-check ${PHASE_NUMBER} fix commits"
+if [ "${SKIP_QA_CHECK:-0}" = "1" ]; then
+  echo "▸ Phase 3d.5: --skip-qa-check set (debt-tracked); skipping QA-Checker meta-verification" >&2
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  touch "${PHASE_DIR}/.step-markers/phase3d_5_qa_checker.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase3d_5_qa_checker 2>/dev/null || true
+else
+  bash scripts/vg-narrate-spawn.sh vg-review-qa-checker spawning "QA-check ${PHASE_NUMBER} fix commits"
+  # Then: Agent(subagent_type="vg-review-qa-checker",
+  #             prompt=<rendered with phase_dir + fix_commits list>)
+fi
 ```
 
-Then: `Agent(subagent_type="vg-review-qa-checker", prompt=<rendered with phase_dir + fix_commits list>)`.
-
-Marker: `phase3d_5_qa_checker` (severity=warn — advisory in v2.68.0; will flip to
-block in v2.69.0 after telemetry shows verdict distribution + false-positive rate).
+Marker: `phase3d_5_qa_checker` (v2.69.0:
+`required_unless_flag: --skip-qa-check` — hard-block flipped from
+v2.68.0 advisory severity=warn).
 
 The QA-Checker returns PASS|PARTIAL|FAIL per fix and a cumulative verdict.
-PARTIAL/FAIL findings surface for operator review but do NOT block the build in
-v2.68.0 — telemetry only.
+On PARTIAL/FAIL (v2.69.0 onward), review BLOCKs unless
+`--skip-qa-check --override-reason=<text>` was passed. Operators must
+either fix the underlying issue, route to /vg:amend, or log debt via the
+escape hatch.
 
 ### 3e: Iterate
 
