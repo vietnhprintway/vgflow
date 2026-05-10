@@ -3,8 +3,24 @@ import re
 from pathlib import Path
 
 
+def _review_md_full_text() -> str:
+    """Concatenate review.md + all _shared/review/*.md sub-files.
+
+    v2.70.0 T9 split moved crossai_review step body into _shared/review/close.md.
+    These tests check semantic content (verdict-gating language) that lives in
+    the close section, so the source-of-truth is the concatenation, not the
+    routing shell.
+    """
+    parts = [Path("commands/vg/review.md").read_text(encoding="utf-8")]
+    shared_review = Path("commands/vg/_shared/review")
+    if shared_review.is_dir():
+        for p in sorted(shared_review.glob("*.md")):
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 def test_review_md_documents_verdict_gating():
-    body = Path("commands/vg/review.md").read_text(encoding="utf-8")
+    body = _review_md_full_text()
     # Must mention verdict-gating logic for crossai_review marker
     assert re.search(
         r"crossai_review.*(?:verdict|ok_count).*(?:gat|condition|check)",
@@ -13,7 +29,7 @@ def test_review_md_documents_verdict_gating():
 
 
 def test_inconclusive_marker_alternative_documented():
-    body = Path("commands/vg/review.md").read_text(encoding="utf-8")
+    body = _review_md_full_text()
     # When verdict=inconclusive, write crossai_review.inconclusive (different name) instead
     assert "crossai_review.inconclusive" in body, \
         "review.md must document fallback marker name for inconclusive"
