@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.69.0 — Flip B1+B4+C2 advisory gates to blocking (2026-05-10)
+
+### Behavioral changes (3 gates flip warn→block) — BREAKING
+- **B1 (v2.66.0):** `5_1_spec_compliance_review` per-task spec reviewer marker now `required_unless_flag: "--skip-spec-review"` (was `severity: warn`). Build BLOCKs when reviewer FAILs and flag absent.
+- **B4 (v2.66.1):** `7_1_5_final_review` cumulative reviewer marker added to `commands/vg/build.md` `must_touch_markers` (was documented only) with `required_unless_flag: "--skip-final-review"`. Build BLOCKs when reviewer FAILs and flag absent.
+- **C2 (v2.68.0):** `phase3d_5_qa_checker` QA-Checker meta-agent marker added to `commands/vg/review.md` `must_touch_markers` with `required_unless_flag: "--skip-qa-check"`. Review BLOCKs when QA-Checker FAILs and flag absent.
+
+### Escape hatches (each pairs with --override-reason)
+- **`--skip-spec-review`** (build): Skips B1 per-task spec compliance review. Logs override-debt entry via `log_override_debt`. Marker still touched to satisfy contract validator.
+- **`--skip-final-review`** (build): Skips B4 cumulative review. Same debt-logging.
+- **`--skip-qa-check`** (review): Skips C2 QA-Checker meta-verification. Same debt-logging.
+- All 3 flags added to `forbidden_without_override:` list — must pair with `--override-reason=<text>` per debt-register protocol. `scripts/validators/override-debt-balance.py` enforces.
+
+### Telemetry
+Each gate now emits `{b1,b4,c2}.verdict` event after verdict computation with metadata `{phase, verdict, confidence}`. Operators query events.db for PASS/PARTIAL/FAIL distribution + escape-hatch usage rate. Future tuning data-driven.
+
+### Test coverage
+**18 new tests across 4 suites.** All pass. Zero regression on v2.65.0-v2.68.0 (all prior B1/B4/C2 tests still pass).
+
+### Migration
+- **BREAKING:** Phases that hit B1/B4/C2 FAIL verdicts will now block instead of advise. To preserve v2.68.x behavior temporarily: pass appropriate `--skip-{gate}` flag + `--override-reason=<text>`. Example: `/vg:build 7.1 --skip-final-review --override-reason="legacy phase, B4 retroactive validation impractical"`.
+- Default escape-hatch usage tracks via override-debt events — operators see exactly which gates are routinely skipped (signal for actual fix vs systemic exemption).
+- Verdict telemetry events feed future v2.70.x tuning (severity-bucket adjustments, false-positive thresholds).
+
 ## v2.68.0 — C-tier strict review research adoptions (2026-05-10)
 
 ### Features (research-driven hardening — 6 patterns adopted)
