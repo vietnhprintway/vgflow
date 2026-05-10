@@ -81,6 +81,18 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _is_split_skill(root: Path, name: str) -> bool:
+    """v2.74.1: skills split into _shared/<name>/ subdir use slim routing on
+    BOTH claude (commands/vg/<name>.md) AND codex (codex-skills/vg-<name>/SKILL.md)
+    sides. Codex slim adds HARD-GATE-CODEX + per-route mark-step fallbacks for
+    hook parity (Codex has no PreToolUse/PostToolUse), so byte-equivalence with
+    claude side is INTENTIONALLY broken. Mirror byte-identity for the actual
+    content is enforced separately via tests/test_v2_*_*_split_*.py per-split
+    suite. This function returns True when split structure detected so the
+    legacy P19 equivalence gate skips with an OK note."""
+    return (root / "commands" / "vg" / "_shared" / name).is_dir()
+
+
 def _source_repo_pairs(root: Path) -> list[tuple[Path, Path, str]]:
     pairs: list[tuple[Path, Path, str]] = []
     commands_dir = root / "commands" / "vg"
@@ -89,6 +101,10 @@ def _source_repo_pairs(root: Path) -> list[tuple[Path, Path, str]]:
     for src in sorted(commands_dir.glob("*.md")):
         name = src.stem
         if name.startswith("_") or name.endswith("-insert"):
+            continue
+        # v2.74.1: skip split skills — they intentionally diverge for Codex
+        # hook parity. See _is_split_skill() docstring.
+        if _is_split_skill(root, name):
             continue
         skill_name = f"vg-{name}"
         mirror = mirrors_dir / skill_name / "SKILL.md"
@@ -104,6 +120,11 @@ def _source_repo_pairs(root: Path) -> list[tuple[Path, Path, str]]:
     return pairs
 
 
+def _is_split_skill_installed(root: Path, name: str) -> bool:
+    """v2.74.1: installed-layout equivalent of _is_split_skill."""
+    return (root / ".claude" / "commands" / "vg" / "_shared" / name).is_dir()
+
+
 def _installed_pairs(root: Path) -> list[tuple[Path, Path, str]]:
     pairs: list[tuple[Path, Path, str]] = []
     commands_dir = root / ".claude" / "commands" / "vg"
@@ -112,6 +133,9 @@ def _installed_pairs(root: Path) -> list[tuple[Path, Path, str]]:
     for src in sorted(commands_dir.glob("*.md")):
         name = src.stem
         if name.startswith("_") or name.endswith("-insert"):
+            continue
+        # v2.74.1: skip split skills (codex side intentionally diverges for hook parity)
+        if _is_split_skill_installed(root, name):
             continue
         skill_name = f"vg-{name}"
         mirror = mirrors_dir / skill_name / "SKILL.md"
