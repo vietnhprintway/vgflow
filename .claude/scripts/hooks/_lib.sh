@@ -163,3 +163,40 @@ bak = runs / f"default.json.orphan-bak-{int(time.time())}"
 default_p.replace(bak)
 PY
 }
+
+# vg_resolve_project_root
+#   v2.76.0 Stage 1.3 — shell-side project root resolver for hooks.
+#   Mirrors Python find_repo_root() priority order so bash hooks running in
+#   the v3.0.0 global install (script lives in ~/.vgflow/) still find the
+#   user's project .git root via cwd-walk.
+#
+#   Resolution priority:
+#     1. VG_PROJECT or VG_REPO_ROOT env var
+#     2. Walk cwd → ancestor with .git/ (file OR dir — handles git worktrees)
+#     3. stderr error, return 1
+vg_resolve_project_root() {
+  if [ -n "${VG_PROJECT:-}" ]; then
+    echo "$VG_PROJECT"
+    return 0
+  fi
+  if [ -n "${VG_REPO_ROOT:-}" ]; then
+    echo "$VG_REPO_ROOT"
+    return 0
+  fi
+  local cur
+  cur="$(pwd)"
+  while [ -n "$cur" ] && [ "$cur" != "/" ]; do
+    if [ -e "$cur/.git" ]; then
+      echo "$cur"
+      return 0
+    fi
+    local parent
+    parent="$(dirname "$cur")"
+    if [ "$parent" = "$cur" ]; then
+      break
+    fi
+    cur="$parent"
+  done
+  echo "vg_resolve_project_root: no .git found in cwd ancestry (cwd=$(pwd))" >&2
+  return 1
+}
