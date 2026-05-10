@@ -154,8 +154,6 @@ process that cannot see browser tools.
 Invoke this skill as `$vg-project`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
 
-
-
 <NARRATION_POLICY>
 **⛔ DO NOT USE TodoWrite / TaskCreate / TaskUpdate.**
 
@@ -182,35 +180,40 @@ Pipeline: **project** → roadmap → map → prioritize → specs → scope →
 
 <process>
 
-### Preflight section (extracted v2.71.0 T1)
+### Preflight section (extracted v2.72.0)
 
 Read `_shared/project/preflight.md` and follow it exactly.
-Includes 3 steps: 0_parse_args, 0b_print_state_summary, 0c_scan_existing_docs.
+Includes 3 steps: parse_args (mode flags + paths), print_state_summary (tabular project status), scan_existing_docs (legacy artifact detection).
 
-### Routing section (extracted v2.71.0 T2)
+Step coverage: 0_parse_args, 0b_print_state_summary, 0c_scan_existing_docs.
+
+### Routing section (extracted v2.72.0)
 
 Read `_shared/project/routing.md` and follow it exactly.
-Includes 4 steps: 1_route_mode, 2a_resume_check, 2b_mode_menu, 3_mode_view.
+Includes 4 steps: route_mode (mutually exclusive flag arbitration), resume_check (resumable draft detection), mode_menu (no-flag default), mode_view (read-only project state dump).
 
-### First-time mode (Rounds 1-9, extracted v2.71.0 T3 — LARGEST section)
+Step coverage: 1_route_mode, 2a_resume_check, 2b_mode_menu, 3_mode_view.
+
+### First-time rounds section (extracted v2.72.0)
 
 Read `_shared/project/first-time-rounds.md` and follow it exactly.
-Includes 1 step + 9 rounds: 4_mode_first_time + Round 1 (Capture description), Round 2 (Parse + overview), Round 3 (Targeted dialog), Round 4 (Confirmation gate — MANDATORY), Round 5 (Constraints fill-in), Round 6 (Auto-derive vg.config.md), Round 7 (Architecture Lock), Round 8 (Security Testing Strategy), Round 9 (Atomic write + commit).
+Includes the 9-round adaptive discussion that produces FOUNDATION.md + PROJECT.md + vg.config.md from a free-form description (Round 1 description, Round 2 platform/topology, Round 3 derived stack, Round 4 high-cost confirm, Round 5 PROJECT.md, Round 6 vg.config.md derivation, Round 7 architecture lock, Round 8 user-confirm, Round 9 atomic write).
 
-<!-- BEGIN_LEGACY_FIRST_TIME_PLACEHOLDER (extracted to _shared/project/first-time-rounds.md) -->
-<!-- END_LEGACY_FIRST_TIME_PLACEHOLDER -->
+Step coverage: 4_mode_first_time.
 
-### Update modes (extracted v2.71.0 T4)
+### Update modes section (extracted v2.72.0)
 
 Read `_shared/project/update-modes.md` and follow it exactly.
-Includes 3 steps: 5_mode_update, 6_mode_milestone, 7_mode_rewrite.
+Includes 3 modes: mode_update (targeted dimension update preserving F-XX), mode_milestone (PROJECT.md milestone advance), mode_rewrite (full restart with .archive/{ts}/ backup).
 
+Step coverage: 5_mode_update, 6_mode_milestone, 7_mode_rewrite.
 
-### Migrate + init-only + complete (extracted v2.71.0 T5 — final extraction)
+### Migrate + init + complete section (extracted v2.72.0)
 
 Read `_shared/project/migrate-and-init.md` and follow it exactly.
-Includes 3 steps: 8_mode_migrate, 9_mode_init_only, 10_complete.
+Includes 3 closing steps: mode_migrate (GSD → VG legacy migration), mode_init_only (re-derive vg.config.md from existing FOUNDATION.md, deprecated /vg:init alias), complete (telemetry + final summary).
 
+Step coverage: 8_mode_migrate, 9_mode_init_only, 10_complete.
 
 </process>
 
