@@ -1,5 +1,61 @@
 # Changelog
 
+## v3.3.0 — Issue #173 Stage 3: build pre-test-gate consumes UI-RUNTIME-CONTRACT (2026-05-11)
+
+### Bug — build closed even when runtime contract violated
+
+GitHub Issue #173 acceptance criteria #1+#2:
+- *"A Tailwind 4 UI phase fails build/review if required design tokens are missing from generated CSS."*
+- *"A UI-heavy phase cannot close build with zero specs unless explicit override debt is recorded."*
+
+v3.2.0 emitted `UI-RUNTIME-CONTRACT.json` from blueprint but no downstream stage consumed it — build still closed even when compiled CSS lacked brand tokens or zero Playwright specs landed.
+
+### Fix — new build gate `T0 ui_runtime_contract_gate`
+
+`scripts/validators/verify-ui-runtime-contract.py` (NEW) runs at the head of `/vg:build` STEP 6.5 pre-test-gate, BEFORE T1+T2:
+
+| Sub-gate | Source | Default action on fail |
+|---|---|---|
+| Token presence | grep `apps/*/dist/**/*.css` (+ build/ + packages/) for each `required_tailwind_tokens[].class_name` | BLOCK |
+| No CSS bundle found | empty glob result with tokens declared | BLOCK |
+| Spec count | count Playwright/test files vs `min_spec_count.count` | BLOCK |
+
+Skip semantics:
+- `UI-RUNTIME-CONTRACT.json` missing (legacy / pre-v3.2.0 phase) → PASS skip
+- `contract.skip_reason` populated (backend-only / no FE tasks) → PASS skip
+- `--severity warn` flag or `vg.config build.ui_runtime_contract.severity: warn` → BLOCK downgraded to WARN
+- `--skip-ui-runtime-contract --override-reason=...` → override debt logged
+
+Telemetry events emitted: `build.ui_runtime_contract_passed` / `build.ui_runtime_contract_blocked`.
+
+### Build wiring
+`commands/vg/_shared/build/pre-test-gate.md` STEP 6.5 prefixed with the T0 gate, before the existing T1 (static checks) + T2 (unit tests) tiers. Operator sees pretty-printed evidence + JSON report at `${PHASE_DIR}/.pre-test/ui-runtime-contract.json`.
+
+### Test coverage
+10 tests in `tests/test_v3_3_ui_runtime_contract_gate.py` (all platforms, all pass):
+- validator + mirror byte-identity
+- pre-test-gate.md wires validator + emits both telemetry events
+- happy-path (tokens + specs present) → PASS
+- 1 token missing of 3 → BLOCK
+- no CSS bundle → BLOCK
+- spec count below min → BLOCK
+- contract missing → PASS skip
+- skip_reason populated → PASS skip
+- severity=warn downgrades BLOCK → WARN
+
+### Compatibility
+- Phases without `UI-RUNTIME-CONTRACT.json` (everything before v3.2.0, plus any non-UI phase) are unaffected — gate skips on missing contract.
+- Operators can downgrade severity globally via `vg.config build.ui_runtime_contract.severity: warn` while migrating.
+- Override flag `--skip-ui-runtime-contract --override-reason=<text>` available per build invocation.
+
+### Stage 3 of 6 (Issue #173)
+- ✅ Stage 1 (v3.1.0): matrix status taxonomy (7-reason BLOCKED)
+- ✅ Stage 2 (v3.2.0): UI-RUNTIME-CONTRACT.md emission
+- ✅ Stage 3 (this release): build pre-test-gate consumes contract
+- ⏳ Stage 4: review hard-blocks (route inventory + env preflight + lens artifacts)
+- ⏳ Stage 5: `/vg:test` codegen from TEST-GOALS + CRUD-SURFACES + route inventory
+- ⏳ Stage 6: Codex adapter telemetry parity (closes #169)
+
 ## v3.2.0 — Issue #173 Stage 2: UI-RUNTIME-CONTRACT emission in blueprint (2026-05-11)
 
 ### Bug — blueprint had no runtime invariants for UI-heavy phases

@@ -59,6 +59,54 @@ fi
 
 mkdir -p "${PHASE_DIR}/.pre-test"
 
+# ─── T0 — UI runtime contract gate (v3.3.0 / #173 Stage 3) ────────────
+# Consumes UI-RUNTIME-CONTRACT.json (blueprint step 2b6d emits it in v3.2.0).
+# Two gates: required Tailwind tokens present in compiled CSS, and Playwright
+# spec count ≥ min_spec_count. Skip if contract missing (legacy phase) or
+# skip_reason populated (backend-only / no FE tasks).
+if [[ "$ARGUMENTS" =~ --skip-ui-runtime-contract ]]; then
+  if [[ ! "$ARGUMENTS" =~ --override-reason ]]; then
+    echo "⛔ --skip-ui-runtime-contract requires --override-reason=<text ≥50 chars + ticket ref>"
+    exit 1
+  fi
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator override-use \
+    --flag "--skip-ui-runtime-contract" \
+    --reason "${OVERRIDE_REASON}" 2>/dev/null || true
+  echo "▸ UI runtime contract gate skipped (override logged)"
+else
+  UI_RUNTIME_VALIDATOR="${REPO_ROOT}/.claude/scripts/validators/verify-ui-runtime-contract.py"
+  [ -f "$UI_RUNTIME_VALIDATOR" ] || UI_RUNTIME_VALIDATOR="${REPO_ROOT}/scripts/validators/verify-ui-runtime-contract.py"
+  if [ -f "$UI_RUNTIME_VALIDATOR" ]; then
+    UI_RC_REPORT="${PHASE_DIR}/.pre-test/ui-runtime-contract.json"
+    UI_RC_SEV=$(vg_config_get "build.ui_runtime_contract.severity" "block" 2>/dev/null || echo "block")
+    "${PYTHON_BIN:-python3}" "$UI_RUNTIME_VALIDATOR" \
+      --phase-dir "${PHASE_DIR}" \
+      --repo-root "${REPO_ROOT:-.}" \
+      --severity "$UI_RC_SEV" \
+      --json > "$UI_RC_REPORT" 2>&1
+    UI_RC_GATE_RC=$?
+    # Pretty-print for operator (non-JSON form)
+    "${PYTHON_BIN:-python3}" "$UI_RUNTIME_VALIDATOR" \
+      --phase-dir "${PHASE_DIR}" \
+      --repo-root "${REPO_ROOT:-.}" \
+      --severity "$UI_RC_SEV" 2>&1 | sed 's/^/▸ /' || true
+    if [ "$UI_RC_GATE_RC" -ne 0 ]; then
+      echo "⛔ STEP 6.5 T0 UI runtime contract gate BLOCK — see ${UI_RC_REPORT}"
+      "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+        "build.ui_runtime_contract_blocked" \
+        --payload "{\"phase\":\"${PHASE_NUMBER}\",\"report\":\"${UI_RC_REPORT}\"}" \
+        2>/dev/null || true
+      exit 1
+    fi
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+      "build.ui_runtime_contract_passed" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\"}" \
+      2>/dev/null || true
+  else
+    echo "⚠ verify-ui-runtime-contract.py missing — skipping T0 gate (v3.3.0 / #173 Stage 3)"
+  fi
+fi
+
 # ─── T1 + T2 — always run ──────────────────────────────────────────────
 SOURCE_ROOT=$(vg_config_get paths.source_root ".")
 ENV_BASELINE_FILE="${PLANNING_DIR:-.vg}/ENV-BASELINE.md"
