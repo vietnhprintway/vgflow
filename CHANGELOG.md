@@ -1,5 +1,46 @@
 # Changelog
 
+## v2.77.0 — v3.0.0 Stage 2 (helpers): resolve_vg_doc + gitignore generator (2026-05-10)
+
+### Goal
+Stage 2 helpers for v3.0.0 layout migration. Stage 2.3 (consumer migrations across ~50 scripts) deferred to v2.78.x — this release ships helpers only with zero behavior change.
+
+### Changes
+
+**`resolve_vg_doc()` dual-mode helper (Task 2.1)**
+Resolves VG docs (ROADMAP.md, FOUNDATION.md, vg.config.md) across new v3 layout (`.vg/<name>.md`) vs legacy root layout. Callers can migrate to `resolve_vg_doc("ROADMAP.md")` without caring whether project has been migrated. Special case: `vg.config.md` → `.vg/config.md` (vg. prefix dropped inside .vg/).
+
+Resolution priority:
+1. New layout: `.vg/<name>.md`
+2. Legacy: `<root>/<name>.md`
+3. Default: new-layout path (for future writes)
+
+Files: `scripts/vg-orchestrator/_doc_resolver.py` NEW + `.claude` mirror.
+
+**`generate-gitignore-v3.py` whitelist generator (Task 2.2)**
+Emits `.gitignore` patterns for v3 `.vg/` layout: blanket `.vg/*` ignore + whitelist for tracked files (ROADMAP, FOUNDATION, config, phases/**, bootstrap tracked, deploy STATE.json + history) + re-ignore for untracked subpaths (events.db, runs/, deploy-log.*, etc.). Idempotent.
+
+Used by Stage 8 migration script + Stage 5 `/vg:install` skill to seed `.vg/` whitelist.
+
+Files: `scripts/migrate/generate-gitignore-v3.py` NEW + `.claude` mirror.
+
+### Test coverage
+14 new tests across 2 files, all PASS:
+- `tests/test_doc_resolver.py` — 6 tests
+- `tests/test_gitignore_v3.py` — 8 tests
+
+### Migration
+None. Helpers added, no consumers updated. Existing project-local installs unchanged.
+
+### Roadmap
+- v2.77.0 (this) — Stage 2 helpers
+- v2.78.x — Stage 2.3: ~50 consumer migrations to use `resolve_vg_doc()`
+- v2.79.x — Stage 3: hook installer dual-mode
+- v2.7x.x — Stages 4-7: npm wire-up, /vg:install skill, deploy decouple
+- **v3.0.0** — Stages 8-9: migration script + npm publish
+
+---
+
 ## v2.76.0 — v3.0.0 Stage 1: resolver dual-mode (2026-05-10)
 
 ### Goal
