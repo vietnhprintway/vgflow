@@ -45,42 +45,13 @@ High-level flow:
 
 <process>
 
-<step name="0_preflight">
-```bash
-set -u
+### Preflight section (extracted v2.73.0 T6)
 
-REPO_ROOT="$(pwd)"
-ARGS="${ARGUMENTS:-}"
+Read `_shared/update/preflight.md` and follow it exactly.
+Includes 2 steps: 0_preflight, 1_check_only_mode.
 
-# Parse --repo= (defaults to vietdev99/vgflow)
-REPO="$(printf '%s' "$ARGS" | grep -oE -- '--repo=[^ ]+' | sed 's/^--repo=//' | head -n1)"
-REPO="${REPO:-vietdev99/vgflow}"
+Step coverage: 0_preflight, 1_check_only_mode.
 
-# Preflight tooling
-command -v git      >/dev/null 2>&1 || { echo "git CLI required"; exit 1; }
-command -v curl     >/dev/null 2>&1 || { echo "curl required"; exit 1; }
-command -v python3  >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
-
-HELPER="${REPO_ROOT}/.claude/scripts/vg_update.py"
-if [ ! -f "$HELPER" ]; then
-  echo "vg_update.py missing at ${HELPER}"
-  echo "Legacy install detected. Re-install vgflow first:"
-  echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
-  exit 1
-fi
-
-echo "repo=${REPO}"
-```
-</step>
-
-<step name="1_check_only_mode">
-```bash
-if printf '%s' "$ARGS" | grep -qE -- '(^|[[:space:]])--check([[:space:]]|$)'; then
-  python3 "$HELPER" check --repo "$REPO"
-  exit $?
-fi
-```
-</step>
 
 <step name="2_version_compare">
 ```bash
