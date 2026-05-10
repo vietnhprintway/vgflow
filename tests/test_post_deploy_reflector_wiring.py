@@ -1,10 +1,22 @@
 from pathlib import Path
 
 
+SHARED_DEPLOY_DIR = Path("commands/vg/_shared/deploy")
+
+
+def _deploy_text_full() -> str:
+    """v2.73.0 — deploy logic split across deploy.md + _shared/deploy/*.md."""
+    parts = [Path("commands/vg/deploy.md").read_text(encoding="utf-8")]
+    if SHARED_DEPLOY_DIR.is_dir():
+        for p in sorted(SHARED_DEPLOY_DIR.glob("*.md")):
+            parts.append(p.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
 def test_deploy_md_spawns_reflector_after_completion():
     """deploy.md must spawn vg-reflector after phase.deploy_completed event,
     gated by meta_memory_mode flag."""
-    deploy = Path("commands/vg/deploy.md").read_text(encoding="utf-8")
+    deploy = _deploy_text_full()
     assert "vg-reflector" in deploy, "deploy.md must reference vg-reflector spawn"
     assert "phase.deploy_completed" in deploy, "deploy.md must reference phase.deploy_completed event"
     assert "meta_memory_mode" in deploy, "deploy.md spawn must be gated by meta_memory_mode flag"
