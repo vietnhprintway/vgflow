@@ -11,6 +11,7 @@ VG_RUN = REPO_ROOT / "commands" / "vg" / "_shared" / "lib" / "vg-run.sh"
 def test_review_markdown_uses_global_paths_not_project_local_scripts() -> None:
     review_files = [
         REPO_ROOT / "commands" / "vg" / "review.md",
+        REPO_ROOT / "codex-skills" / "vg-review" / "SKILL.md",
         *sorted((REPO_ROOT / "commands" / "vg" / "_shared" / "review").glob("*.md")),
     ]
     offenders: list[str] = []
