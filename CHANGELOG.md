@@ -1,5 +1,65 @@
 # Changelog
 
+## v3.7.0 — /vg:field-test new skill (2026-05-11)
+
+User-driven field-test capture distinct from AI-auto /vg:roam. Human roams the deployed app in an MCP Playwright browser via a floating Start/Stop/Mark overlay; AI silently captures browser console + network + clicks + nav chain + per-Mark notes + correlated API server log tails. On Stop, an analyzer subagent produces `FIELD-REPORT.md` and appends entries to `.vg/KNOWN-ISSUES.json`.
+
+### Architecture
+
+- 14 new files under `scripts/field-test/`, `commands/vg/field-test.md`, `.claude/` mirrors, `agents/vg-field-test-analyzer/`, `schemas/field-test-session.v1.json`, `codex-skills/vg-field-test/`.
+- Sync via `browser_evaluate` state polling — NOT `browser_console_messages` (snapshot-replay reader that would duplicate marks).
+- Per-source API log tails redact at capture time via `redact-stream.py` (closes the disk-exposure window v1 plan left open).
+- Atomic lock via `mkdir .vg/field-test/.active` (not TOCTOU `echo > .active`).
+- Cross-platform timestamps via `prefix-iso.py` Python wrapper (replaces GNU `date %3N`).
+- `MARKER_TO_AUTO_EVENT` extension: `("field-test", "complete")` → `field_test.session_completed`.
+- SPA full-reload detection: `reload_epoch` K→0 transition forces re-inject + `last_consumed=0` reset.
+- 3-strike tail respawn loop with signal-aware exit-code branching (`rc=0` or `rc>128` = no respawn).
+
+### Privacy
+
+- Default redaction covers `password|token|secret|api[_-]?key|email|phone` + Bearer JWT + Authorization header.
+- Multi-form regex: `key=value`, `key: value`, JSON body `"key":"value"`, bare `Bearer <jwt>`, full `Authorization: ...` header. Hyphenated header keys (`X-API-Key`, `X-Auth-Token`) supported.
+- Idempotent (re-redacting redacted output is no-op).
+- Bad user regex falls back to default + warns on stderr (never crashes).
+- User patterns with regex metachars (e.g. `\bjwt=([A-Za-z0-9._-]+)`) routed to full-pattern mode (no double-wrap into multi-form template).
+- Screenshots NOT redacted — HARD-GATE banner warns user before session start.
+- Bundle `manifest.json` records `redaction_applied` regex + `redaction_locations: [capture, build]` for audit.
+
+### Operational helpers (v2.1)
+
+- `check-quota.py` — per-iter size cap + wall-clock cap (force-stop on overrun).
+- `release-lock.py` — stuck-lock recovery (PID-aware via POSIX `kill -0` / Windows `tasklist`; `--force` override with explicit success message).
+- `_test-jsdom-runner.js` — Node-based functional smoke for the overlay (DEFAULT test path, not behind env gate per round-2 SHOULD-6).
+
+### Severity heuristic (analyzer)
+
+Priority order (first match wins): HIGH (5xx network OR console `Uncaught`/`Traceback`/`TypeError`/`ReferenceError` OR `level=error` — both compact AND spaced JSON forms), MEDIUM (4xx), LOW (visual-only).
+
+KNOWN-ISSUES.json corruption-safe: backup to `KNOWN-ISSUES.corrupt-<ts>.json.bak` + refuse append + exit non-zero. Never silently wipes. Atomic write via temp-file + `os.replace` (POSIX + Windows). Dedupe by `(source, sid, n)` — re-running on same session is idempotent.
+
+### v1 scope (post-Codex-review)
+
+- Single capture profile (no `quick`/`deep` preset enum — deferred to v2).
+- No `--resume` (deferred to v2; design promised but implementation absent in v1).
+- No phase-snapshot mirror under versioned directories (deferred to v2 with explicit audit-trail toggle).
+- No `--non-interactive` (dropped — user-driven skill has no useful headless mode).
+- No auto-recovered crash bundle (manual triage on browser crash).
+
+### Tests
+
+102 field-test tests (10 task buckets) — 100 pass everywhere + 2 Windows-platform-skip for path-with-spaces edge cases that need POSIX bash signal handling. jsdom functional smoke for overlay is the DEFAULT test path (not gated by `VG_RUN_BROWSER_TESTS=1`) per round-2 SHOULD-6. Linux fixtures cover paths with spaces (`Vibe Code/Code/PrintwayV3/`-style install dirs). Tail respawn loop has a behavioral test (Linux-only) that flaps a command exiting 17 and asserts `>=3 respawn` lines + `tail.dead` marker. Boundary correlation test pins `±window` inclusion at millisecond precision (closes the `.mmmZ` vs `.ffffffZ` width-mismatch bug found during round-2). XSS regression test pins the `location.href` `textContent` fix (no innerHTML interpolation).
+
+### Integration with PR #177 pipeline
+
+- Codex mirror deploys to `~/.codex/skills/vg-field-test/` only (no project-local copy committed). Test `test_codex_mirror_not_present_in_project_codex_dir` pins the global-only invariant.
+- `KNOWN-ISSUES.json` entries written by `analyze.py` feed downstream `/vg:test-spec` (post-PR-#177) when re-running test-spec on the same phase — lifecycle context is enriched with manually-observed defects from field-test sessions. No new orchestrator wiring needed; `/vg:test-spec` already reads `.vg/KNOWN-ISSUES.json`.
+- `commands/vg/field-test.md` Step 6 + Step 7 emit `evidence-manifest.json` entries for bundle `manifest.json` and `FIELD-REPORT.md` (mirrors the v3.6.5 / #175 review fix-loop pattern for downstream freshness verification). Step 7 re-resolves `EMIT_MANIFEST` to survive subshell isolation.
+- Schema `phase_goal` field accepts domain goal IDs (`G-AUTH-00`, `G-FE-ADMIN-DLQ-01`) per `[A-Za-z0-9][A-Za-z0-9_.-]*` regex matching PR #177 `verify-goal-coverage-phase.py` rewrite.
+
+### Closes
+
+Internal Codex GPT-5.5 plan review (round-1 §1-§10 + round-2 MUST-1..5 + SHOULD-6..8). Plan + design v2.1 documented under `docs/plans/2026-05-11-field-test-capture-{design,plan}.md`.
+
 ## v3.6.5 — review auto-records RUNTIME-MAP.json to evidence-manifest (2026-05-11)
 
 ### Bug — Codex vg:review run-complete blocked on must_write artifacts (closes #175)
