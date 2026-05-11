@@ -1774,6 +1774,8 @@ MARKER_TO_AUTO_EVENT: dict[tuple[str, str], tuple[str, str]] = {
     ("blueprint", "complete"): ("blueprint.completed", "INFO"),
     ("deploy", "complete"): ("deploy.completed", "INFO"),
     ("next", "complete"): ("next.completed", "INFO"),
+    # v2.1 Task 7d: field-test session lifecycle.
+    ("field-test", "complete"): ("field_test.session_completed", "INFO"),
     # Mid-pipeline parity events flagged in #169.
     ("review", "phase3d_5_qa_checker"): ("review.qa_check_completed", "INFO"),
     ("review", "phase2_5_recursive_lens_probe"): ("review.recursive_probe_completed", "INFO"),
