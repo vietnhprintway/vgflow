@@ -794,7 +794,7 @@ GOAL-COVERAGE-MATRIX BLOCKED status is no longer monolithic. `scripts/challenge-
 | `PREREQ_MISSING` | propose `/vg:amend ${owner_phase}` — upstream patch was DEFERRED |
 | `EXTERNAL_REQUIRED` | operator action — OAuth/WS/reset token needed before re-probe |
 | `PROBE_INVALID` | flag probe bug (e.g., WS endpoint hit as GET) — fix probe, re-run; do NOT route |
-| `TEST_SPEC_MISSING` *(v3.1.0 #173)* | route to `/vg:test ${PHASE_NUMBER} --codegen-from-goals` — generate Playwright/lifecycle spec from `TEST-GOALS.md` + `CRUD-SURFACES.md` + route inventory; do NOT route to /vg:build |
+| `TEST_SPEC_MISSING` *(v3.7.1)* | route to `/vg:test-spec ${PHASE_NUMBER} --regen` — regenerate the post-build lifecycle contract, then rerun `/vg:review`; do NOT route to /vg:test or /vg:build |
 | `ENV_MISMATCH` *(v3.1.0 #173)* | env-contract repair (cookie domain / auth host / sandbox vs local) — surface fix command; do NOT route to /vg:build (not an app bug) |
 
 Auto-fix routing in this phase only sends `APP_BLOCKED` goals to `/vg:build`. Other reasons are surfaced as separate handling text in `AUTO-FIX-TASKS.md` and not pushed to the build queue. This prevents the auto-fix loop from looping on goals where /vg:build cannot help (probe bugs, missing OAuth, deferred upstream, missing test specs, env-contract mismatches).
@@ -846,7 +846,7 @@ for reason, count in non_app.items():
     elif reason == "WORKFLOW_BLOCKED":
         hint = "→ workflow/tool issue — file bug"
     elif reason == "TEST_SPEC_MISSING":
-        hint = "→ /vg:test ${PHASE_NUMBER} --codegen-from-goals"
+        hint = "→ /vg:test-spec ${PHASE_NUMBER} --regen; then /vg:review ${PHASE_NUMBER} --mode=full --force"
     elif reason == "ENV_MISMATCH":
         hint = "→ env-contract repair (cookie domain / auth host)"
     else:

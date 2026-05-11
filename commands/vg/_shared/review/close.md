@@ -395,32 +395,34 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 READY_COUNT=$(grep -c "READY" "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>/dev/null || echo 0)
 "${PYTHON_BIN:-python3}" ${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator emit-event "review.completed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"goals_ready\":${READY_COUNT}}" >/dev/null
 
-# v3.5.0 (#173 Stage 5) — auto-route TEST_SPEC_MISSING goals to /vg:test codegen.
-# When review classifies goals as TEST_SPEC_MISSING (taxonomy from v3.1.0
-# Stage 1), surface the exact /vg:test command operators should run next.
-# Goal IDs come from the matrix Status column; codegen subagent
-# (vg-test-codegen) reads them via vg-load + matrix scan.
+# v3.7.1 — route TEST_SPEC_MISSING back to /vg:test-spec, not /vg:test.
+# TEST_SPEC_MISSING means review lacks the post-build lifecycle contract for
+# one or more goals. That is a review precondition gap, not executable test
+# coverage debt. /vg:test may write runnable specs only after review has a
+# complete DEEP-TEST-SPECS/LIFECYCLE-SPECS/TEST-FIXTURE-DAG contract.
 TEST_SPEC_MISSING_GOALS=$(grep -oE '^\| (G-[A-Z0-9-]+)[^|]*\|[^|]*\|[^|]*\|[[:space:]]*TEST_SPEC_MISSING[[:space:]]*\|' "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" 2>/dev/null | grep -oE 'G-[A-Z0-9-]+' | sort -u | tr '\n' ',' | sed 's/,$//')
 TEST_SPEC_MISSING_COUNT=$(echo "$TEST_SPEC_MISSING_GOALS" | tr ',' '\n' | grep -cE '^G-' 2>/dev/null || echo 0)
 if [ "${TEST_SPEC_MISSING_COUNT:-0}" -gt 0 ]; then
   echo ""
-  echo "━━━ TEST_SPEC_MISSING goals (v3.5.0 #173 Stage 5 — auto-route) ━━━"
-  echo "  ${TEST_SPEC_MISSING_COUNT} goal(s) classified as TEST_SPEC_MISSING (no Playwright/lifecycle spec exists):"
+  echo "━━━ TEST_SPEC_MISSING goals — route to /vg:test-spec ━━━"
+  echo "  ${TEST_SPEC_MISSING_COUNT} goal(s) classified as TEST_SPEC_MISSING (lifecycle test-spec contract missing or stale):"
   echo "    ${TEST_SPEC_MISSING_GOALS}"
   echo ""
-  echo "  Run the codegen command below to generate skeleton specs from TEST-GOALS + CRUD-SURFACES + route_inventory:"
+  echo "  Run the command below to regenerate the post-build lifecycle contract, then rerun review:"
   echo ""
-  echo "    /vg:test ${PHASE_NUMBER} --codegen-from-goals --filter=test-spec-missing"
+  echo "    /vg:test-spec ${PHASE_NUMBER} --regen"
+  echo "    /vg:review ${PHASE_NUMBER} --mode=full --force"
   echo ""
-  echo "  /vg:test consumes:"
+  echo "  /vg:review consumes:"
   echo "    - ${PHASE_DIR}/TEST-GOALS.md (per-goal slice via vg-load)"
-  echo "    - ${PHASE_DIR}/CRUD-SURFACES.md (resources × roles)"
-  echo "    - ${PHASE_DIR}/UI-RUNTIME-CONTRACT.json (route inventory + first-viewport surfaces — v3.2.0+)"
-  echo "    - ${PHASE_DIR}/RUNTIME-MAP.json (goal_sequences for replay context)"
+  echo "    - ${PHASE_DIR}/DEEP-TEST-SPECS.md"
+  echo "    - ${PHASE_DIR}/LIFECYCLE-SPECS.json"
+  echo "    - ${PHASE_DIR}/TEST-FIXTURE-DAG.json"
+  echo "    - ${PHASE_DIR}/TEST-EXECUTION-PLAN.json"
   echo ""
   "${PYTHON_BIN:-python3}" ${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator emit-event \
     "review.test_spec_missing_routed" \
-    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"goal_count\":${TEST_SPEC_MISSING_COUNT},\"goal_ids\":\"${TEST_SPEC_MISSING_GOALS}\"}" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"goal_count\":${TEST_SPEC_MISSING_COUNT},\"goal_ids\":\"${TEST_SPEC_MISSING_GOALS}\",\"next_command\":\"/vg:test-spec ${PHASE_NUMBER} --regen\"}" \
     2>/dev/null || true
 fi
 
