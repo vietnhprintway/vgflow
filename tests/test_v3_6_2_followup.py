@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GENERATOR = REPO_ROOT / "scripts" / "generate-codex-skills.sh"
@@ -136,3 +137,58 @@ def test_generator_force_does_not_clobber_curated(tmp_path):
     )
     # And stdout should mention the skip
     assert "Skipped (curated content detected)" in r.stdout or "vg-curatedtest" in r.stdout
+
+@_BASH_SKIP
+def test_generator_repairs_invalid_yaml_even_when_curated(tmp_path):
+    """Invalid SKILL frontmatter must not stay skipped behind curated guard."""
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "commands" / "vg").mkdir(parents=True)
+    (fake_repo / "skills").mkdir(parents=True)
+    (fake_repo / "codex-skills" / "vg-yamlrepair").mkdir(parents=True)
+
+    (fake_repo / "commands" / "vg" / "yamlrepair.md").write_text(
+        "---\n"
+        "name: vg:yamlrepair\n"
+        "description: Source says \"quoted phrase\" safely\n"
+        "---\n\n"
+        "Source body that should not replace curated content.\n",
+        encoding="utf-8",
+    )
+
+    target = fake_repo / "codex-skills" / "vg-yamlrepair" / "SKILL.md"
+    target.write_text(
+        '---\n'
+        'name: "vg-yamlrepair"\n'
+        'description: "Broken "quoted phrase" frontmatter"\n'
+        'metadata:\n'
+        '  short-description: "Broken "quoted phrase" frontmatter"\n'
+        '---\n\n'
+        "Curated content must remain.\n\n"
+        "<HARD-GATE-CODEX>\n"
+        "Operator MUST emit mark-step manually.\n"
+        "</HARD-GATE-CODEX>\n",
+        encoding="utf-8",
+    )
+
+    (fake_repo / "scripts").mkdir()
+    shutil.copy(GENERATOR, fake_repo / "scripts" / "generate-codex-skills.sh")
+    os.chmod(fake_repo / "scripts" / "generate-codex-skills.sh", 0o755)
+
+    r = subprocess.run(
+        ["bash", str(fake_repo / "scripts" / "generate-codex-skills.sh"), "--force"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert r.returncode == 0, f"generator exited {r.returncode}\n{r.stdout}\n{r.stderr}"
+
+    repaired = target.read_text(encoding="utf-8")
+    fm_text = repaired.split("---", 2)[1]
+    fm = yaml.safe_load(fm_text)
+    assert fm["name"] == "vg-yamlrepair"
+    assert fm["description"] == 'Source says "quoted phrase" safely'
+    assert "Curated content must remain." in repaired
+    assert "<HARD-GATE-CODEX>" in repaired
+    assert "Source body that should not replace curated content." not in repaired
+    assert "Repaired invalid YAML frontmatter" in r.stdout
