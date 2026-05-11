@@ -1,12 +1,29 @@
-# /vg:field-test Implementation Plan (v2)
+# /vg:field-test Implementation Plan (v2.1)
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build new VGFlow skill `/vg:field-test` so the user can manually roam the deployed app in an MCP-playwright browser while AI silently captures multi-source telemetry (browser console + network + clicks + nav chain + per-Mark notes + correlated API server log tails). On Stop, an analyzer subagent produces `FIELD-REPORT.md` and appends entries to `.vg/KNOWN-ISSUES.json`.
 
-**Revision:** v2 — supersedes v1 plan after Codex GPT-5.5 review found 10 critical issues (race conditions, broken redaction, dead presets, missing `--resume`, cross-platform `date` bug, TOCTOU lock, contract mismatch). All 10 addressed below.
+**Revision:** v2.1 — supersedes v2 after round-2 Codex review (5 MUST FIX + 3 SHOULD FIX) AND incorporates code-level changes from merged PR #177 (`/vg:test-spec` lane, global-only install, removed committed `.codex/skills/*`) + PR #179 (YAML curated-skip repair) + v3.6.5 (#175 evidence-manifest auto-record).
 
-**v1 scope cuts** (per design v2): drop `quick`/`deep` presets, drop `--resume`, drop `dev-phases/<N>/` mirror, drop `--non-interactive`, drop crash-recovery aborted-bundle flow.
+**v1 scope cuts** (per design v2, unchanged in v2.1): drop `quick`/`deep` presets, drop `--resume`, drop `dev-phases/<N>/` mirror, drop `--non-interactive`, drop crash-recovery aborted-bundle flow.
+
+## v2.1 patch summary
+
+| # | Source | Delta | Affected task |
+|---|---|---|---|
+| 1 | round-2 MUST | Concrete tail-respawn loop body (not "in v2 task 7 step 5") | Task 3 + Task 7 |
+| 2 | round-2 MUST | Create `check-quota.py` (was named in design line 89, never authored) | New Task 7a |
+| 3 | round-2 MUST | Create `release-lock.py` (was named in design line 101, never authored) | New Task 7b |
+| 4 | round-2 MUST | SPA F5-reload `epoch K→0 = reset last_consumed` logic | Task 8 step 5 |
+| 5 | round-2 MUST | Double-wrap regression test for user `--redact` pattern | Task 2 |
+| 6 | round-2 SHOULD | jsdom functional overlay test default-on (not gated by env var) | Task 4 |
+| 7 | round-2 SHOULD | Path-with-spaces fixture for `tail-source.sh` + atomic lock | Tasks 3 + 8 |
+| 8 | round-2 SHOULD | Inline full Task 5 build-bundle body (not "as in v1 plan") | Task 5 |
+| 9 | PR #177 | Codex mirror deploys to `~/.codex/skills/` (global-only, no project copy) | Task 9 |
+| 10 | PR #177 | Field-test KNOWN-ISSUES feeds `/vg:test-spec` lifecycle context (consumer doc only — no code in this skill) | Task 8 + Task 10 CHANGELOG |
+| 11 | PR #177 / #178 | Schema permits domain goal IDs `[A-Za-z0-9][A-Za-z0-9_.-]*` for `phase_goal` field | Task 1 |
+| 12 | v3.6.5 / #175 | Stop step emits `evidence-manifest.json` entry for `FIELD-REPORT.md` + bundle `manifest.json` | Task 8 step 6 + Task 6 |
 
 **Architecture:** AI orchestrator injects overlay JS via `browser_evaluate`. AI polls overlay state via `browser_evaluate(() => ({len: __VG_FT_STATE.marks.length, status: __VG_FT_STATE.status}))` — NOT console messages (which are snapshot reads that replay; would duplicate marks). Console messages used only for Start/Stop edge events with offset tracking. Per-source API log tails pipe through `redact-stream.py` at capture time (not at build time). Atomic lock via `mkdir`. Python timestamp wrapper replaces GNU `date %3N` for portability.
 
@@ -151,7 +168,12 @@ def test_config_template_advertises_field_test_block_no_preset():
     },
     "redaction": {"type": "string"},
     "mark_count": {"type": "integer", "minimum": 0},
-    "bundle_path": {"type": ["string", "null"]}
+    "bundle_path": {"type": ["string", "null"]},
+    "phase_goal": {
+      "type": ["string", "null"],
+      "description": "v2.1: optional cross-ref to a phase goal ID — accepts domain IDs (G-AUTH-00, G-FE-ADMIN-DLQ-01) post-PR-#177 generic ID rewrite",
+      "pattern": "^G-[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    }
   }
 }
 ```
@@ -277,6 +299,45 @@ def test_bad_user_regex_falls_back_to_default():
     assert r.returncode == 0
     assert "hunter2" not in r.stdout, "default regex must still apply"
     assert "warning" in r.stderr.lower() or "fallback" in r.stderr.lower()
+
+
+def test_user_pattern_already_wrapped_not_double_wrapped():
+    """v2.1 round-2 MUST-5: when the user passes a pattern that already
+    contains word boundaries / capture groups, the composition logic must
+    NOT wrap it again. Double-wrapping silently breaks the match.
+
+    Reproduction: user passes `\\bjwt=([A-Za-z0-9._-]+)` expecting a
+    capture-group replacement. If the implementation wraps it as
+    `(?:\\bjwt=([A-Za-z0-9._-]+))` and then anchors the replacement to
+    group 1, the substitution mis-references — original token leaks.
+    """
+    user_pattern = r"\bjwt=([A-Za-z0-9._-]+)"
+    r = subprocess.run(
+        [sys.executable, str(REDACT), "--pattern", user_pattern],
+        input="auth jwt=eyJhbGc.payload.sig done\n",
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0
+    assert "eyJhbGc.payload.sig" not in r.stdout, (
+        "MUST-5: user-supplied pattern must not be silently double-wrapped — "
+        "the literal token leaked through"
+    )
+    assert "REDACTED" in r.stdout or "[REDACTED]" in r.stdout
+
+
+def test_user_pattern_with_existing_group_compiles():
+    """v2.1 round-2 MUST-5 companion: composition must succeed when user
+    pattern already declares its own capture group(s)."""
+    r = subprocess.run(
+        [sys.executable, str(REDACT), "--pattern", r"(secret_\d+)"],
+        input="value=secret_42 leaks\n",
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    assert r.returncode == 0, (
+        f"composition must compile when user pattern has capture groups; "
+        f"stderr={r.stderr}"
+    )
+    assert "secret_42" not in r.stdout
 
 
 def test_mirror_byte_identity():
@@ -483,6 +544,38 @@ def test_tail_file_mode_redacts_inline(tmp_path):
         proc.wait(timeout=5)
     text = out.read_text(encoding="utf-8")
     assert "hunter2" not in text, "tail must redact at capture, not leave to build-time"
+    assert "[REDACTED]" in text
+
+
+@_bash
+def test_tail_handles_path_with_spaces(tmp_path):
+    """v2.1 round-2 SHOULD-7: real installs live under paths like
+    'Vibe Code/Code/PrintwayV3/' — tail-source must not split on
+    whitespace when quoting its target/out args."""
+    spaced = tmp_path / "with spaces" / "ft session"
+    spaced.mkdir(parents=True)
+    target = spaced / "src.log"
+    out = spaced / "out.log"
+    target.write_text("", encoding="utf-8")
+    proc = subprocess.Popen(
+        ["bash", str(TAIL), "--type", "file", "--target", str(target),
+         "--out", str(out), "--redact", "password|token"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    try:
+        time.sleep(0.3)
+        with target.open("a", encoding="utf-8") as f:
+            f.write("login password=hunter2 success\n")
+        time.sleep(1.0)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=5)
+    err = proc.stderr.read().decode("utf-8") if proc.stderr else ""
+    assert out.is_file(), (
+        f"path-with-spaces output not written; stderr={err}"
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "hunter2" not in text
     assert "[REDACTED]" in text
 
 
@@ -735,17 +828,27 @@ def test_overlay_syntax_via_node_check():
 
 
 @_node
-@pytest.mark.skipif(os.environ.get("VG_RUN_BROWSER_TESTS") != "1", reason="set VG_RUN_BROWSER_TESTS=1 to enable jsdom smoke")
 def test_overlay_mark_flow_via_jsdom(tmp_path):
-    """Functional smoke: load overlay in jsdom, click Start, click Mark, fill note, submit.
-    Assert state.marks.length === 1 and entry has user_note."""
-    # Implementation requires `npm i jsdom` once; the test runner script wraps it.
+    """v2.1 round-2 SHOULD-6: functional smoke is DEFAULT, not env-gated.
+
+    Loads overlay in jsdom, clicks Start, clicks Mark, fills note, submits.
+    Asserts state.marks.length === 1 and entry has user_note. The runner
+    script auto-installs jsdom via `npm i --no-save jsdom` on first run
+    if it's missing — CI environments that lack node skip gracefully via
+    the _node marker.
+    """
     runner = REPO_ROOT / "scripts" / "field-test" / "_test-jsdom-runner.js"
     if not runner.is_file():
-        pytest.skip("jsdom runner not installed (run npm i jsdom in scripts/field-test/)")
-    r = subprocess.run(["node", str(runner), str(OVERLAY)], capture_output=True, text=True)
+        pytest.fail(
+            "v2.1: jsdom runner must ship with scripts/field-test/. "
+            "Run scripts/field-test/_install-jsdom.sh once to bootstrap."
+        )
+    r = subprocess.run(["node", str(runner), str(OVERLAY)],
+                       capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     assert "marks.length=1" in r.stdout
+    assert "status=recording" in r.stdout
+    assert 'user_note="found bug"' in r.stdout
     assert "user_note=test note" in r.stdout
 ```
 
@@ -892,7 +995,7 @@ Closes Codex review §1 + §3:
     orchestrator can distinguish pre/post-reload marks (overlay state
     persists across SPA nav, wipes on full reload).
 
-Functional jsdom smoke test gated behind VG_RUN_BROWSER_TESTS=1
+**v2.1 update**: functional jsdom smoke runs by DEFAULT (not behind VG_RUN_BROWSER_TESTS=1). The `_node` marker skips gracefully when node is absent; otherwise the runner auto-installs jsdom via `npm i --no-save jsdom` on first run. Per round-2 SHOULD-6.
 exercises Start → Mark → Submit and asserts state.marks.length === 1.
 Replaces v1 plan's substring-tautology tests.
 
@@ -947,9 +1050,178 @@ def test_zero_marks_session_valid_manifest(tmp_path):
     assert manifest["mark_count"] == 0
 ```
 
-**Steps 2-6:** as in v1 plan task 4, with implementation extended for the 3 new test cases. Pipe each window line through `subprocess.run([python, redact-stream, "--pattern", session.redaction], input=line)` — or, better, import redact-stream as module and reuse the compiled regex. (Implementation chooses module import for perf.)
+**Step 2: Full implementation body** (v2.1 — no longer "as in v1 plan"):
 
-**Commit msg references** Codex review §5 fixture gaps + §4 redaction at correct site.
+```python
+#!/usr/bin/env python3
+"""scripts/field-test/build-bundle.py — assemble field-test capture bundle."""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+# Import redact-stream as module for perf (avoid subprocess fork per line).
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from redact_stream import compile_pattern, redact_line  # type: ignore
+
+ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b")
+
+
+@dataclass(frozen=True)
+class LogLine:
+    ts_iso: str
+    raw: str
+
+
+def parse_iso_log(path: Path, errors_log: Path) -> list[LogLine]:
+    out: list[LogLine] = []
+    with errors_log.open("a", encoding="utf-8") as err:
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            m = ISO_Z_RE.match(ln)
+            if not m:
+                err.write(json.dumps({"src": str(path), "naive_ts": ln}) + "\n")
+                continue
+            out.append(LogLine(ts_iso=m.group(0), raw=ln))
+    return out
+
+
+def correlate_window(lines: list[LogLine], mark_ts: str, window_sec: int) -> list[str]:
+    # Linear scan — bundles are KB-MB, not GB. ts_iso comparisons via string sort
+    # are correct because of ISO-8601 lexicographic ordering of fixed-length Z form.
+    lo = _shift_iso(mark_ts, -window_sec)
+    hi = _shift_iso(mark_ts, +window_sec)
+    return [ln.raw for ln in lines if lo <= ln.ts_iso <= hi]
+
+
+def _shift_iso(ts: str, delta_sec: int) -> str:
+    from datetime import datetime, timedelta, timezone
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return (dt + timedelta(seconds=delta_sec)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def assemble(session_dir: Path, mark_window_sec: int) -> dict:
+    session = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
+    pattern = compile_pattern(session.get("redaction") or "")
+    errors_log = session_dir / "errors.jsonl"
+
+    # Load per-source API logs.
+    api_logs: dict[str, list[LogLine]] = {}
+    for src in session.get("sources", []):
+        label = src["label"]
+        api_path = session_dir / f"api-{label}.log"
+        if api_path.exists():
+            api_logs[label] = parse_iso_log(api_path, errors_log)
+
+    # Load browser-side streams (in-memory until Stop → now redact + write).
+    redacted_browser_streams = {}
+    for name in ("console.raw.jsonl", "network.raw.jsonl", "nav.raw.jsonl", "clicks.raw.jsonl"):
+        p = session_dir / name
+        if not p.exists():
+            continue
+        out_lines = [redact_line(pattern, ln) for ln in p.read_text(encoding="utf-8").splitlines()]
+        redacted_browser_streams[name] = out_lines
+
+    # Walk marks.raw.jsonl line-by-line; tolerate truncated final line.
+    marks_raw = session_dir / "marks.raw.jsonl"
+    marks: list[dict] = []
+    partial = False
+    if marks_raw.exists():
+        for ln in marks_raw.read_text(encoding="utf-8").splitlines():
+            if not ln.strip():
+                continue
+            try:
+                marks.append(json.loads(ln))
+            except json.JSONDecodeError:
+                partial = True
+                with errors_log.open("a", encoding="utf-8") as err:
+                    err.write(json.dumps({"truncated_line": ln[:200]}) + "\n")
+                break
+
+    # Per-Mark assembly with ±window correlation.
+    bundle_marks: list[dict] = []
+    for mark in marks:
+        n = mark["n"]
+        ts = mark["ts"]
+        bundle_marks.append({
+            **{k: mark[k] for k in mark if k != "raw"},
+            "user_note": redact_line(pattern, mark.get("user_note", "")),
+            "console_window": [
+                redact_line(pattern, ln)
+                for ln in _slice_window(redacted_browser_streams.get("console.raw.jsonl", []), ts, mark_window_sec)
+            ],
+            "network_window": [
+                redact_line(pattern, ln)
+                for ln in _slice_window(redacted_browser_streams.get("network.raw.jsonl", []), ts, mark_window_sec)
+            ],
+            "api_log_correlated": {
+                label: [redact_line(pattern, raw) for raw in correlate_window(lines, ts, mark_window_sec)]
+                for label, lines in api_logs.items()
+            },
+        })
+
+    manifest = {
+        "version": "1",
+        "sid": session["sid"],
+        "phase": session.get("phase"),
+        "mark_count": len(bundle_marks),
+        "partial": partial,
+        "redaction_applied": session.get("redaction") or "",
+        "redaction_locations": ["capture", "build"],
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    (session_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (session_dir / "marks.jsonl").write_text(
+        "\n".join(json.dumps(m) for m in bundle_marks),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _slice_window(stream_lines: list[str], mark_ts: str, window_sec: int) -> Iterable[str]:
+    # Browser-side lines carry an embedded `"ts":"..."` field; cheap regex extraction.
+    ts_field = re.compile(r'"ts"\s*:\s*"([^"]+)"')
+    lo = _shift_iso(mark_ts, -window_sec)
+    hi = _shift_iso(mark_ts, +window_sec)
+    for ln in stream_lines:
+        m = ts_field.search(ln)
+        if not m:
+            continue
+        if lo <= m.group(1) <= hi:
+            yield ln
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--session-dir", required=True)
+    ap.add_argument("--mark-window-sec", type=int, default=30)
+    args = ap.parse_args()
+    manifest = assemble(Path(args.session_dir), args.mark_window_sec)
+    print(json.dumps(manifest, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Step 3: Tests** — run `python -m pytest tests/test_field_test_build_bundle.py -v`. Expected: all 6 (zero-marks + partial + naive-ts + window-correlation + redaction-applied-both-sites + linux-path-with-spaces) pass.
+
+**Step 4: Commit**
+
+```bash
+git add scripts/field-test/build-bundle.py .claude/scripts/field-test/build-bundle.py tests/test_field_test_build_bundle.py
+git commit -m "feat(field-test): build-bundle.py with redact-pipe + naive-ts + partial recovery"
+```
+
+**Commit msg references** Codex round-1 §5 fixture gaps + round-1 §4 redaction at correct site + round-2 MUST-8 (full body inlined).
 
 ---
 
@@ -1000,9 +1272,270 @@ def append_known_issues(known_path: Path, sid: str, phase: str | None, marks: li
 
 ---
 
-## Task 7: MARKER_TO_AUTO_EVENT extension (same as v1 plan task 6)
+## Task 7: Operational helpers + MARKER_TO_AUTO_EVENT extension
 
-Unchanged from v1 plan.
+**v2.1 expansion**: round-2 review found this task was a one-liner pointer with no code. v2.1 fuses three small helper scripts (`check-quota.py`, `release-lock.py`, the tail-respawn primitive in `tail-source.sh`) with the original orchestrator marker mapping.
+
+### Task 7a: `check-quota.py` quota enforcement helper
+
+**Files:**
+- Create: `scripts/field-test/check-quota.py`
+- Mirror to `.claude/`
+- Test: `tests/test_field_test_check_quota.py`
+
+**Step 1: Failing test**
+
+```python
+def test_check_quota_passes_under_caps(tmp_path):
+    session = tmp_path / "ft-test"
+    session.mkdir()
+    (session / "session.json").write_text(json.dumps({
+        "sid": "ft-test",
+        "started_at": time.time(),
+        "session_max_size_mb": 100,
+        "max_session_hours": 2,
+    }))
+    (session / "small.log").write_text("a" * 1024)
+    r = subprocess.run([sys.executable, CHECK_QUOTA, "--session-dir", str(session)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+
+
+def test_check_quota_fails_on_size_cap(tmp_path):
+    session = tmp_path / "ft-test"
+    session.mkdir()
+    (session / "session.json").write_text(json.dumps({
+        "sid": "ft-test", "started_at": time.time(),
+        "session_max_size_mb": 0,  # any size > 0 trips
+        "max_session_hours": 24,
+    }))
+    (session / "blob.bin").write_bytes(b"x" * (2 * 1024))
+    r = subprocess.run([sys.executable, CHECK_QUOTA, "--session-dir", str(session)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1
+    assert "size" in r.stdout.lower() + r.stderr.lower()
+
+
+def test_check_quota_fails_on_wall_clock(tmp_path):
+    session = tmp_path / "ft-test"
+    session.mkdir()
+    (session / "session.json").write_text(json.dumps({
+        "sid": "ft-test",
+        "started_at": time.time() - 3 * 3600,
+        "session_max_size_mb": 1024,
+        "max_session_hours": 1,
+    }))
+    r = subprocess.run([sys.executable, CHECK_QUOTA, "--session-dir", str(session)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1
+    assert "wall" in r.stdout.lower() + r.stderr.lower() or "hours" in r.stdout.lower() + r.stderr.lower()
+```
+
+**Step 2: Implementation**
+
+```python
+#!/usr/bin/env python3
+"""scripts/field-test/check-quota.py — fail-stop when session exceeds caps."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+
+def _dir_size_bytes(p: Path) -> int:
+    total = 0
+    for entry in p.rglob("*"):
+        if entry.is_file():
+            try:
+                total += entry.stat().st_size
+            except (FileNotFoundError, PermissionError):
+                pass
+    return total
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--session-dir", required=True)
+    args = ap.parse_args()
+
+    session_dir = Path(args.session_dir)
+    session = json.loads((session_dir / "session.json").read_text(encoding="utf-8"))
+    size_cap_mb = float(session.get("session_max_size_mb", 1024))
+    hours_cap = float(session.get("max_session_hours", 4))
+    started_at = float(session.get("started_at") or time.time())
+
+    size_mb = _dir_size_bytes(session_dir) / (1024 * 1024)
+    if size_mb > size_cap_mb:
+        print(f"⛔ quota: size {size_mb:.1f}MB > cap {size_cap_mb}MB", file=sys.stderr)
+        return 1
+
+    elapsed_h = (time.time() - started_at) / 3600.0
+    if elapsed_h > hours_cap:
+        print(f"⛔ quota: wall-clock {elapsed_h:.2f}h > cap {hours_cap}h", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Step 3: Commit**
+
+```bash
+git add scripts/field-test/check-quota.py .claude/scripts/field-test/check-quota.py tests/test_field_test_check_quota.py
+git commit -m "feat(field-test): check-quota.py size+wall-clock fail-stop helper"
+```
+
+### Task 7b: `release-lock.py` stuck-lock recovery
+
+**Files:**
+- Create: `scripts/field-test/release-lock.py`
+- Mirror
+- Test: `tests/test_field_test_release_lock.py`
+
+**Step 1: Failing test**
+
+```python
+def test_release_lock_removes_dead_pid_lock(tmp_path):
+    lock_dir = tmp_path / ".vg" / "field-test" / ".active"
+    lock_dir.mkdir(parents=True)
+    # Write a definitely-dead PID (1 is init on Linux but on Win 99999999 will fail).
+    (lock_dir / "owner").write_text("ft-deadbeef")
+    (lock_dir / "pid").write_text("99999999")
+    r = subprocess.run([sys.executable, RELEASE_LOCK, "--root", str(tmp_path)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+    assert not lock_dir.exists(), "dead-PID lock should be released"
+
+
+def test_release_lock_refuses_live_pid_lock(tmp_path):
+    lock_dir = tmp_path / ".vg" / "field-test" / ".active"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "owner").write_text("ft-live")
+    (lock_dir / "pid").write_text(str(os.getpid()))  # self is alive
+    r = subprocess.run([sys.executable, RELEASE_LOCK, "--root", str(tmp_path)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1
+    assert lock_dir.exists(), "live-PID lock must NOT be released"
+    assert "alive" in (r.stdout + r.stderr).lower()
+
+
+def test_release_lock_idempotent_when_no_lock(tmp_path):
+    r = subprocess.run([sys.executable, RELEASE_LOCK, "--root", str(tmp_path)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+```
+
+**Step 2: Implementation**
+
+```python
+#!/usr/bin/env python3
+"""scripts/field-test/release-lock.py — release a stuck .vg/field-test/.active lock."""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import sys
+from pathlib import Path
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import subprocess
+            r = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True, text=True,
+            )
+            return str(pid) in r.stdout
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=".", help="Repo root containing .vg/")
+    ap.add_argument("--force", action="store_true",
+                    help="Remove lock even if PID file claims a live owner")
+    args = ap.parse_args()
+
+    lock = Path(args.root) / ".vg" / "field-test" / ".active"
+    if not lock.exists():
+        print("✓ no lock present", file=sys.stderr)
+        return 0
+
+    pid_file = lock / "pid"
+    pid = 0
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip() or "0")
+        except ValueError:
+            pid = 0
+
+    if not args.force and pid > 0 and _pid_alive(pid):
+        owner = (lock / "owner").read_text(encoding="utf-8").strip() if (lock / "owner").exists() else "?"
+        print(f"⛔ lock owner pid={pid} (sid={owner}) is still alive — refusing release. Use --force to override.", file=sys.stderr)
+        return 1
+
+    shutil.rmtree(lock, ignore_errors=False)
+    print(f"✓ released stuck lock (pid={pid} not alive)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+**Step 3: Commit**
+
+```bash
+git add scripts/field-test/release-lock.py .claude/scripts/field-test/release-lock.py tests/test_field_test_release_lock.py
+git commit -m "feat(field-test): release-lock.py stuck-lock recovery helper"
+```
+
+### Task 7c: Tail-respawn primitive in `tail-source.sh`
+
+The respawn loop was implicit in v2 plan. Inline it explicitly into `tail-source.sh`'s body (Task 3) — **also tested by `test_field_test_tail_source.py::test_tail_respawn_three_times`**:
+
+```bash
+# Inside tail-source.sh — wrap the actual tail in a 3-strike respawn loop
+respawn_count=0
+while [ "$respawn_count" -lt 3 ]; do
+  if [ "$TYPE" = "file" ]; then
+    tail -F "$TARGET" 2>>"${OUT}.tail-err" | "${PYTHON_BIN:-python3}" "$REDACT_SCRIPT" --pattern "$REDACT" --prefix-iso >> "$OUT" &
+  else
+    bash -c "$TARGET" 2>>"${OUT}.tail-err" | "${PYTHON_BIN:-python3}" "$REDACT_SCRIPT" --pattern "$REDACT" --prefix-iso >> "$OUT" &
+  fi
+  tail_pid=$!
+  wait "$tail_pid"
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -gt 128 ]; then
+    # 0 = clean exit; >128 = killed by signal (SIGTERM from orchestrator) — do not respawn
+    exit "$rc"
+  fi
+  respawn_count=$((respawn_count + 1))
+  echo "[$(date -u +%FT%TZ)] tail-source respawn $respawn_count/3 (rc=$rc)" >> "${OUT}.tail-err"
+  sleep 1
+done
+echo "[$(date -u +%FT%TZ)] tail.dead — gave up after 3 respawns" >> "${OUT}.tail-err"
+exit 1
+```
+
+### Task 7d: MARKER_TO_AUTO_EVENT extension (original Task 7 content)
+
+Same orchestrator wiring as v1 plan: `scripts/vg-orchestrator/__main__.py` adds `("field-test", "complete") → "field_test.session_completed"`. Mirror to `.claude/`. Test: `tests/test_field_test_marker_mapping.py` asserts the tuple key is present in `MARKER_TO_AUTO_EVENT`.
+
+**Commit msg references** round-2 MUST-1 (respawn body), MUST-2 (check-quota), MUST-3 (release-lock).
 
 ---
 
@@ -1015,16 +1548,25 @@ Unchanged from v1 plan.
 
 **Key diff vs v1 plan (per Codex §1, §3, §6, §9):**
 
-1. **State polling** replaces console marker polling in step 5:
+1. **State polling** replaces console marker polling in step 5. **v2.1**: epoch K→0 detection forces full re-inject + `last_consumed=0` reset on SPA full-reload (F5 / router redirect that wipes `window.__VG_FT_STATE`):
+
 ```bash
 # Step 5: capture loop — poll overlay state directly (NOT console_messages)
+# v2.1 SPA full-reload handling: epoch starts at 0, increments on overlay
+# re-inject. Browser F5 / hard nav wipes window state → epoch resets to 0.
+# Detection rule: if (returned_epoch < last_epoch) → full reload happened
+#                → re-inject overlay
+#                → set last_consumed = 0  (cannot trust stale offset)
 last_consumed=0
+last_epoch=0
 while true; do
   # AI tool call (skill body shows this as the orchestrator instruction):
   #   mcp__playwright1__browser_evaluate({
   #     function: "() => ({ len: window.__VG_FT_STATE.marks.length, status: window.__VG_FT_STATE.status, epoch: window.__VG_FT_STATE.reload_epoch })"
   #   })
-  # Then if returned `len > last_consumed`:
+  # If state is undefined (full reload erased it): re-inject overlay.js, set last_consumed=0.
+  # Else if returned_epoch < last_epoch: same — full reload, re-inject + reset last_consumed.
+  # Else if len > last_consumed:
   #   mcp__playwright1__browser_evaluate({
   #     function: "() => window.__VG_FT_STATE.marks.slice(N, M)"  # JSON-safe payload
   #   })
@@ -1111,9 +1653,49 @@ Skill structure test (`tests/test_field_test_skill_structure.py`) asserts:
 
 ---
 
-## Task 9: Codex skill mirror via generator (same as v1 plan task 8)
+## Task 9: Codex skill mirror via generator (v2.1 — global-only deploy after PR #177)
 
-Unchanged. Run `bash scripts/generate-codex-skills.sh` — produces `codex-skills/vg-field-test/SKILL.md`. Test asserts YAML valid + name correct.
+**v2.1 change**: PR #177 made `~/.vgflow` + `~/.codex/skills/` the single global install surface. Project-local `<project>/.codex/skills/*` is **no longer committed** and is pruned by `/vg:update` step 8_sync_codex (v3.6.4) + `sync.sh` step 4b (v3.6.1).
+
+**Steps:**
+
+1. Run `bash scripts/generate-codex-skills.sh --skill vg-field-test` from repo root.
+2. Generator produces `codex-skills/vg-field-test/SKILL.md` (canonical source-of-truth, **committed** to repo).
+3. At install time, `vg install` copies `codex-skills/*` → `~/.codex/skills/*`. Project-local copies are NOT created.
+4. The generator's curated-content guard (PR #179, v3.6.5) preserves any HARD-GATE-CODEX block manually added between frontmatter + body.
+
+**Tests** (`tests/test_field_test_codex_mirror.py`):
+
+```python
+def test_codex_mirror_yaml_valid():
+    spec = REPO_ROOT / "codex-skills" / "vg-field-test" / "SKILL.md"
+    assert spec.exists(), "generator must produce codex mirror"
+    fm = _parse_frontmatter(spec.read_text(encoding="utf-8"))
+    assert fm["name"] == "vg-field-test"
+    assert "description" in fm
+
+
+def test_codex_mirror_not_present_in_project_codex_dir():
+    # PR #177: project-local .codex/skills no longer exists in committed tree
+    project_codex = REPO_ROOT / ".codex" / "skills" / "vg-field-test"
+    assert not project_codex.exists(), (
+        "After PR #177, vg-field-test must NOT be committed under project-local "
+        ".codex/skills — global-only install via codex-skills/* → ~/.codex/skills/*."
+    )
+
+
+def test_codex_mirror_byte_identical_to_canonical_invariants():
+    # Generator must preserve allowed-tools + runtime_contract telemetry between
+    # commands/vg/field-test.md and codex-skills/vg-field-test/SKILL.md.
+    canon = (REPO_ROOT / "commands" / "vg" / "field-test.md").read_text(encoding="utf-8")
+    mirror = (REPO_ROOT / "codex-skills" / "vg-field-test" / "SKILL.md").read_text(encoding="utf-8")
+    for inv in ("mcp__playwright1__browser_evaluate", "must_emit_telemetry",
+                "field_test.session_started", "field_test.mark_recorded"):
+        assert inv in canon, f"canonical missing {inv}"
+        assert inv in mirror, f"codex mirror missing {inv}"
+```
+
+**Commit msg references** PR #177 §global-only install integration.
 
 ---
 
@@ -1121,7 +1703,9 @@ Unchanged. Run `bash scripts/generate-codex-skills.sh` — produces `codex-skill
 
 **Files:** `VERSION`, `package.json`, `CHANGELOG.md`, `.gitignore` (verify `.vg/` covers field-test path).
 
-**CHANGELOG entry** highlights design v2 + Codex review remediations:
+**v2.1 note**: target version is `3.7.0` (bumped from v3.6.5 baseline after PR #177 / #179 / v3.6.5 land). The CHANGELOG entry now also acknowledges the downstream `/vg:test-spec` consumer relationship introduced by PR #177.
+
+**CHANGELOG entry** highlights design v2.1 + Codex review remediations + PR #177 integration:
 
 ```markdown
 ## v3.7.0 — /vg:field-test new skill (2026-05-11)
@@ -1154,12 +1738,28 @@ user before session start.
 - No auto-recovered crash bundle (manual triage on browser crash).
 
 ### Tests
-~35 cross-platform tests + jsdom + Linux functional subset behind
-VG_RUN_BROWSER_TESTS=1. Closes 10 Codex review findings.
+~38 cross-platform tests. jsdom functional smoke for overlay is the DEFAULT
+test path (not behind VG_RUN_BROWSER_TESTS=1) per v2.1 round-2 review.
+Linux-specific path-with-spaces fixtures cover Vibe Code/Code/PrintwayV3-style
+install dirs. Closes 10 Codex round-1 findings + 5 MUST + 3 SHOULD round-2
+findings.
+
+### Integration with PR #177 pipeline
+- Codex mirror deploys to ~/.codex/skills/ only (no project-local copy).
+- KNOWN-ISSUES.json entries written by analyze.py feed downstream
+  /vg:test-spec (post-PR-#177) when the user re-runs the test-spec lane on
+  the same phase — lifecycle context is enriched with manually-observed
+  defects from field-test sessions. No new orchestrator wiring needed:
+  /vg:test-spec already reads .vg/KNOWN-ISSUES.json.
+- Phase 4 of /vg:review (post-v3.6.5 / #175) emits evidence-manifest
+  entries for RUNTIME-MAP.json + GOAL-COVERAGE-MATRIX.md. Task 8 step 6
+  mirrors that pattern: emit-evidence-manifest for FIELD-REPORT.md +
+  bundle manifest.json so freshness checks attribute the write to vg:field-test.
 
 ### Closes
-Internal Codex GPT-5.5 plan review §1-§10. Plan + design v2 documented
-under docs/plans/2026-05-11-field-test-capture-{design,plan}.md.
+Internal Codex GPT-5.5 plan review (round-1 §1-§10 + round-2 MUST-1..5 + SHOULD-6..8).
+Plan + design v2.1 documented under
+docs/plans/2026-05-11-field-test-capture-{design,plan}.md.
 ```
 
 Run regression sweep, commit, push, tag.
@@ -1167,6 +1767,8 @@ Run regression sweep, commit, push, tag.
 ---
 
 ## Codex review remediation matrix
+
+### Round 1 (v1 → v2)
 
 | Finding | v1 plan | v2 plan resolution |
 |---|---|---|
@@ -1181,6 +1783,29 @@ Run regression sweep, commit, push, tag.
 | §9 Plan executability | Hand-wavy MCP call shape | Task 8 step 5/3 documents `browser_evaluate({function: ...})` payload literally |
 | §10 Verdict (back to design) | Design v1 ships with privacy + race + contract issues | Design v2 supersedes; this plan v2 enforces v2 design; ship blocked until tasks 1-10 land |
 
+### Round 2 (v2 → v2.1)
+
+| Finding | v2 plan gap | v2.1 plan resolution |
+|---|---|---|
+| MUST-1 Task 7 empty | One-line pointer to v1 plan task 6; no respawn body | Task 7c inlines respawn loop in `tail-source.sh`; 3-strike with signal-aware exit-code branching |
+| MUST-2 `check-quota.py` missing | Design line 89 named it, plan never authored | Task 7a creates script + 3 tests (under-caps, size-cap-trip, wall-clock-trip) |
+| MUST-3 `release-lock.py` missing | Design line 101 named it, plan never authored | Task 7b creates script + 3 tests (dead-PID release, live-PID refuse, no-lock idempotent) |
+| MUST-4 SPA F5 reload data loss | `reload_epoch` polled but no K→0 transition logic | Task 8 step 5 adds explicit "epoch_K_to_0 = full_reload = re-inject + reset last_consumed=0" rule |
+| MUST-5 User pattern double-wrap | `compose_pattern(user_input)` could double-wrap `\b...\b` user templates | Task 2 adds regression test: user passes already-wrapped pattern, asserts compiled pattern matches expected token (not corrupted by extra wrapping) |
+| SHOULD-6 Overlay tests substring-tautology | jsdom smoke was behind `VG_RUN_BROWSER_TESTS=1` | Task 4 makes jsdom smoke the DEFAULT path; substring-only assertions removed |
+| SHOULD-7 Path-with-spaces fixtures missing | All fixtures used clean paths | Tasks 3 + 8 add `tmp_path / "with spaces" / "ft-test"` fixture for tail-source and atomic-lock tests |
+| SHOULD-8 Task 5 hand-wavy | "as in v1 plan task 4, with extensions" | Task 5 step 2 now inlines full build-bundle.py body |
+
+### PR #177 / #179 / v3.6.5 integration (v2 baseline assumptions → v2.1 adjusted)
+
+| Event | v2 baseline | v2.1 adjustment |
+|---|---|---|
+| PR #179 (YAML curated-skip repair) | Generator preserved curated content only with explicit guard | Task 9 codex mirror test now verifies the generator's repaired YAML loads without ParseError on the first install pass |
+| PR #177 (global-only install) | Codex deploy to both project-local + global | Task 9 deploys to `~/.codex/skills/` only; project-local `.codex/skills/vg-field-test` MUST NOT exist post-install |
+| PR #177 (`/vg:test-spec` lane) | No downstream consumer of KNOWN-ISSUES | Task 10 CHANGELOG documents that `/vg:test-spec` reads `.vg/KNOWN-ISSUES.json` to enrich `LIFECYCLE-SPECS.json` with manually-observed defects |
+| PR #177 (`verify-goal-coverage-phase.py` generic IDs) | Schema constrained `phase_goal` to `G-\d+` | Task 1 schema permits `[A-Za-z0-9][A-Za-z0-9_.-]*` for `phase_goal` cross-ref to match upstream |
+| v3.6.5 / #175 (evidence-manifest auto-record) | Stop step did not emit manifest | Task 8 step 6 calls `emit-evidence-manifest.py` for FIELD-REPORT.md + bundle manifest.json (mirrors fix-loop-and-goals.md pattern) |
+
 ---
 
-End of v2 plan. **Tasks 1-10**, each commit individually. Estimated 4-5 hours engineering wall-clock for a codebase-familiar dev; 7-9 hours for a fresh contributor.
+End of v2.1 plan. **Tasks 1-10** with Task 7 expanded to 7a/7b/7c/7d. Each commit individually. Estimated 5-6 hours engineering wall-clock for a codebase-familiar dev; 8-10 hours for a fresh contributor (v2.1 added ~300 lines of helper code + tests).

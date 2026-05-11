@@ -1,9 +1,32 @@
 # /vg:field-test — user-driven field test capture design
 
 **Date:** 2026-05-11
-**Revision:** v2 (post-Codex review)
-**Status:** design v2 supersedes v1; v1 had 10 critical findings concentrated in privacy + concurrency + scope
-**Brainstorm session:** Q1-Q7 answered; v2 addresses Codex GPT-5.5 audit findings
+**Revision:** v2.1 (post round-2 Codex review + post merge of PR #177 / #179 / v3.6.5)
+**Status:** design v2.1 supersedes v2; v2 closed 7/10 round-1 findings cleanly but round-2 review surfaced 5 MUST FIX + 3 SHOULD FIX new gaps, and PR #177 changed install topology
+**Brainstorm session:** Q1-Q7 answered; v2 addressed round-1 Codex audit; v2.1 addresses round-2 Codex audit + PR #177 integration
+
+## v2.1 deltas vs v2
+
+Five MUST FIX from round-2 reviewer:
+
+1. **Task 7 was empty** beyond a pointer to v1. Design promised tail-respawn loop "in v2 task 7 step 5" but no concrete code existed. v2.1 spells out the bash respawn primitive in `tail-source.sh` and wires `check-quota.py` + `release-lock.py` into Task 7's component list.
+2. **`check-quota.py` missing entirely.** Design line 89/100 named it but the plan never created it. v2.1 ships `scripts/field-test/check-quota.py` with `du -s` + wall-clock cap → exit code → orchestrator force-stops.
+3. **`release-lock.py` mentioned but not implemented.** Design line 101 referenced it for stuck-lock recovery; v2.1 creates the helper.
+4. **SPA full-reload (F5) data loss.** Plan task 8 step 5 polls `reload_epoch` but never documents the epoch K→0 transition (full reload wipes `window.__VG_FT_STATE` → `last_consumed` must reset to 0, NOT trust stale count). v2.1 adds explicit "epoch_K_to_0 = full_reload = reset last_consumed" rule.
+5. **User pattern double-wrap regression.** When user passes `--redact=password` the loader composed a wrapper regex; if user already wrapped with `\b...\b` the composition double-wrapped → silently broke matching. v2.1 adds an explicit double-wrap test fixture.
+
+Three SHOULD FIX:
+
+6. **Overlay tests substring-tautology.** v2 tests asserted "panel exists" via lexical presence. v2.1 makes the jsdom functional smoke (Start click → state.recording, simulate Mark → marks.length=1) the **default** test path, not behind `VG_RUN_BROWSER_TESTS=1`.
+7. **Path-with-spaces fixtures missing.** Real users have `Vibe Code/Code/PrintwayV3/` install dirs. v2.1 adds path-with-spaces case for `tail-source.sh` + atomic-lock tests.
+8. **Task 5 hand-wavy.** Plan said "as in v1 plan task 4, with extensions" — v2.1 inlines the full body.
+
+PR #177 integration deltas:
+
+- **Global-only install.** `~/.vgflow` is canonical; project-local `.codex/skills/*` no longer committed. v2.1 Task 9 deploys Codex mirror to `~/.codex/skills/vg-field-test/` (global only), NOT `<project>/.codex/skills/`.
+- **`/vg:test-spec` lane** inserted between build + review. Field-test KNOWN-ISSUES entries are now potentially consumed by downstream `/vg:test-spec` for lifecycle context — v2.1 declares this consumer relationship in MARKER_TO_AUTO_EVENT mapping.
+- **`verify-goal-coverage-phase.py` generic IDs.** KNOWN-ISSUES entries may carry domain goal IDs (`G-AUTH-00`, `G-FE-ADMIN-DLQ-01`) — v2.1 schema allows the same generic regex `[A-Za-z0-9][A-Za-z0-9_.-]*` for any `phase_goal` cross-ref.
+- **Evidence-manifest auto-record (v3.6.5 / #175).** Same pattern applies to field-test: Task 8 step 6 now emits `evidence-manifest.json` entry for `FIELD-REPORT.md` + bundle `manifest.json` so downstream `/vg:test-spec` consumers can verify freshness.
 
 ## Goal
 
@@ -70,10 +93,12 @@ v2 uses two distinct mechanisms:
 | `scripts/field-test/build-bundle.py` | Stop-time bundle assembler. Loads streams, correlates ±N-sec windows per Mark, runs each window line through `redact-stream.py` (idempotent), writes `manifest.json` + per-Mark `marks.jsonl`. |
 | `agents/vg-field-test-analyzer/SKILL.md` | Subagent. Wraps `analyze.py` deterministic core, adds LLM narrative on HIGH/MEDIUM marks. |
 | `scripts/field-test/analyze.py` | Deterministic severity heuristic + KNOWN-ISSUES append (robust to corrupt prior JSON: backup + warn, do NOT silently wipe). |
-| `schemas/field-test-session.v1.json` | JSON Schema for session.json + marks.jsonl. Validates required fields. |
+| `scripts/field-test/check-quota.py` | **v2.1 new.** Reads `session.json.max_session_hours` + `session_max_size_mb`, returns exit 0 = continue, exit 1 = force-stop. Called every poll iter. Cross-platform `du`-equivalent via `Path.stat()`. |
+| `scripts/field-test/release-lock.py` | **v2.1 new.** Stuck-lock recovery helper. Reads `.vg/field-test/.active/owner`, checks the orchestrator PID is alive; if dead → removes the lock directory atomically. Idempotent. |
+| `schemas/field-test-session.v1.json` | JSON Schema for session.json + marks.jsonl. Validates required fields. **v2.1**: `phase_goal` ref field uses `[A-Za-z0-9][A-Za-z0-9_.-]*` to match `verify-goal-coverage-phase.py` post-#178. |
 | `vg.config.md` field_test block | api_log_sources, redaction (single value), default_base_url, mark_window_sec, screenshot_quality, session_max_size_mb, max_session_hours. NO preset field — v1 only ships `standard`. |
 
-**MARKER_TO_AUTO_EVENT extension** (`scripts/vg-orchestrator/__main__.py`): `("field-test", "complete") → "field_test.session_completed"`.
+**MARKER_TO_AUTO_EVENT extension** (`scripts/vg-orchestrator/__main__.py`): `("field-test", "complete") → "field_test.session_completed"`. **v2.1**: downstream `/vg:test-spec` (post-PR-#177) reads `.vg/KNOWN-ISSUES.json` entries with `source=field-test` to enrich `LIFECYCLE-SPECS.json` for goals the user observed manually. No new event needed — `field_test.analysis_completed` already fires when KNOWN-ISSUES.json is appended.
 
 ## Data flow
 
@@ -86,7 +111,7 @@ T0 user → `/vg:field-test [--phase=N] [--redact=<regex>] [--base-url=<url>]`.
 | 2 | `2_launch_browser` | `mcp__playwright1__browser_navigate(base_url)` |
 | 3 | `3_inject_overlay` | Read `overlay.js`, call `mcp__playwright1__browser_evaluate({ function: "() => { OVERLAY_JS_CONTENTS }" })`. Verify by `browser_evaluate(() => typeof window.__VG_FT_INIT === 'function')`. **Concrete call shape documented in skill body, not hand-waved.** |
 | 4 | `4_wait_start` | Poll `browser_console_messages` with offset tracking for `[VG_FT] start` edge. On hit: spawn N tail processes (each piped through `redact-stream.py`), write PIDs to session.json, emit `field_test.session_started`. |
-| 5 | `5_capture_loop` | Poll every 2s: `browser_evaluate(() => ({len: __VG_FT_STATE.marks.length, status: __VG_FT_STATE.status}))`. If `len > last_consumed`: fetch slice `[last_consumed..len)`, for each new mark: `browser_take_screenshot --filename <session>/marks/<n>.png`, `browser_snapshot --filename <session>/marks/<n>.snapshot.yml`, append raw entry to `marks.raw.jsonl`, emit `field_test.mark_recorded`. Throttle 5s if iter >1.5s. Hard cap on size + wall-clock (enforced by `check-quota.py` called each iter). |
+| 5 | `5_capture_loop` | Poll every 2s: `browser_evaluate(() => ({len: __VG_FT_STATE.marks.length, status: __VG_FT_STATE.status, epoch: __VG_FT_STATE.reload_epoch}))`. **v2.1 SPA-reload rule**: track `last_epoch`; if returned `epoch < last_epoch` (always K→0 since overlay re-injects with epoch=0) → full reload occurred → re-inject overlay AND reset `last_consumed=0` (state was wiped). If `len > last_consumed`: fetch slice `[last_consumed..len)`, for each new mark: `browser_take_screenshot --filename <session>/marks/<n>.png`, `browser_snapshot --filename <session>/marks/<n>.snapshot.yml`, append raw entry to `marks.raw.jsonl`, emit `field_test.mark_recorded`. Throttle 5s if iter >1.5s. **v2.1**: hard cap enforced by `check-quota.py` called each iter — exit 1 = force-stop pipeline. |
 | 6 | `6_stop_finalize` | On `[VG_FT] stop` OR timeout/size cap: dump remaining overlay buffers via `browser_evaluate(() => __VG_FT_STATE.buffer)`, kill tails (TERM → 5s grace → KILL), run `build-bundle.py`, write manifest, emit `field_test.session_stopped`. |
 | 7 | `7_analyze` | Spawn `vg-field-test-analyzer` subagent. Subagent runs `analyze.py` then augments report. Emit `field_test.analysis_completed`. |
 | 8 | `complete` | Auto-emit `field_test.session_completed` via MARKER_TO_AUTO_EVENT. Remove lock directory. |
