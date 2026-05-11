@@ -50,36 +50,47 @@ cleanup() {
 trap cleanup TERM INT
 
 run_pipeline_once() {
+  # Wrap the entire pipeline in a single bash -c invocation so $! captures
+  # the PID of the wrapper process tree (not just the last pipe stage).
+  # This makes cleanup TERM propagate to all stages AND `wait` returns the
+  # pipeline's true exit code (pipefail catches mid-pipe failures).
   case "$TYPE" in
     file)
       if [ ! -e "$TARGET" ]; then
-        "$PYTHON_BIN" -c "import datetime as d; print(d.datetime.now(d.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'tail-source: waiting for $TARGET to exist')" >> "$OUT"
+        "$PYTHON_BIN" -c "import datetime as d, sys; print(d.datetime.now(d.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'), 'tail-source: waiting for', sys.argv[1], 'to exist')" -- "$TARGET" >> "$OUT"
       fi
-      tail -F -n 0 "$TARGET" 2>>"$ERR_LOG" \
-        | "$PYTHON_BIN" "$REDACTOR" --pattern "$REDACT_PATTERN" \
-        | "$PYTHON_BIN" "$PREFIXER" \
-        >> "$OUT" &
+      bash -c '
+        set -o pipefail
+        tail -F -n 0 "$1" 2>>"$5" \
+          | "$3" "$4" --pattern "$6" \
+          | "$3" "$7" >> "$2"
+      ' -- "$TARGET" "$OUT" "$PYTHON_BIN" "$REDACTOR" "$ERR_LOG" "$REDACT_PATTERN" "$PREFIXER" &
+      CHILD_PID=$!
       ;;
     command)
-      bash -c "$TARGET" 2>>"$ERR_LOG" \
-        | "$PYTHON_BIN" "$REDACTOR" --pattern "$REDACT_PATTERN" \
-        | "$PYTHON_BIN" "$PREFIXER" \
-        >> "$OUT" &
+      bash -c '
+        set -o pipefail
+        bash -c "$1" 2>>"$5" \
+          | "$3" "$4" --pattern "$6" \
+          | "$3" "$7" >> "$2"
+      ' -- "$TARGET" "$OUT" "$PYTHON_BIN" "$REDACTOR" "$ERR_LOG" "$REDACT_PATTERN" "$PREFIXER" &
+      CHILD_PID=$!
       ;;
     *)
       echo "unknown --type: $TYPE" >&2
-      exit 64
+      return 64
       ;;
   esac
-  CHILD_PID=$!
-  # Poll-wait: bash `wait` in non-interactive shell is not interrupted by
-  # trapped signals on all platforms. Polling with short sleeps allows the
-  # trap handler to fire between iterations.
+
+  # Poll-wait loop — bare `wait` doesn't reliably interrupt on trapped signal
+  # in non-interactive bash on some platforms.
   while kill -0 "$CHILD_PID" 2>/dev/null; do
     sleep 0.5
   done
-  wait "$CHILD_PID" 2>/dev/null || true
-  return $?
+  # Reap and capture true exit code — NO `|| true` (was C2 bug).
+  wait "$CHILD_PID" 2>/dev/null
+  local rc=$?
+  return "$rc"
 }
 
 # v2.1 MUST-1: 3-strike respawn loop on transient pipe death.

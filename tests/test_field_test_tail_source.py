@@ -153,3 +153,46 @@ def test_tail_iso_prefix_works_on_any_unix(tmp_path):
         assert line[:4].isdigit() and "T" in line[:20] and "Z" in line[:35], (
             f"line missing ISO timestamp: {line!r}"
         )
+
+
+@_bash
+@pytest.mark.skipif(sys.platform == "win32", reason="respawn behavioral test Linux-only — flaky on Git Bash")
+def test_tail_respawn_actually_fires_on_transient_failure(tmp_path):
+    """v2.1 round-2 fix: ensure 3-strike respawn actually runs (was no-op
+    due to `|| true` swallowing wait's exit code and `$!` tracking the wrong
+    PID in the pipeline)."""
+    out = tmp_path / "out.log"
+    # Use --type command with a flapping script that fails fast.
+    flap = tmp_path / "flap.sh"
+    flap.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo flap-$RANDOM\n"
+        "exit 17\n",  # 17 ∈ (0, 128] → transient failure path
+        encoding="utf-8",
+    )
+    flap.chmod(0o755)
+    proc = subprocess.Popen(
+        ["bash", str(TAIL), "--type", "command", "--target", str(flap),
+         "--out", str(out), "--redact", "default"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    try:
+        # 3 respawns with 1s sleep between = ~3+ seconds total before "tail.dead"
+        rc = proc.wait(timeout=15)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    err_log = out.with_suffix(out.suffix + ".tail-err")
+    if err_log.exists():
+        err = err_log.read_text(encoding="utf-8")
+    else:
+        err = ""
+    assert "tail.dead" in err, (
+        f"respawn loop must run 3x then log tail.dead; got err={err!r} rc={rc}"
+    )
+    # Count respawn lines: there must be at least 3 (1 entry per respawn).
+    respawn_lines = [ln for ln in err.splitlines() if "respawn" in ln.lower()]
+    assert len(respawn_lines) >= 3, (
+        f"expected >=3 respawn log entries, got {len(respawn_lines)}: {respawn_lines}"
+    )
