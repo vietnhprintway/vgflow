@@ -157,6 +157,29 @@ process that cannot see browser tools.
 Invoke this skill as `$vg-test-spec`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
 
+<HARD-GATE-CODEX>
+Codex has no Claude PreToolUse/PostToolUse hook substrate. Claude hooks may
+auto-emit step markers, but Codex MUST emit the same hard markers explicitly
+after each matching STEP primary action.
+
+Use global VGFlow paths so global-only installs work without project-local
+`.claude/scripts` or `.claude/commands`:
+
+```bash
+VG_HOME="${VG_HOME:-$HOME/.vgflow}"
+VG_SCRIPT_ROOT="${VG_SCRIPT_ROOT:-${VG_HOME}/scripts}"
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step test-spec 0_parse_and_validate
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step test-spec 1_build_artifact_gate
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step test-spec 2_generate_deep_specs
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step test-spec 3_validate_deep_specs
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step test-spec 4_complete
+```
+
+Hook/spawn mechanics may differ by provider, but marker names, order, gates,
+must-write artifacts, and telemetry contract stay identical to the Claude
+command source.
+</HARD-GATE-CODEX>
+
 
 
 <LANGUAGE_POLICY>

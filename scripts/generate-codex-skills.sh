@@ -16,6 +16,7 @@ set -euo pipefail
 
 FORCE=false
 FORCE_OVERWRITE_CURATED=false
+ONLY_SKILLS=()
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=true ;;
@@ -26,8 +27,12 @@ for arg in "$@"; do
       FORCE=true
       FORCE_OVERWRITE_CURATED=true
       ;;
+    --skill=*)
+      ONLY_SKILLS+=("${arg#--skill=}")
+      ;;
     -h|--help)
-      sed -n '1,22p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '1,24p' "$0" | sed 's/^# \{0,1\}//'
+      echo "  --skill=<name>          Regenerate only one skill (e.g. test, vg-test)"
       exit 0
       ;;
     *)
@@ -73,6 +78,88 @@ strip_frontmatter() {
     }
     past_fm == 1 { print }
   ' "$src"
+}
+
+skill_selected() {
+  local name="$1"
+  local skill_name="$2"
+  if [ "${#ONLY_SKILLS[@]}" -eq 0 ]; then
+    return 0
+  fi
+  local wanted
+  for wanted in "${ONLY_SKILLS[@]}"; do
+    case "$wanted" in
+      "$name"|"$skill_name"|"vg-$name")
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+extract_hard_markers() {
+  local src="$1"
+  python - "$src" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.S)
+if not match:
+    raise SystemExit(0)
+frontmatter = match.group(1)
+markers = re.search(
+    r"^  must_touch_markers:\s*\n(.*?)(?=^  [a-zA-Z_]+:|\Z)",
+    frontmatter,
+    re.S | re.M,
+)
+if not markers:
+    markers = re.search(
+        r"^must_touch_markers:\s*\n(.*?)(?=^[a-zA-Z_]+:|\Z)",
+        frontmatter,
+        re.S | re.M,
+    )
+if not markers:
+    raise SystemExit(0)
+for marker in re.findall(r'^\s+-\s*"([^"]+)"\s*$', markers.group(1), re.M):
+    print(marker)
+PY
+}
+
+write_codex_marker_block() {
+  local src="$1"
+  local cmd_name="$2"
+  local markers
+  markers="$(extract_hard_markers "$src" || true)"
+  [ -n "$markers" ] || return 0
+
+  cat <<EOF
+
+<HARD-GATE-CODEX>
+Codex has no Claude PreToolUse/PostToolUse hook substrate. Claude hooks may
+auto-emit step markers, but Codex MUST emit the same hard markers explicitly
+after each matching STEP primary action.
+
+Use global VGFlow paths so global-only installs work without project-local
+\`.claude/scripts\` or \`.claude/commands\`:
+
+\`\`\`bash
+VG_HOME="\${VG_HOME:-\$HOME/.vgflow}"
+VG_SCRIPT_ROOT="\${VG_SCRIPT_ROOT:-\${VG_HOME}/scripts}"
+EOF
+  while IFS= read -r marker; do
+    [ -n "$marker" ] || continue
+    printf '"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step %s %s\n' "$cmd_name" "$marker"
+  done <<< "$markers"
+  cat <<'EOF'
+```
+
+Hook/spawn mechanics may differ by provider, but marker names, order, gates,
+must-write artifacts, and telemetry contract stay identical to the Claude
+command source.
+</HARD-GATE-CODEX>
+EOF
 }
 
 write_generic_adapter() {
@@ -342,6 +429,7 @@ write_codex_skill() {
   local skill_name="$3"
   local description="$4"
   local adapter_mode="${5:-generic}"
+  local command_marker_name="${6:-}"
   local preserved_adapter=""
   local target_invalid_yaml="false"
 
@@ -397,7 +485,7 @@ write_codex_skill() {
       echo "Skipped (curated content detected): ${skill_name} — use --force-overwrite-curated to override"
       return
     fi
-    adapter_mode="preserve"
+    adapter_mode="generic"
   fi
 
   mkdir -p "$(dirname "$target")"
@@ -419,6 +507,9 @@ EOF
       printf '%s\n' "$preserved_adapter"
     else
       write_generic_adapter "$skill_name"
+    fi
+    if [ -n "$command_marker_name" ]; then
+      write_codex_marker_block "$src" "$command_marker_name"
     fi
     echo ""
     echo ""
@@ -455,10 +546,13 @@ for src in "$COMMANDS_DIR"/*.md; do
   [ -f "$src" ] || continue
   name="$(basename "$src" .md)"
   case "$name" in _*|*-insert) continue ;; esac
+  if ! skill_selected "$name" "vg-${name}"; then
+    continue
+  fi
 
   target="$TARGET_DIR/vg-${name}/SKILL.md"
   description="$(extract_description "$src")"
-  write_codex_skill "$src" "$target" "vg-${name}" "$description" "generic"
+  write_codex_skill "$src" "$target" "vg-${name}" "$description" "generic" "$name"
 done
 
 # Support skills invoked by workflow commands. Codex does not have Claude's
@@ -467,6 +561,9 @@ done
 for src in "$SHARED_SKILLS_DIR"/*/SKILL.md; do
   [ -f "$src" ] || continue
   support="$(basename "$(dirname "$src")")"
+  if ! skill_selected "$support" "$support"; then
+    continue
+  fi
   target="$TARGET_DIR/$support/SKILL.md"
   description="$(extract_description "$src")"
   write_codex_skill "$src" "$target" "$support" "$description" "generic"
