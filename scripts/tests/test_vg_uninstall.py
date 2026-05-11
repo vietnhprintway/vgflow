@@ -143,7 +143,7 @@ def test_command_and_mirror_exist() -> None:
     assert (root / "commands" / "vg" / "uninstall.md").is_file()
     assert (root / ".claude" / "commands" / "vg" / "uninstall.md").is_file()
     assert (root / "codex-skills" / "vg-uninstall" / "SKILL.md").is_file()
-    assert (root / ".codex" / "skills" / "vg-uninstall" / "SKILL.md").is_file()
+    assert not (root / ".codex" / "skills" / "vg-uninstall" / "SKILL.md").exists()
     assert (root / ".claude" / "scripts" / "vg_uninstall.py").read_bytes() == (
         root / "scripts" / "vg_uninstall.py"
     ).read_bytes()

@@ -85,7 +85,9 @@ The subagent writes:
 - `${PHASE_DIR}/API-CONTRACTS.md` (4-block per endpoint format)
 - `${PHASE_DIR}/TEST-GOALS.md` (per-decision goals + persistence + URL state)
 - `${PHASE_DIR}/CRUD-SURFACES.md` (resource × operation × platform contract)
-- `${PHASE_DIR}/LIFECYCLE-SPECS.json` (fixture DAG + actors + RCRURDR lifecycle specs; empty `goals:{}` allowed only when there are no side-effecting goals)
+- Lifecycle specs are NOT generated here. `/vg:test-spec` owns post-build
+  `LIFECYCLE-SPECS.json`, `DEEP-TEST-SPECS.md`, and `TEST-FIXTURE-DAG.json`
+  after implemented surfaces exist.
 
 Returns JSON with paths + sha256 + bindings_satisfied + warnings.
 
@@ -247,28 +249,9 @@ sys.exit(0 if inv is not None else 1)
   done
 fi
 
-# Generate lifecycle specs deterministically from phase docs before validating
-# depth. This gives every side-effecting goal a reusable R-C-R-U-R-D-R contract
-# for /vg:test codegen, while the validator below still blocks shallow output.
-LIFECYCLE_GEN="${REPO_ROOT:-.}/.claude/scripts/generate-lifecycle-specs.py"
-if [ -f "$LIFECYCLE_GEN" ]; then
-  mkdir -p "${PHASE_DIR}/.tmp" 2>/dev/null || true
-  "${PYTHON_BIN:-python3}" "$LIFECYCLE_GEN" --phase "${PHASE_NUMBER}" --json \
-    > "${PHASE_DIR}/.tmp/lifecycle-spec-generate-blueprint.json" 2>&1
-fi
-
-LIFECYCLE_DEPTH_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-lifecycle-spec-depth.py"
-if [ -f "$LIFECYCLE_DEPTH_VAL" ]; then
-  mkdir -p "${PHASE_DIR}/.tmp" 2>/dev/null || true
-  "${PYTHON_BIN:-python3}" "$LIFECYCLE_DEPTH_VAL" --phase "${PHASE_NUMBER}" \
-    > "${PHASE_DIR}/.tmp/lifecycle-spec-depth-blueprint.json" 2>&1
-  LIFECYCLE_DEPTH_RC=$?
-  if [ "$LIFECYCLE_DEPTH_RC" != "0" ]; then
-    echo "⛔ LIFECYCLE-SPECS depth gate failed — see ${PHASE_DIR}/.tmp/lifecycle-spec-depth-blueprint.json"
-    echo "   Mutation/multi-actor goals need fixture_dag, actors, full RCRURDR stages, artifact_capture when applicable, and cleanup."
-    exit 1
-  fi
-fi
+# Post-build lifecycle specs are intentionally deferred to /vg:test-spec.
+# Blueprint only authors TEST-GOALS/CRUD/API contracts; implemented surfaces
+# are not available yet.
 ```
 
 ### Bidirectional Goal ↔ Task linkage (auto-injection)

@@ -1,8 +1,8 @@
 ---
-name: "vg-update"
-description: "Update global VGFlow at ~/.vgflow, refresh global Claude/Codex hooks, and prune project-local VG files"
+name: "vg-test-spec"
+description: "Post-build deep test-spec authoring — derive lifecycle specs and fixture DAG before review"
 metadata:
-  short-description: "Update global VGFlow at ~/.vgflow, refresh global Claude/Codex hooks, and prune project-local VG files"
+  short-description: "Post-build deep test-spec authoring — derive lifecycle specs and fixture DAG before review"
 ---
 
 <codex_skill_adapter>
@@ -151,95 +151,196 @@ process that cannot see browser tools.
 
 ## Invocation
 
-Invoke this skill as `$vg-update`. Treat all user text after the skill name as arguments.
+Invoke this skill as `$vg-test-spec`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
 
 
 
-<rules>
-1. **Global-only** — update refreshes `~/.vgflow`/global npm package, not project `.claude`.
-2. **Project cleanup** — stale project-local `.claude`/`.codex` VG files are pruned via `vg_uninstall.py` backup path.
-3. **Single source** — Claude hooks point at `~/.claude/settings.json`; Codex skills point at `~/.codex/skills`.
-4. **Honor repo override** — `--repo=owner/name` flag flows through to `vg_update.py`.
-5. **Honor args literally** — use `${ARGUMENTS}`, never `$*`/`$@` to avoid arg splitting.
-</rules>
+<LANGUAGE_POLICY>
+Follow `_shared/language-policy.md`. Default narration is Vietnamese; file
+paths, command names, JSON keys, and code identifiers stay English.
+</LANGUAGE_POLICY>
 
 <objective>
-Sync global VG install to latest `vietdev99/vgflow`, then clean the current
-project so Claude and Codex load VGFlow from one global surface only.
-High-level flow:
+Run the dedicated deep test-spec lane after `/vg:build` and before
+`/vg:review`.
 
-1. Preflight: verify `git`, `curl`, `python3`, helper script present.
-2. `--check` mode → just print version state + exit.
-3. Query `GET /repos/{repo}/releases/latest` via helper → compare with `.claude/VGFLOW-VERSION`.
-4. Show changelog preview for versions `> installed, <= latest`.
-5. Ask user to confirm.
-6. Breaking-change gate: major bump requires `--accept-breaking` + shows migration doc.
-7. Download tarball + verify SHA256 + extract to `.vgflow-cache/v{ver}/`.
-8. Refresh global Codex skills/agents from `~/.vgflow/codex-skills`.
-9. Verify/repair Claude + Codex Playwright MCP workers (`playwright1`..`playwright5`).
-10. Prune project-local VG-owned `.claude/` and `.codex/` files.
-11. Write `.vg/.install-target=global`.
-12. Report restart reminder.
+Why this exists:
+- Blueprint is too early: implemented DOM, route files, API handlers, generated
+  UI, and concrete form state may not exist yet.
+- Build must not self-certify runtime coverage.
+- Review should verify runtime against a pre-authored deep spec contract, not
+  discover test depth late and route it ambiguously.
+
+Pipeline:
+`specs → scope → blueprint → build → test-spec → review → test → accept`
 </objective>
+
+<rules>
+1. This command is post-build only. Missing `SUMMARY*.md`, `BUILD-LOG.md`, or
+   `.build-progress.json` BLOCKs with guidance to run `/vg:build`.
+2. It authors test-depth contracts, not executable Playwright specs. Executable
+   specs still belong to `/vg:test`.
+3. Mutation and multi-actor goals must get closed-loop RCRURDR coverage:
+   read_before → create → read_after_create → update → read_after_update →
+   delete → read_after_delete.
+4. Fixture dependencies must be explicit: actors, sessions, resource ownership,
+   artifact sinks, cleanup order.
+5. Review consumes these artifacts. If review finds runtime blockers, stay in
+   review/debug. If runtime is clean but executable specs are missing, route to
+   `/vg:test`.
+</rules>
 
 <process>
 
-### Preflight section (extracted v2.73.0 T6)
+<step name="0_parse_and_validate">
+```bash
+set -euo pipefail
 
-Read `_shared/update/preflight.md` and follow it exactly.
-Includes 2 steps: 0_preflight, 1_check_only_mode.
+REPO_ROOT="$(pwd)"
+PHASE_NUMBER="$(printf '%s\n' "${ARGUMENTS:-}" | awk '{print $1}')"
+if [ -z "${PHASE_NUMBER:-}" ]; then
+  echo "⛔ Missing phase. Usage: /vg:test-spec <phase>"
+  exit 1
+fi
 
-Step coverage: 0_preflight, 1_check_only_mode.
+MAX_FILES="1200"
+for tok in ${ARGUMENTS:-}; do
+  case "$tok" in
+    --max-files=*) MAX_FILES="${tok#--max-files=}" ;;
+    --regen) ;;
+    *) ;;
+  esac
+done
 
+source "${REPO_ROOT}/.claude/commands/vg/_shared/lib/phase-resolver.sh" 2>/dev/null || true
+if type -t resolve_phase_dir >/dev/null 2>&1; then
+  PHASE_DIR="$(resolve_phase_dir "$PHASE_NUMBER")"
+else
+  PHASE_DIR="$(ls -d "${REPO_ROOT}/.vg/phases/${PHASE_NUMBER}"* "${REPO_ROOT}/.vg/phases/$(printf '%02d' "$PHASE_NUMBER" 2>/dev/null)"* 2>/dev/null | head -1)"
+fi
+if [ -z "${PHASE_DIR:-}" ] || [ ! -d "$PHASE_DIR" ]; then
+  echo "⛔ Phase dir not found for ${PHASE_NUMBER}"
+  exit 1
+fi
 
-### Version + changelog (extracted v2.73.0 T7)
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-start vg:test-spec "${PHASE_NUMBER}" "${ARGUMENTS:-}" || {
+  echo "⛔ vg-orchestrator run-start failed — cannot proceed" >&2
+  exit 1
+}
+mkdir -p "${PHASE_DIR}/.step-markers/test-spec"
+touch "${PHASE_DIR}/.step-markers/test-spec/0_parse_and_validate.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test-spec 0_parse_and_validate 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+  "test_spec.started" --step "0_parse_and_validate" --actor "llm-claimed" \
+  --outcome "INFO" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+```
+</step>
 
-Read `_shared/update/version-and-changelog.md` and follow it exactly.
-Includes 3 steps: 2_version_compare, 3_changelog_preview, 4_breaking_gate.
+<step name="1_build_artifact_gate">
+```bash
+if ! ls "${PHASE_DIR}"/SUMMARY*.md >/dev/null 2>&1 && \
+   [ ! -f "${PHASE_DIR}/BUILD-LOG.md" ] && \
+   [ ! -d "${PHASE_DIR}/BUILD-LOG" ] && \
+   [ ! -f "${PHASE_DIR}/.build-progress.json" ]; then
+  echo "⛔ /vg:test-spec requires build evidence first."
+  echo "   Run: /vg:build ${PHASE_NUMBER}"
+  exit 1
+fi
 
-Step coverage: 2_version_compare, 3_changelog_preview, 4_breaking_gate.
+if [ ! -f "${PHASE_DIR}/TEST-GOALS.md" ] && [ ! -d "${PHASE_DIR}/TEST-GOALS" ]; then
+  echo "⛔ /vg:test-spec requires TEST-GOALS from blueprint."
+  echo "   Run: /vg:blueprint ${PHASE_NUMBER}"
+  exit 1
+fi
 
+touch "${PHASE_DIR}/.step-markers/test-spec/1_build_artifact_gate.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test-spec 1_build_artifact_gate 2>/dev/null || true
+```
+</step>
 
-### Fetch + merge (extracted v2.73.0 T8)
+<step name="2_generate_deep_specs">
+```bash
+SCRIPT="${REPO_ROOT}/.claude/scripts/generate-deep-test-specs.py"
+[ -f "$SCRIPT" ] || SCRIPT="${REPO_ROOT}/scripts/generate-deep-test-specs.py"
+if [ ! -f "$SCRIPT" ]; then
+  echo "⛔ generate-deep-test-specs.py missing. Re-sync VGFlow."
+  exit 1
+fi
 
-Read `_shared/update/fetch-and-merge.md` and follow it exactly.
-Includes 3 steps: 5_fetch_tarball, 6_three_way_merge_per_file, 6b_verify_gate_integrity.
+"${PYTHON_BIN:-python3}" "$SCRIPT" \
+  --phase "${PHASE_NUMBER}" \
+  --phase-dir "${PHASE_DIR}" \
+  --root "${REPO_ROOT}" \
+  --max-files "${MAX_FILES}" \
+  --json > "${PHASE_DIR}/.deep-test-spec-summary.json"
 
-Step coverage: 5_fetch_tarball, 6_three_way_merge_per_file, 6b_verify_gate_integrity.
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+  "test_spec.generated" --step "2_generate_deep_specs" --actor "llm-claimed" \
+  --outcome "PASS" --payload "$(cat "${PHASE_DIR}/.deep-test-spec-summary.json")" >/dev/null 2>&1 || true
 
+touch "${PHASE_DIR}/.step-markers/test-spec/2_generate_deep_specs.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test-spec 2_generate_deep_specs 2>/dev/null || true
+```
+</step>
 
-### Rotate + repair (extracted v2.73.0 T9)
+<step name="3_validate_deep_specs">
+```bash
+VALIDATOR="${REPO_ROOT}/.claude/scripts/validators/verify-deep-test-specs.py"
+[ -f "$VALIDATOR" ] || VALIDATOR="${REPO_ROOT}/scripts/validators/verify-deep-test-specs.py"
+if [ ! -f "$VALIDATOR" ]; then
+  echo "⛔ verify-deep-test-specs.py missing. Re-sync VGFlow."
+  exit 1
+fi
 
-Read `_shared/update/rotate-and-repair.md` and follow it exactly.
-Includes 2 steps: 7_rotate_ancestor_and_version, 7b_repair_hooks.
+"${PYTHON_BIN:-python3}" "$VALIDATOR" --phase "${PHASE_NUMBER}" \
+  > "${PHASE_DIR}/.deep-test-spec-verify.json" 2>&1
 
-Step coverage: 7_rotate_ancestor_and_version, 7b_repair_hooks.
+touch "${PHASE_DIR}/.step-markers/test-spec/3_validate_deep_specs.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test-spec 3_validate_deep_specs 2>/dev/null || true
+```
+</step>
 
+<step name="4_complete">
+```bash
+"${PYTHON_BIN:-python3}" - <<PY
+import json
+from datetime import datetime
+from pathlib import Path
+p = Path("${PHASE_DIR}") / "PIPELINE-STATE.json"
+state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+state.setdefault("steps", {}).setdefault("test-spec", {})
+state["steps"]["test-spec"].update({
+    "status": "done",
+    "verdict": "PASS",
+    "updated_at": datetime.now().isoformat(),
+})
+state["pipeline_step"] = "test-spec-complete"
+state["updated_at"] = datetime.now().isoformat()
+p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
 
-### Sync + report (extracted v2.73.0 T10 — final)
+touch "${PHASE_DIR}/.step-markers/test-spec/4_complete.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test-spec 4_complete 2>/dev/null || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+  "test_spec.completed" --step "4_complete" --actor "llm-claimed" \
+  --outcome "PASS" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete --outcome PASS 2>/dev/null || true
 
-Read `_shared/update/sync-and-report.md` and follow it exactly.
-Includes 4 steps: 8_sync_codex, 8b_repair_playwright_mcp, 8c_ensure_graphify, 9_report.
-
-Step coverage: 8_sync_codex, 8b_repair_playwright_mcp, 8c_ensure_graphify, 9_report.
-
+echo "✓ /vg:test-spec complete"
+echo "  Wrote: ${PHASE_DIR}/DEEP-TEST-SPECS.md"
+echo "  Wrote: ${PHASE_DIR}/LIFECYCLE-SPECS.json"
+echo "  Wrote: ${PHASE_DIR}/TEST-FIXTURE-DAG.json"
+echo "  Wrote: ${PHASE_DIR}/PLAYWRIGHT-SPEC-PLAN.md"
+echo "  Next:  /vg:review ${PHASE_NUMBER}"
+```
+</step>
 
 </process>
 
 <success_criteria>
-- `/vg:update --check` prints `current=... latest=... state=...` and exits cleanly.
-- Non-check run: shows changelog preview, asks confirmation, either applies or exits on cancel.
-- Clean merges applied silently; conflicts parked to `.claude/vgflow-patches/{rel}.conflict` with manifest entry.
-- Major-version bump blocked unless `--accept-breaking` is passed AND migration doc displayed.
-- `~/.vgflow` exists and points at the active VGFlow install.
-- Claude Code hooks are installed/repaired at `~/.claude/settings.json`.
-- Codex skills/agents are refreshed at `~/.codex/skills` and `~/.codex/agents`.
-- Project-local VG-owned `.claude/` and `.codex/` files are pruned with backup.
-- `.vg/.install-target` is written as `global`.
-- Functional Codex mirror equivalence is verified after update; drift without merge conflicts fails the update.
-- Playwright MCP workers are verified/repaired after update for both Claude and Codex (`playwright1`..`playwright5`) and stale hardcoded lock scripts are replaced.
-- Graphify tooling is verified/repaired after update when `graphify.enabled=true`; missing package installs `graphifyy[mcp]`, `.mcp.json` is repaired, and `.graphifyignore` / `.gitignore` are maintained.
-- Final report lists updated / new / conflict counts. When `CONFLICTS > 0` OR `gate-conflicts.md` exists, the report emits a runtime-agnostic AI directive (`▶ NEXT_ACTION=/vg:reapply-patches[ --verify-gates]`) instructing the assistant to chain into `/vg:reapply-patches` in the next turn without waiting for a fresh user prompt. Applies to Claude Code and Codex.
-- Meta files (VERSION, CHANGELOG.md, README.md, LICENSE, install.sh, sync.sh, vg.config.template.md) never written to `.claude/`.
+- Build evidence existed before generation.
+- Deep test-spec artifacts exist and pass `verify-deep-test-specs.py`.
+- `PIPELINE-STATE.json` marks `steps.test-spec.status=done`.
+- Next command is `/vg:review <phase>`.
 </success_criteria>

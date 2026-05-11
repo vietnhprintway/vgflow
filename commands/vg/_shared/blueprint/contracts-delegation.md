@@ -236,80 +236,22 @@ Each goal:
     Mutation goals WITHOUT this structured block fail Rule 3b extended →
     blueprint BLOCKED. The unstructured **Persistence check:** prose still
     required for human readability, but the YAML block is the machine contract.
-3d. **Closed-loop lifecycle specs (REQUIRED for side-effecting or multi-actor goals).**
-    Primary path is deterministic: run
-    `python3 .claude/scripts/generate-lifecycle-specs.py --phase ${PHASE_NUMBER}`
-    after TEST-GOALS are written. The script generates
-    `${PHASE_DIR}/LIFECYCLE-SPECS.json` for every goal whose title, goal_type,
-    mutation evidence, persistence check, or dependencies imply a state change,
-    role switch, invite/accept, token/email artifact, realtime emission, or CRUD
-    lifecycle. If no goal needs lifecycle handling, it writes
-    `{"schema_version":"1.0","goals":{}}`. AI may refine values after the
-    script runs, but must preserve the formula fields and validator-required
-    depth.
+3d. **Lifecycle spec handoff (post-build).**
+    Do NOT write `${PHASE_DIR}/LIFECYCLE-SPECS.json` in blueprint. Blueprint
+    lacks implemented DOM/routes/API/form reality, so lifecycle-depth authoring
+    is owned by `/vg:test-spec` after `/vg:build`.
 
-    Common formula:
-    - select side-effecting or multi-actor goals from TEST-GOALS split files or
-      TEST-GOALS.md;
-    - infer actors from domain text (admin/merchant/vendor/platform/secondary);
-    - build fixture_dag from actor sessions → owned resource → cross-phase deps
-      → artifact sink when needed;
-    - emit ordered R-C-R-U-R-D-R stages: read_before → create →
-      read_after_create → update → read_after_update → delete →
-      read_after_delete;
-    - add artifact_capture for email/token/webhook/queue/OAuth/notification
-      flows;
-    - add cleanup for owned_resource, actor_session, and external_artifacts.
+    Blueprint MUST still make side-effecting goals discoverable by
+    `/vg:test-spec`:
+    - set `goal_type` or `goal_class` to mutation/workflow/multi-actor where
+      applicable;
+    - write concrete **Mutation evidence** and **Persistence check** fields;
+    - name actors and dependencies in the goal text;
+    - mention emitted artifacts (email/token/webhook/queue/OAuth/notification)
+      when the flow consumes them.
 
-    Shape:
-    ```json
-    {
-      "schema_version": "1.0",
-      "goals": {
-        "G-56": {
-          "actors": [
-            {"id": "owner", "role": "owner", "session": "owner_session"},
-            {"id": "invitee", "role": "invitee", "session": "invitee_session"}
-          ],
-          "fixture_dag": [
-            {"id": "owner_user", "kind": "user", "depends_on": [], "cleanup": "delete"},
-            {"id": "invitee_user", "kind": "user", "depends_on": [], "cleanup": "delete"}
-          ],
-          "preconditions": [
-            {"id": "owner_authenticated", "assert": "owner session can access resource"},
-            {"id": "invitee_absent", "assert": "invitee is not already active member"}
-          ],
-          "steps": [
-            {"stage": "read_before", "actor": "owner", "assertions": ["baseline state recorded"]},
-            {"stage": "create", "actor": "owner", "action": "perform create/invite/submit"},
-            {"stage": "read_after_create", "actor": "owner", "assertions": ["created state visible"]},
-            {"stage": "update", "actor": "owner", "action": "patch/edit/role-change"},
-            {"stage": "read_after_update", "actor": "owner", "assertions": ["updated state persisted"]},
-            {"stage": "delete", "actor": "owner", "action": "delete/revoke/cancel"},
-            {"stage": "read_after_delete", "actor": "owner", "assertions": ["deleted/revoked state enforced"]}
-          ],
-          "artifact_capture": [
-            {"id": "invite_token", "source": "email_or_test_inbox", "consumer_step": "create"}
-          ],
-          "cleanup": [
-            {"target": "owner_user", "action": "delete"},
-            {"target": "invitee_user", "action": "delete"}
-          ]
-        }
-      }
-    }
-    ```
-
-    Rules:
-    - `fixture_dag[]` must model prerequisite order, not only test data names.
-    - Multi-actor goals must list each actor/session explicitly.
-    - Email/token/websocket/realtime/invite/notification/callback flows need
-      `artifact_capture[]` showing how the emitted artifact is captured and
-      consumed.
-    - `read_before` must reflect domain truth. Do not assert empty baselines
-      unless contracts prove emptiness; assert "target entity absent" instead
-      when owners/default rows should exist.
-    - `cleanup[]` must remove or revoke every test-owned fixture/resource.
+    `/vg:test-spec` will generate the post-build `fixture_dag`, actor/session
+    matrix, RCRURDR stages, artifact_capture, and cleanup contracts.
 4. Dependencies reference goal IDs (G-XX).
 5. Priority assignment (deterministic, evaluate in order):
    a. Endpoints matching config `routing.critical_goal_domains`

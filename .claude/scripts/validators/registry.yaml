@@ -782,6 +782,15 @@ validators:
     added_in: v3.6.5
     description: Blocks /vg:test for side-effecting or multi-actor goals without LIFECYCLE-SPECS.json fixture DAG, actor matrix, full RCRURDR stages, artifact capture when applicable, and cleanup.
 
+  - id: deep-test-specs
+    path: .claude/scripts/validators/verify-deep-test-specs.py
+    severity: block
+    phases_active: [test-spec, review]
+    domain: test
+    runtime_target_ms: 2000
+    added_in: v3.6.6
+    description: Blocks /vg:review when post-build deep test artifacts are missing or shallow. Ensures /vg:test-spec produced DEEP-TEST-SPECS, LIFECYCLE-SPECS, TEST-FIXTURE-DAG, PLAYWRIGHT-SPEC-PLAN, and TEST-SPEC-GAPS.
+
   - id: test-goals-platform-essentials
     path: .claude/scripts/validators/verify-test-goals-platform-essentials.py
     severity: block

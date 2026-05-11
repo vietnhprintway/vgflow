@@ -21,7 +21,7 @@ Usage:
   vg <command> [args...]
 
 Commands:
-  install [--global|--project]   Install hooks into Claude Code / Codex
+  install [--global]             Install global hooks into Claude Code / Codex
   sync                           Pull latest from upstream + re-install
   update                         Alias for sync
   doctor                         Verify install + project state health
@@ -41,21 +41,44 @@ EOF
 
 ensure_home_vgflow() {
   local home_vgflow="${HOME}/.vgflow"
+  local vg_real=""
+  local home_real=""
 
-  if [ -e "$home_vgflow" ] && [ ! -L "$home_vgflow" ]; then
-    local home_real vg_real
+  vg_real="$(cd "$VG_HOME" 2>/dev/null && pwd -P || true)"
+  if [ -z "$vg_real" ]; then
+    echo "vgflow: cannot resolve VG_HOME=${VG_HOME}" >&2
+    return 1
+  fi
+
+  if [ -e "$home_vgflow" ] || [ -L "$home_vgflow" ]; then
     home_real="$(cd "$home_vgflow" 2>/dev/null && pwd -P || true)"
-    vg_real="$(cd "$VG_HOME" 2>/dev/null && pwd -P || true)"
     if [ -n "$home_real" ] && [ "$home_real" = "$vg_real" ]; then
+      export VG_HOME="$vg_real"
       return 0
     fi
-    echo "vgflow: ~/.vgflow exists and is not this install; leaving it in place (${home_vgflow})"
-    return 0
+
+    if [ -d "$home_vgflow" ] && [ ! -L "$home_vgflow" ]; then
+      local backup="${home_vgflow}.backup.$(date -u +%Y%m%dT%H%M%SZ)"
+      mv "$home_vgflow" "$backup"
+      echo "vgflow: backed up stale ~/.vgflow to ${backup}"
+    else
+      rm -f "$home_vgflow"
+    fi
   fi
 
   mkdir -p "${HOME}"
-  ln -sfn "$VG_HOME" "$home_vgflow"
-  echo "vgflow: linked ~/.vgflow -> ${VG_HOME}"
+  if ln -s "$vg_real" "$home_vgflow" 2>/dev/null; then
+    export VG_HOME="$vg_real"
+    echo "vgflow: linked ~/.vgflow -> ${vg_real}"
+    return 0
+  fi
+
+  # Some Windows shells cannot create symlinks. Fall back to an exact copy so
+  # hook paths under ~/.vgflow still resolve to the active package.
+  mkdir -p "$home_vgflow"
+  cp -R "$vg_real"/. "$home_vgflow"/
+  export VG_HOME="$home_vgflow"
+  echo "vgflow: copied active install into ~/.vgflow"
 }
 
 run_project_uninstall_helper() {
@@ -127,6 +150,25 @@ refresh_global_codex() {
   echo "vgflow: refreshed ${deployed} global Codex skill(s) in ~/.codex/skills"
 }
 
+repair_playwright_mcp() {
+  local py=""
+  for cand in python3 python py; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      py="$cand"
+      break
+    fi
+  done
+  local validator="${VG_HOME}/scripts/validators/verify-playwright-mcp-config.py"
+  if [ -n "$py" ] && [ -f "$validator" ]; then
+    "$py" "$validator" --repair --quiet \
+      --lock-source "${VG_HOME}/playwright-locks/playwright-lock.sh" || {
+      echo "vgflow: warning: Playwright MCP repair failed; run '$py $validator --repair'" >&2
+      return 0
+    }
+    echo "vgflow: Playwright MCP configured for Claude + Codex"
+  fi
+}
+
 cmd="${1:-help}"
 shift || true
 
@@ -144,45 +186,41 @@ case "$cmd" in
     ;;
 
   install)
-    # v2.80.0 Stage 4.1/4.2: wire --mode global|project + write
-    # .vg/.install-target marker so find_vg_home() resolves correctly.
+    # v3.6.6: global-only install. Project-local .claude/.codex VG surfaces
+    # are pruned every install so Claude and Codex load one canonical harness.
     target="global"
     for arg in "$@"; do
       case "$arg" in
         --global)  target="global" ;;
-        --project) target="project" ;;
+        --project)
+          echo "vgflow: --project is deprecated; installing global-only and pruning project-local VG files"
+          target="global"
+          ;;
       esac
     done
     project_root="$(pwd)"
-    if [ "$target" = "global" ]; then
-      ensure_home_vgflow
-      run_project_uninstall_helper "$project_root"
-      refresh_global_codex
-      bash "${VG_HOME}/scripts/hooks/install-hooks.sh" \
-        --target "${HOME}/.claude/settings.json" \
-        --mode global
-      echo "vgflow: hooks installed at ~/.claude/settings.json (mode=global, VG_HOME=${VG_HOME})"
-    else
-      bash "${VG_HOME}/scripts/hooks/install-hooks.sh" \
-        --target "${project_root}/.claude/settings.json" \
-        --mode project
-      echo "vgflow: hooks installed at ${project_root}/.claude/settings.json (mode=project)"
-    fi
+    ensure_home_vgflow
+    run_project_uninstall_helper "$project_root"
+    refresh_global_codex
+    repair_playwright_mcp
+    bash "${VG_HOME}/scripts/hooks/install-hooks.sh" \
+      --target "${HOME}/.claude/settings.json" \
+      --mode global
+    echo "vgflow: hooks installed at ~/.claude/settings.json (mode=global, VG_HOME=${VG_HOME})"
     # Write project install-target marker when invoked from a git repo.
     # Skip when cwd is the user's home or has no .git anchor (avoid littering
     # random dirs with stray .vg/ folders).
     if [ -d "${project_root}/.git" ] || [ -f "${project_root}/.vg/.install-target" ]; then
       mkdir -p "${project_root}/.vg"
-      printf '%s\n' "$target" > "${project_root}/.vg/.install-target"
-      echo "vgflow: wrote ${project_root}/.vg/.install-target=${target}"
+      printf '%s\n' "global" > "${project_root}/.vg/.install-target"
+      echo "vgflow: wrote ${project_root}/.vg/.install-target=global"
     fi
     ;;
 
   sync|update)
-    # v2.80.0 Stage 4.4: prefer git pull when VG_HOME is a git clone (dev
-    # install), else hint at npm. Project-mode users should run /vg:update
-    # inside Claude Code/Codex (uses 3-way merge), not this CLI sync which
-    # only refreshes the static harness.
+    # v3.6.6: global-only update. Refresh VG_HOME/~/.vgflow, refresh global
+    # Codex, prune project-local Claude/Codex VG files, install global hooks,
+    # and force .vg/.install-target=global for the current project.
     if [ -d "${VG_HOME}/.git" ]; then
       echo "vgflow: pulling latest from upstream (${VG_HOME})..."
       (cd "${VG_HOME}" && git pull --ff-only origin main)
@@ -198,13 +236,16 @@ case "$cmd" in
     fi
     ensure_home_vgflow
     refresh_global_codex
-    if [ -f ".vg/.install-target" ] && [ "$(tr -d '[:space:]' < .vg/.install-target 2>/dev/null || true)" = "global" ]; then
-      run_project_uninstall_helper "$(pwd)"
-      bash "${VG_HOME}/scripts/hooks/install-hooks.sh" \
-        --target "${HOME}/.claude/settings.json" \
-        --mode global
-      echo "vgflow: global hooks refreshed and project-local VG files pruned"
+    repair_playwright_mcp
+    run_project_uninstall_helper "$(pwd)"
+    bash "${VG_HOME}/scripts/hooks/install-hooks.sh" \
+      --target "${HOME}/.claude/settings.json" \
+      --mode global
+    if [ -d "$(pwd)/.git" ] || [ -f "$(pwd)/.vg/.install-target" ]; then
+      mkdir -p "$(pwd)/.vg"
+      printf '%s\n' "global" > "$(pwd)/.vg/.install-target"
     fi
+    echo "vgflow: global hooks refreshed and project-local VG files pruned"
     ;;
 
   doctor)

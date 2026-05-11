@@ -35,19 +35,17 @@ def test_vg_test_preflight_blocks_missing_lifecycle_specs() -> None:
     assert "Mutation/multi-actor goals need LIFECYCLE-SPECS.json" in body
 
 
-def test_blueprint_generates_and_verifies_lifecycle_specs() -> None:
-    blueprint = (REPO_ROOT / "commands" / "vg" / "blueprint.md").read_text(encoding="utf-8")
-    overview = (REPO_ROOT / "commands" / "vg" / "_shared" / "blueprint" / "contracts-overview.md").read_text(encoding="utf-8")
-    delegation = (REPO_ROOT / "commands" / "vg" / "_shared" / "blueprint" / "contracts-delegation.md").read_text(encoding="utf-8")
+def test_post_build_test_spec_generates_and_verifies_lifecycle_specs() -> None:
+    command = (REPO_ROOT / "commands" / "vg" / "test-spec.md").read_text(encoding="utf-8")
+    mirror = (REPO_ROOT / ".claude" / "commands" / "vg" / "test-spec.md").read_text(encoding="utf-8")
 
-    assert "${PHASE_DIR}/LIFECYCLE-SPECS.json" in blueprint
-    assert "generate-lifecycle-specs.py" in overview
-    assert "verify-lifecycle-spec-depth.py" in overview
-    assert "LIFECYCLE-SPECS.json" in delegation
-    assert "Common formula" in delegation
-    assert "fixture_dag" in delegation
-    assert "artifact_capture" in delegation
-    assert "read_after_delete" in delegation
+    assert command == mirror
+    assert "${PHASE_DIR}/LIFECYCLE-SPECS.json" in command
+    assert "${PHASE_DIR}/DEEP-TEST-SPECS.md" in command
+    assert "${PHASE_DIR}/TEST-FIXTURE-DAG.json" in command
+    assert "generate-deep-test-specs.py" in command
+    assert "verify-deep-test-specs.py" in command
+    assert "read_after_delete" in command
 
 
 def test_codegen_consumes_lifecycle_specs() -> None:
@@ -63,12 +61,11 @@ def test_codegen_consumes_lifecycle_specs() -> None:
 
 def test_curated_codex_skills_reference_lifecycle_generator() -> None:
     vg_test = (REPO_ROOT / "codex-skills" / "vg-test" / "SKILL.md").read_text(encoding="utf-8")
-    vg_blueprint = (REPO_ROOT / "codex-skills" / "vg-blueprint" / "SKILL.md").read_text(encoding="utf-8")
+    vg_test_spec = (REPO_ROOT / "codex-skills" / "vg-test-spec" / "SKILL.md").read_text(encoding="utf-8")
 
     assert "generate-lifecycle-specs.py --phase ${PHASE_NUMBER}" in vg_test
     assert "verify-lifecycle-spec-depth.py" in vg_test
     assert "formula.stages" in vg_test
-    assert "generate-lifecycle-specs.py --phase ${PHASE_NUMBER}" in vg_blueprint
-    assert "verify-lifecycle-spec-depth.py" in vg_blueprint
-    assert "fixture_dag" in vg_blueprint
-    assert "artifact_capture[]" in vg_blueprint
+    assert "generate-deep-test-specs.py" in vg_test_spec
+    assert "verify-deep-test-specs.py" in vg_test_spec
+    assert "TEST-FIXTURE-DAG.json" in vg_test_spec

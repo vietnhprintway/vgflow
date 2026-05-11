@@ -21,16 +21,22 @@ command -v git      >/dev/null 2>&1 || { echo "git CLI required"; exit 1; }
 command -v curl     >/dev/null 2>&1 || { echo "curl required"; exit 1; }
 command -v python3  >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
 
-# v2.88.0: detect v3 install-target marker
-INSTALL_TARGET=""
+# v3.6.6: global-only update. Marker is read for narration only; project and
+# absent markers are coerced to global so update prunes project-local VG files.
+INSTALL_TARGET="global"
+MARKER_TARGET=""
 if [ -f "${REPO_ROOT}/.vg/.install-target" ]; then
-  INSTALL_TARGET="$(tr -d '[:space:]' < "${REPO_ROOT}/.vg/.install-target")"
+  MARKER_TARGET="$(tr -d '[:space:]' < "${REPO_ROOT}/.vg/.install-target")"
 fi
-echo "install-target marker: ${INSTALL_TARGET:-(absent — legacy project mode)}"
+if [ -n "$MARKER_TARGET" ] && [ "$MARKER_TARGET" != "global" ]; then
+  echo "install-target marker: ${MARKER_TARGET} (deprecated — coercing to global-only)"
+else
+  echo "install-target marker: ${MARKER_TARGET:-(absent)} (global-only update)"
+fi
 
 HELPER="${REPO_ROOT}/.claude/scripts/vg_update.py"
-# Project-mode helper required only when we'll do the project-local merge.
-# Global-mode update doesn't touch .claude/ helpers.
+# Project-mode helper is no longer required. Global-mode update doesn't touch
+# project .claude/ helpers except to prune stale VG-owned files.
 if [ "$INSTALL_TARGET" != "global" ] && [ ! -f "$HELPER" ]; then
   echo "vg_update.py missing at ${HELPER}"
   echo "Legacy install detected. Re-install vgflow first:"
@@ -51,13 +57,29 @@ re-install hooks at `~/.claude/settings.json` with `--mode global`, AND clean
 up any stale legacy files left in `.claude/` that should have been removed
 during the original v3 migration but remained from a partial run.
 
-When marker is `project` or absent, fall through to the v2.x project-local
-3-way-merge flow (steps 5-9 below).
+Project and absent markers are coerced to this same global path. The legacy
+project-local 3-way merge path is retained only as dead compatibility text for
+older skill mirrors; global-only update exits before it can run.
 
 ```bash
 if [ "$INSTALL_TARGET" = "global" ]; then
   echo ""
   echo "Global update path (marker=global) — refreshing ~/.vgflow/..."
+
+  DISPATCHER=""
+  for candidate in \
+    "${VG_HOME:-}/bin/vg-cli-dispatcher.sh" \
+    "${HOME}/.vgflow/bin/vg-cli-dispatcher.sh"; do
+    if [ -f "$candidate" ]; then
+      DISPATCHER="$candidate"
+      break
+    fi
+  done
+  if [ -n "$DISPATCHER" ]; then
+    echo "  Delegating to global dispatcher: ${DISPATCHER}"
+    VG_HOME="$(dirname "$(dirname "$DISPATCHER")")" bash "$DISPATCHER" update
+    exit $?
+  fi
 
   HOME_VGFLOW="${HOME}/.vgflow"
   GLOBAL_OK=0
@@ -77,8 +99,15 @@ if [ "$INSTALL_TARGET" = "global" ]; then
   if [ "$GLOBAL_OK" = "0" ] && command -v npm >/dev/null 2>&1; then
     echo "  Updating via npm install -g vgflow@latest..."
     if npm install -g vgflow@latest >/dev/null 2>&1; then
-      GLOBAL_OK=1
-      echo "  ✓ npm install -g vgflow@latest done"
+      NPM_ROOT="$(npm root -g 2>/dev/null || true)"
+      NPM_VGFLOW="${NPM_ROOT%/}/vgflow"
+      if [ -f "${NPM_VGFLOW}/bin/vg-cli-dispatcher.sh" ]; then
+        echo "  ✓ npm install -g vgflow@latest done"
+        echo "  Delegating to npm-installed dispatcher so ~/.vgflow is canonicalized..."
+        VG_HOME="$NPM_VGFLOW" bash "${NPM_VGFLOW}/bin/vg-cli-dispatcher.sh" update
+        exit $?
+      fi
+      echo "  ⚠ npm install succeeded but dispatcher not found at ${NPM_VGFLOW}"
     else
       echo "  ⚠ npm install failed"
     fi
@@ -179,6 +208,8 @@ EOF
   fi
 
   # Bump VGFLOW-VERSION marker for global mode tracking
+  mkdir -p "${REPO_ROOT}/.vg"
+  printf '%s\n' "global" > "${REPO_ROOT}/.vg/.install-target"
   if [ -f "${HOME_VGFLOW}/VERSION" ]; then
     cp "${HOME_VGFLOW}/VERSION" "${REPO_ROOT}/.vg/.global-vgflow-version" 2>/dev/null || true
   fi
@@ -188,7 +219,7 @@ EOF
   exit 0
 fi
 
-# Marker absent or =project: continue to legacy v2.x project-local merge below.
+# Unreachable in global-only mode; retained for legacy mirrors only.
 ```
 </step>
 

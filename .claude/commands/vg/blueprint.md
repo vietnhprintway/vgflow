@@ -20,7 +20,6 @@ runtime_contract:
     - "${PHASE_DIR}/INTERFACE-STANDARDS.json"
     - "${PHASE_DIR}/API-CONTRACTS.md"
     - "${PHASE_DIR}/TEST-GOALS.md"
-    - "${PHASE_DIR}/LIFECYCLE-SPECS.json"
     # Layer 2: index files (table of contents)
     - "${PHASE_DIR}/PLAN/index.md"
     - "${PHASE_DIR}/API-CONTRACTS/index.md"
