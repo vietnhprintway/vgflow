@@ -525,7 +525,7 @@ fi
 # matrix as a heads-up; reviewer treats it as a hint, not a verdict.
 # v4.0 discovery-only review model: this fits perfectly — "report what you find".
 FE_BE_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-fe-be-call-graph.py"
-[ -f "$FE_BE_VAL" ] || FE_BE_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-fe-be-call-graph.py"
+[ -f "$FE_BE_VAL" ] || FE_BE_VAL="${REPO_ROOT:-.}/scripts/validators/verify-fe-be-call-graph.py"
 [ -f "$FE_BE_VAL" ] || FE_BE_VAL="${REPO_ROOT:-.}/scripts/validators/verify-fe-be-call-graph.py"
 if [ -f "$FE_BE_VAL" ]; then
   mkdir -p "${PHASE_DIR}/.tmp"

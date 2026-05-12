@@ -20,10 +20,12 @@ def test_shared_review_dir_has_9_files():
 
 def test_review_md_routes_to_each_subfile():
     body = Path("commands/vg/review.md").read_text(encoding="utf-8")
+    # v4.0: fix-loop-and-goals.md moved to _shared/test/fix-loop-and-verdict.md
+    # _shared/review/ now has matrix-intent.md instead
     expected_subfiles = [
         "preflight.md", "phase-p-variants.md", "code-scan.md", "api-and-discovery.md",
         "lens-and-findings.md", "limits-and-mobile.md", "url-and-error.md",
-        "fix-loop-and-goals.md", "close.md",
+        "matrix-intent.md", "close.md",
     ]
     missing = [s for s in expected_subfiles if f"_shared/review/{s}" not in body]
     assert not missing, f"review.md missing routes: {missing}"

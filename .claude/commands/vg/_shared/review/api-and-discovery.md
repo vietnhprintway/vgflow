@@ -34,7 +34,7 @@ INTERFACE_CHECK_OUT="${PHASE_DIR}/.tmp/interface-standards-review.json"
 PROOF_ARTIFACT="${PHASE_DIR}/.contract-runtime-report.json"
 PROOF_FRESH="false"
 if [ -f "$PROOF_ARTIFACT" ]; then
-  FRESHNESS_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-artifact-freshness.py"
+  FRESHNESS_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-artifact-freshness.py"
   [ -f "$FRESHNESS_VAL" ] || FRESHNESS_VAL="${REPO_ROOT}/scripts/validators/verify-artifact-freshness.py"
   if [ -f "$FRESHNESS_VAL" ]; then
     ${PYTHON_BIN:-python3} "$FRESHNESS_VAL" \
@@ -49,8 +49,8 @@ if [ "$PROOF_FRESH" = "true" ]; then
   cp "$PROOF_ARTIFACT" "${PHASE_DIR}/.api-contract-probe.json"
   # Mark step done without invoking probe script
   (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2a_api_contract_probe" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2a_api_contract_probe.done"
-  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step review phase2a_api_contract_probe 2>/dev/null || true
-  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+  "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" mark-step review phase2a_api_contract_probe 2>/dev/null || true
+  "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" emit-event \
     "review.phase2a_proof_reused" \
     --payload "{\"phase\":\"${PHASE_NUMBER:-${PHASE_ARG}}\"}" \
     >/dev/null 2>&1 || true

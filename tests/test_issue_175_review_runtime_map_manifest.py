@@ -13,8 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CANONICAL = REPO_ROOT / "commands" / "vg" / "_shared" / "review" / "fix-loop-and-goals.md"
-MIRROR = REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "review" / "fix-loop-and-goals.md"
+CANONICAL = REPO_ROOT / "commands" / "vg" / "_shared" / "test" / "fix-loop-and-verdict.md"
+MIRROR = REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "test" / "fix-loop-and-verdict.md"
 
 
 def _read(p: Path) -> str:

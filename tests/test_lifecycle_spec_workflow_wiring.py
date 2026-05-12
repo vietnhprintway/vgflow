@@ -62,8 +62,8 @@ def test_codegen_consumes_lifecycle_specs() -> None:
     assert "Register `cleanup[]`" in body
 
 def test_review_goal_comparison_consumes_lifecycle_specs() -> None:
-    body = (REPO_ROOT / "commands" / "vg" / "_shared" / "review" / "fix-loop-and-goals.md").read_text(encoding="utf-8")
-    mirror = (REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "review" / "fix-loop-and-goals.md").read_text(encoding="utf-8")
+    body = (REPO_ROOT / "commands" / "vg" / "_shared" / "test" / "fix-loop-and-verdict.md").read_text(encoding="utf-8")
+    mirror = (REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "test" / "fix-loop-and-verdict.md").read_text(encoding="utf-8")
     matrix_merger = (REPO_ROOT / "commands" / "vg" / "_shared" / "lib" / "matrix-merger.sh").read_text(encoding="utf-8")
     matrix_merger_mirror = (REPO_ROOT / ".claude" / "commands" / "vg" / "_shared" / "lib" / "matrix-merger.sh").read_text(encoding="utf-8")
 
@@ -86,7 +86,7 @@ def test_curated_codex_skills_reference_lifecycle_generator() -> None:
     test_codegen = (REPO_ROOT / "commands" / "vg" / "_shared" / "test" / "codegen" / "delegation.md").read_text(encoding="utf-8")
 
     assert "Read `_shared/test/preflight.md` and follow it exactly." in vg_test
-    assert "Read `_shared/test/codegen/overview.md` AND" in vg_test
+    assert "Read `_shared/test/goal-verification/overview.md` AND" in vg_test
     assert "generate-lifecycle-specs.py" in test_preflight
     assert '--phase "${PHASE_NUMBER}"' in test_preflight
     assert "verify-lifecycle-spec-depth.py" in test_preflight

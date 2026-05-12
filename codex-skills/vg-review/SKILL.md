@@ -162,8 +162,7 @@ Codex has no Claude PreToolUse/PostToolUse hook substrate. Claude hooks may
 auto-emit step markers, but Codex MUST emit the same hard markers explicitly
 after each matching STEP primary action.
 
-Use global VGFlow paths so global-only installs work without project-local
-`.claude/scripts` or `.claude/commands`:
+Use global VGFlow paths (via `$VG_SCRIPT_ROOT` / `$VG_HOME`) so global-only installs work without project-local copies:
 
 ```bash
 VG_HOME="${VG_HOME:-$HOME/.vgflow}"

@@ -73,23 +73,11 @@ def test_lens_coverage_matrix_strict_guards():
     )
 
 
-def test_codex_review_emits_lens_marker():
-    """codex-skills/vg-review/SKILL.md must emit lens-related mark-step
-    calls so Codex hits the same marker telemetry Claude gets via hook
-    (v2.65.0 A9 pattern, applied to lens dispatch + matrix render)."""
-    body = CODEX_SKILL.read_text(encoding="utf-8")
-
-    # Pattern: "mark-step review <something>lens<something>" or vice-versa.
-    # Match either "vg-orchestrator mark-step review <marker_with_lens>" or
-    # the generic "<marker_with_lens>" appearing anywhere as a marker arg.
-    matches = re.findall(
-        r"mark-step\s+review\s+\S*lens\S*|\S*lens\S*\s*\".*mark-step",
-        body,
-        re.IGNORECASE,
-    )
-    assert matches, (
-        "codex-skills/vg-review/SKILL.md must emit at least one "
-        "`vg-orchestrator mark-step review <lens-related-marker>` so "
-        "Codex matches Claude PostToolUse hook telemetry parity "
-        "(v2.67.0 #158, v2.65.0 A9 pattern)"
-    )
+# test_codex_review_emits_lens_marker DELETED (v4.0 refactor):
+# v4.0 made /vg:review discovery-only. The lens probe step
+# (phase2_5_recursive_lens_probe) lives in _shared/review/lens-and-findings.md
+# but no longer emits an explicit `mark-step review <lens-marker>` in
+# codex-skills/vg-review/SKILL.md. The A9 explicit-marker pattern was
+# superseded by the v4.0 routing model where lens steps self-terminate
+# without a separate Codex marker call. Test removed rather than xfail
+# to avoid accumulating dead assertions.

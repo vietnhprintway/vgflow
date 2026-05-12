@@ -13,10 +13,12 @@ def test_codex_review_under_slim_ceiling():
 
 def test_codex_review_routes_to_all_9_subfiles():
     body = Path("codex-skills/vg-review/SKILL.md").read_text(encoding="utf-8")
+    # v4.0: fix-loop-and-goals.md moved to _shared/test/fix-loop-and-verdict.md
+    # _shared/review/ now has matrix-intent.md instead
     expected = [
         "preflight.md", "phase-p-variants.md", "code-scan.md", "api-and-discovery.md",
         "lens-and-findings.md", "limits-and-mobile.md", "url-and-error.md",
-        "fix-loop-and-goals.md", "close.md",
+        "matrix-intent.md", "close.md",
     ]
     missing = [s for s in expected if f"_shared/review/{s}" not in body]
     assert not missing, f"codex-review missing routes: {missing}"

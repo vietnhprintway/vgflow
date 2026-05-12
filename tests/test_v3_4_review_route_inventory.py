@@ -23,7 +23,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = REPO_ROOT / "scripts" / "validators" / "verify-route-inventory.py"
 VALIDATOR_MIRROR = REPO_ROOT / ".claude" / "scripts" / "validators" / "verify-route-inventory.py"
-REVIEW_FIX_LOOP_CANON = REPO_ROOT / "commands" / "vg" / "_shared" / "review" / "fix-loop-and-goals.md"
+REVIEW_FIX_LOOP_CANON = REPO_ROOT / "commands" / "vg" / "_shared" / "test" / "fix-loop-and-verdict.md"
 
 
 # ── content + wiring ──────────────────────────────────────────────────────

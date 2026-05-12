@@ -197,8 +197,15 @@ def test_version_command(tmp_path):
     fake_home.mkdir()
     rc, out, err = _run_dispatcher(["version"], tmp_path, fake_home)
     assert rc == 0
-    # Version should be the 2.x.x string from VERSION file
-    assert out.strip().startswith("2.") or out.strip().startswith("3.")
+    # Version should match the VERSION file (read dynamically to survive bumps)
+    version_file = REPO_ROOT / "VERSION"
+    if version_file.exists():
+        expected = version_file.read_text(encoding="utf-8").strip()
+        assert out.strip() == expected, f"expected version {expected!r}, got {out.strip()!r}"
+    else:
+        # Fallback: accept any semver-like string
+        import re
+        assert re.match(r"^\d+\.\d+", out.strip()), f"unexpected version output: {out.strip()!r}"
 
 
 def test_help_command(tmp_path):
