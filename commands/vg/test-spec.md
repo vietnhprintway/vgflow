@@ -33,8 +33,9 @@ runtime_contract:
     - path: "${PHASE_DIR}/CODEGEN-MANIFEST.json"
       min_bytes: 100
   must_touch_markers:
-    - "1_load_context"
-    - "2_gen_docs"
+    - "0_parse_and_validate"
+    - "1_build_artifact_gate"
+    - "2_generate_deep_specs"
     - "3_validate_deep_specs"
     - "3_crossai_sweep"
     - "4_codegen"
@@ -389,7 +390,7 @@ else
       ;;
     flag)
       echo "⚠ CrossAI: FLAG — minor concerns logged at ${PHASE_DIR}/TEST-SPEC-CROSSAI.md"
-      echo "   Review will consume the findings; proceeding to 4_complete."
+      echo "   Review will consume the findings; proceeding to 5_complete."
       ;;
     block)
       echo "⛔ CrossAI: BLOCK — major/critical gaps in test-spec contracts."
@@ -508,7 +509,7 @@ done
 
 </step>
 
-<step name="4_complete">
+<step name="5_complete">
 ```bash
 "${PYTHON_BIN:-python3}" - <<PY
 import json
@@ -527,10 +528,10 @@ state["updated_at"] = datetime.now().isoformat()
 p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 PY
 
-touch "${PHASE_DIR}/.step-markers/test-spec/4_complete.done"
-"${PYTHON_BIN:-python3}" "$ORCH" mark-step test-spec 4_complete 2>/dev/null || true
+touch "${PHASE_DIR}/.step-markers/test-spec/5_complete.done"
+"${PYTHON_BIN:-python3}" "$ORCH" mark-step test-spec 5_complete 2>/dev/null || true
 "${PYTHON_BIN:-python3}" "$ORCH" emit-event \
-  "test_spec.completed" --step "4_complete" --actor "llm-claimed" \
+  "test_spec.completed" --step "5_complete" --actor "llm-claimed" \
   --outcome "PASS" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
 "${PYTHON_BIN:-python3}" "$ORCH" run-complete --outcome PASS 2>/dev/null || true
 
