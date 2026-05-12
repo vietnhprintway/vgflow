@@ -107,6 +107,26 @@ elif nice_pct < 50.0:
     verdict = 'GAPS_FOUND'
     reasons.append(f"nice {nice_pct:.0f}% < 50%")
 
+# C5 Batch 9: step-status ledger override
+# Any step with status=BLOCK or FAIL forces verdict downgrade regardless of
+# goal-only math.
+step_blocks = 0
+step_ledger_path = Path(phase_dir) / ".test-step-status.json"
+step_reasons = []
+if step_ledger_path.is_file():
+    try:
+        ledger = json.loads(step_ledger_path.read_text(encoding="utf-8"))
+        for step_name, entry in ledger.get("steps", {}).items():
+            if entry.get("status") in ("BLOCK", "FAIL"):
+                step_blocks += 1
+                step_reasons.append(f"{step_name}={entry.get('status')}: {entry.get('reason','')}")
+    except Exception:
+        pass
+
+if step_blocks > 0:
+    verdict = "FAILED"
+    reasons = [f"STEP_BLOCK_OVERRIDE: {step_blocks} non-goal step(s) BLOCK/FAIL"] + step_reasons + (reasons if reasons else [])
+
 print(json.dumps({
     "verdict": verdict,
     "reasons": reasons,

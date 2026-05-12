@@ -49,6 +49,9 @@ vg-orchestrator step-active 5a_deploy
 #    deterministic test data. Skip silently if seed_command empty.
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "5a_deploy" --status "${DEPLOY_STATUS:-PASS}" \
+  --reason "${DEPLOY_REASON:-}" || true
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5a_deploy" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5a_deploy.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5a_deploy 2>/dev/null || true
 ```

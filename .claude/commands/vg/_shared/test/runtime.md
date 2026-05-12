@@ -117,6 +117,9 @@ Display:
 
 ```bash
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "5b_runtime_contract_verify" --status "${CONTRACT_VERIFY_STATUS:-PASS}" \
+  --reason "${CONTRACT_VERIFY_REASON:-}" || true
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5b_runtime_contract_verify" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5b_runtime_contract_verify.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5b_runtime_contract_verify 2>/dev/null || true
 ```
@@ -153,6 +156,9 @@ Display:
 ```bash
 vg-orchestrator step-active 5c_smoke
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "5c_smoke" --status "${SMOKE_STATUS:-PASS}" \
+  --reason "${SMOKE_REASON:-}" || true
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5c_smoke" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5c_smoke.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5c_smoke 2>/dev/null || true
 ```

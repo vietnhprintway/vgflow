@@ -58,6 +58,9 @@ Display:
 
 ```bash
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "5e_regression" --status "${REGRESSION_STATUS:-PASS}" \
+  --reason "${REGRESSION_REASON:-}" || true
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5e_regression" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5e_regression.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5e_regression 2>/dev/null || true
 ```
@@ -222,6 +225,9 @@ B8 validators are structured truth gates; grep tiers are advisory complements.
 
 ```bash
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "5f_security_audit" --status "${SECURITY_STATUS:-PASS}" \
+  --reason "${SECURITY_REASON:-}" || true
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "5f_security_audit" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/5f_security_audit.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5f_security_audit 2>/dev/null || true
 ```
