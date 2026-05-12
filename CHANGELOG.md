@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.7.2 — sync global-only + review auto-chain prompt (2026-05-12)
+
+### Feat — `/vg:review` Option A auto-chain prompt (commit 5bd3fdb)
+
+After `/vg:review` `run-complete` succeeds, the skill reads `PIPELINE-STATE.next_command` (written by PR #183 diagnostic surface) and offers the operator a 3-choice prompt instead of forcing copy-paste:
+
+- **Chain** — AI invokes suggested skill via `Skill` tool (e.g. `/vg:test-spec 6 --regen`)
+- **Skip** — print suggested commands as plain text, exit normally
+- **Inspect** — show diagnostic detail (`deep-test-specs-review.json`, matrix, recent events)
+
+Flag overrides:
+- `--auto-chain` — skip prompt, AI auto-invokes suggested skill (CI / headless mode)
+- `--no-chain` — skip prompt + exit (operator opt-out for this run)
+
+Preserves operator sovereignty (explicit consent before chaining skills that modify code like `/vg:debug` or burn tokens like `/vg:test-spec --regen`). On BLOCK verdict, also offers `retry_command` path. Skill dispatch contract: parse `/vg:test-spec 6 --regen` → `Skill(skill="vg:test-spec", args="6 --regen")`. 8/8 regression tests pass.
+
+### Fix — `sync.sh` rewritten as global-only refresh (#184)
+
+`sync.sh` simplified from 721 → 128 lines. Single contract: regenerate Codex skills, install global Claude/Codex hooks, prune project-local VG files, write `.vg/.install-target=global`. Matches PR #177 global-only install topology.
+
+- `/vg:sync` and Codex `vg-sync` docs updated to share the same global-only contract.
+- Generated Codex HARD-GATE-CODEX marker blocks for specs/field-test (full sync regen clean).
+- Regression tests: sync `--check`, stale project-local VG surface prune, deprecated no-op flag, source-repo self-prune protection.
+- `--verify` + `--check` pass; DEV_ROOT-targeted sync to PrintwayV3 verified clean.
+
 ## v3.7.1 — contract drift hardening + review diagnostic + global wiring (2026-05-12)
 
 Three independent fixes landed:
