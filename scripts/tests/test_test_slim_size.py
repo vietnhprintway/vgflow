@@ -5,12 +5,12 @@ TEST_MD = REPO_ROOT / "commands/vg/test.md"
 
 
 def test_test_md_under_600():
-    lines = TEST_MD.read_text().splitlines()
+    lines = TEST_MD.read_text(encoding="utf-8").splitlines()
     assert len(lines) <= 600, f"test.md exceeds 600 lines (got {len(lines)})"
 
 
 def test_test_md_imperative_language():
-    body = TEST_MD.read_text()
+    body = TEST_MD.read_text(encoding="utf-8")
     assert "<HARD-GATE>" in body, "test.md must contain <HARD-GATE> block"
     assert "Red Flags" in body, "test.md must contain 'Red Flags' section"
     assert "MUST" in body, "test.md must contain 'MUST' imperative language"
@@ -18,18 +18,15 @@ def test_test_md_imperative_language():
 
 
 def test_test_md_refs_listed_directly():
-    body = TEST_MD.read_text()
+    body = TEST_MD.read_text(encoding="utf-8")
+    # v4.0: codegen refs MOVED to /vg:test-spec. fix-loop renamed to fix-loop-and-verdict.
     expected_refs = [
         "_shared/test/preflight.md",
         "_shared/test/deploy.md",
         "_shared/test/runtime.md",
         "_shared/test/goal-verification/overview.md",
         "_shared/test/goal-verification/delegation.md",
-        "_shared/test/codegen/overview.md",
-        "_shared/test/codegen/delegation.md",
-        "_shared/test/codegen/deep-probe.md",
-        "_shared/test/codegen/mobile-codegen.md",
-        "_shared/test/fix-loop.md",
+        "_shared/test/fix-loop-and-verdict.md",
         "_shared/test/regression-security.md",
         "_shared/test/close.md",
     ]
@@ -38,7 +35,7 @@ def test_test_md_refs_listed_directly():
 
 
 def test_test_md_uses_agent_not_task():
-    body = TEST_MD.read_text()
+    body = TEST_MD.read_text(encoding="utf-8")
     # Tool name "Agent" must appear in allowed-tools and instructions
     assert "Agent" in body, "must use Agent tool name (Codex fix #3)"
     # allowed-tools list must NOT have bare "- Task\n" entry (deprecated tool name in VG context)
