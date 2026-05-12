@@ -1,5 +1,65 @@
 # Changelog
 
+## v4.1.0 — Codex deferred items: 4-stage contract-drift coverage net (2026-05-12)
+
+Closes phantom-endpoint drift at 4 stages instead of 1. Codex GPT-5.5 second-opinion identified 4 deferred wirings after the v3.7.1 fix (commit `564a39a` wired `verify-contract-runtime.py` as BLOCK gate at build close). Each item reuses existing primitives, no new validators.
+
+### Coverage net per failure mode
+
+| Stage | Gate | Severity | Commit |
+|---|---|---|---|
+| Wave commit | `verify-contract-runtime` (Item 1) | warn — heads-up | `f31f6fa` |
+| Build close | `verify-contract-runtime` (v3.7.1) | BLOCK | `564a39a` |
+| Build close | PR-E mutation truthcheck + read-probe (Item 4) | warn — defense-in-depth | `a71c143` |
+| Review preflight | FE-BE call graph (Item 2) | warn — drift hint | `4fb18fc` |
+| Review phase2a | Proof reuse (Item 3) → fresh probe fallback | save 10-30s | `0145c8a` |
+
+### Item 1 — Wave-level contract-runtime advisory
+
+`verify-contract-runtime.py` was designed in its own docstring to "run right after an executor wave commits and BEFORE the next wave spawns so drift stops propagating" but was never wired at wave level — only at build close (v3.7.1). This adds the wave-level invocation in `commands/vg/_shared/build/post-execution-overview.md` as ADVISORY (warn-only, `|| true` safe) so phantom endpoint drift surfaces the moment wave N commits — wave N+1 doesn't compound the gap. Build close still owns the terminal BLOCK gate.
+
+Emits `build.wave_contract_runtime_warn` event on advisory hit.
+
+### Item 2 — FE-BE call graph advisory at review preflight
+
+`scripts/validators/verify-fe-be-call-graph.py` (119 lines) compares FE fetch/axios calls vs BE route registrations for drift. Codex emphasized: ADVISORY only — dynamic routes (`/api/users/${id}` ↔ `/api/users/:id`), generated clients, and framework-specific prefixes produce false positives unsuitable for hard gates.
+
+Wired in `commands/vg/_shared/review/preflight.md` at end of `0_parse_and_validate`. Auto-detects FE root (`src/` → `frontend/` → repo root) and BE root (`server/` → `backend/` → `api/` → repo root) with graceful fallback. Emits `review.fe_be_drift_warn` event with diagnostic in `${PHASE_DIR}/.tmp/fe-be-call-graph-advisory.diag`. V4.0 discovery-only review model fits the "report what you find" advisory contract.
+
+### Item 3 — phase2a proof-artifact fallback
+
+Build close `verify-contract-runtime` gate (v3.7.1) now emits `.contract-runtime-report.json` proof + `evidence-manifest` entry on success. Review `phase2a_api_contract_probe` step (in `api-and-discovery.md`) checks the proof's freshness via `verify-artifact-freshness.py`:
+
+- Fresh (creator_run_id matches current run) → SKIP fresh runtime probe, copy proof → `.api-contract-probe.json`, mark step done.
+- Stale or missing → fall back to fresh probe (existing `review-api-contract-probe.py` path).
+
+Emits `review.phase2a_proof_reused` event on reuse. Saves 10-30s per phase when build proof valid.
+
+### Item 4 — PR-E read-endpoint light probe
+
+PR-E API truthcheck (in build close) covered only mutation goals with FIXTURES. Read endpoints (GET) + endpoints declared in API-CONTRACTS.md but unmapped to a goal slipped through to review step 5b runtime fail. This adds a LIGHT probe after the mutation truthcheck:
+
+- Parse `API-CONTRACTS.md` for `## METHOD /path` headers.
+- For each endpoint: `curl -sS -w %{http_code} --max-time 2 -X METHOD URL` with path params replaced by `1`.
+- Verdict per endpoint: `missing` (404), `ok` (any other code), `unreachable` (timeout/err).
+- ADVISORY — emits `build.pr_e_read_probe_completed` with `missing_count`. Does NOT block.
+
+Defense-in-depth: phantom endpoints already caught by static `verify-contract-runtime` gate, but this catches cases where operator used `--skip-contract-runtime` override.
+
+### Tests
+
+22 new tests across 5 files — all pass:
+
+- `tests/test_build_close_contract_runtime_gate.py` (v3.7.1 — pre-v4.1.0 baseline, 6 tests)
+- `tests/test_build_wave_contract_runtime_advisory.py` (Item 1, 3 tests)
+- `tests/test_review_preflight_fe_be_advisory.py` (Item 2, 4 tests)
+- `tests/test_review_phase2a_proof_fallback.py` (Item 3, 4 tests)
+- `tests/test_build_pr_e_read_endpoint_coverage.py` (Item 4, 5 tests)
+
+### Closes
+
+Codex GPT-5.5 review (consult session in v3.7.1 ship). Codex's punch quote: "Bạn đang thêm gate vì không tin gate cũ, thay vì sửa chỗ nối bị hở." Original 4-gate proposal challenged as over-engineered. Codex's lighter design: wire 7 existing primitives (verify-contract-runtime, verify-fe-be-call-graph, extract-be-route-registry, extract-fe-api-calls, verify-workflow-evidence, test_review_api_contract_probe, test_contract_runtime_verify) — zero new scripts.
+
 ## v4.0.0 — Pipeline refactor (BREAKING) (2026-05-12)
 
 **Pipeline order change:**
