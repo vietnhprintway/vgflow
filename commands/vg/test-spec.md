@@ -27,13 +27,19 @@ runtime_contract:
       content_min_bytes: 180
     - path: "${PHASE_DIR}/TEST-SPEC-GAPS.md"
       content_min_bytes: 40
+    - path: "tests/e2e/lifecycle/"
+      min_files: 1
+      pattern: "*.spec.ts"
+    - path: "${PHASE_DIR}/CODEGEN-MANIFEST.json"
+      min_bytes: 100
   must_touch_markers:
-    - "0_parse_and_validate"
-    - "1_build_artifact_gate"
-    - "2_generate_deep_specs"
+    - "1_load_context"
+    - "2_gen_docs"
     - "3_validate_deep_specs"
     - "3_crossai_sweep"
-    - "4_complete"
+    - "4_codegen"
+    - "4_self_review"
+    - "5_complete"
   must_emit_telemetry:
     - event_type: "test_spec.started"
       phase: "${PHASE_NUMBER}"
