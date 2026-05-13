@@ -15,9 +15,9 @@ echo "$MERGE_OUT" | grep -v '^RESULT_PAYLOAD='
 RESULT_PAYLOAD=$(echo "$MERGE_OUT" | grep '^RESULT_PAYLOAD=' | head -1 | sed 's/^RESULT_PAYLOAD=//')
 
 if echo "$RESULT_PAYLOAD" | grep -q '"failed_envs": \[\]'; then
-  EVENT_TYPE="phase.deploy_completed"; OUTCOME="PASS"
+  EVENT_TYPE="phase.deploy_completed"; OUTCOME="PASS"; DEPLOY_STATUS="OK"
 else
-  EVENT_TYPE="phase.deploy_failed"; OUTCOME="WARN"
+  EVENT_TYPE="phase.deploy_failed"; OUTCOME="WARN"; DEPLOY_STATUS="FAILED"
 fi
 
 ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
@@ -26,6 +26,25 @@ ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
 [ "$EVENT_TYPE" != "phase.deploy_completed" ] && ${PYTHON_BIN:-python3} .claude/scripts/vg-orchestrator emit-event \
   "phase.deploy_completed" --actor "orchestrator" --outcome "INFO" \
   --payload "$RESULT_PAYLOAD" 2>/dev/null || true
+
+# F9 Batch 12: deploy failure chain-back protocol
+if [ "${DEPLOY_STATUS:-OK}" != "OK" ] && [ "${DEPLOY_STATUS:-OK}" != "PASS" ]; then
+  "${PYTHON_BIN:-python3}" -c "
+import json
+from pathlib import Path
+p = Path('${PHASE_DIR}/PIPELINE-STATE.json')
+data = json.loads(p.read_text(encoding='utf-8')) if p.is_file() else {}
+data['pipeline_step'] = 'deploy-failed'
+data['deploy_status'] = '${DEPLOY_STATUS}'
+data['next_command'] = '/vg:deploy ${PHASE_NUMBER} --resume'
+p.write_text(json.dumps(data, indent=2), encoding='utf-8')
+" 2>/dev/null || true
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+    "deploy.failed" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"status\":\"${DEPLOY_STATUS}\",\"reason\":\"${DEPLOY_REASON:-failed_envs}\"}" \
+    >/dev/null 2>&1 || true
+  echo "⛔ Deploy failed. PIPELINE-STATE.next_command='/vg:deploy ${PHASE_NUMBER} --resume'"
+fi
 
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER}" "2_persist_summary" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2_persist_summary.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy 2_persist_summary 2>/dev/null || true
