@@ -179,7 +179,69 @@ BINDINGS=$(echo "${SUBAGENT_OUTPUT}" | ${PYTHON_BIN:-python3} -c \
 }
 
 echo "✓ Output validated: ${SPEC_COUNT} spec file(s), bindings=${BINDINGS}"
+```
 
+### C7 Batch 4: strict schema validation
+
+```python
+# C7 Batch 4: strict schema validation for codegen subagent return
+import json
+import re
+from pathlib import Path
+
+# 1. Files exist on disk (is_file check per spec_files entry)
+missing_files = []
+for f in subagent_output.get("spec_files", []):
+    fpath = Path(f) if Path(f).is_absolute() else Path(f"{PHASE_DIR}") / f
+    if not fpath.is_file():
+        missing_files.append(str(f))
+if missing_files:
+    raise ValueError(f"C7: codegen returned non-existent spec files: {missing_files}")
+
+# 2. Coverage reconciliation against READY goals from GOAL-COVERAGE-MATRIX.json
+try:
+    matrix = json.load(open(f"{PHASE_DIR}/GOAL-COVERAGE-MATRIX.json", encoding="utf-8"))
+    ready_goals = {
+        gid for gid, g in matrix.get("goals", {}).items()
+        if g.get("verdict") in ("READY", "READY_BEHAVIORAL", "READY_STRUCTURAL")
+    }
+    # MANUAL/DEFERRED goals are excluded from codegen by design
+    manual_goals = {
+        gid for gid, g in matrix.get("goals", {}).items()
+        if g.get("verdict") in ("MANUAL", "DEFERRED", "INFRA_PENDING")
+    }
+except Exception:
+    ready_goals = set()
+    manual_goals = set()
+covered_goals = set()
+for f in subagent_output.get("spec_files", []):
+    try:
+        fpath = Path(f) if Path(f).is_absolute() else Path(f"{PHASE_DIR}") / f
+        head = fpath.read_text(encoding="utf-8")[:2000]
+        for m in re.finditer(r"\bG-\d+\b", head):
+            covered_goals.add(m.group(0))
+    except Exception:
+        pass
+uncovered = ready_goals - covered_goals
+if uncovered:
+    print(f"⚠ C7: READY goals without generated spec: {uncovered}")
+
+# 3. Persist CODEGEN-BINDING-REPORT.json artifact (binding_report)
+binding_report = {
+    "spec_files": list(subagent_output.get("spec_files", [])),
+    "ready_goals": sorted(ready_goals),
+    "manual_goals": sorted(manual_goals),
+    "covered_goals": sorted(covered_goals),
+    "uncovered_goals": sorted(uncovered),
+    "bindings_satisfied": bool(subagent_output.get("bindings_satisfied")),
+    "BINDING-REPORT": f"{PHASE_DIR}/CODEGEN-BINDING-REPORT.json",
+}
+Path(f"{PHASE_DIR}/CODEGEN-BINDING-REPORT.json").write_text(
+    json.dumps(binding_report, indent=2), encoding="utf-8"
+)
+```
+
+```bash
 # Emit telemetry
 type -t emit_telemetry_v2 >/dev/null 2>&1 && \
   emit_telemetry_v2 "test_5d_codegen" "${PHASE_NUMBER}" \
