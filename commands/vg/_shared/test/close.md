@@ -226,11 +226,18 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 
 ---
 
-## STEP 8.2 — bootstrap_reflection (Human-Curated Learning)
+## STEP 8.2 — bootstrap_reflection (Human-Curated Learning, --skip-reflection to disable)
 
 End-of-test reflection: spawns **vg-reflector** subagent (isolated Haiku)
 to analyze artifacts + telemetry slice + override-debt and draft learning
-candidates for human review via `/vg:learn`.
+candidates for human review via `/vg:learn`. Output persists to
+`${PHASE_DIR}/REFLECTION.md` as a phase artifact.
+
+To skip reflection entirely (e.g. CI runs that don't need lesson capture),
+pass `--skip-reflection` in `$ARGUMENTS`. Example:
+```bash
+/vg:test --skip-reflection
+```
 
 **Terminology:** Previously "Self-Healing" — corrected to
 **Human-Curated Learning**. Loop: reflector → candidate →
@@ -241,9 +248,16 @@ No autonomous rule promotion.
 - `.vg/bootstrap/` directory absent (project not opted in)
 - `config.bootstrap.reflection_enabled == false`
 - Test verdict = fatal crash (reflect on next success)
+- `--skip-reflection` flag set in `$ARGUMENTS`
 
 ```bash
 vg-orchestrator step-active bootstrap_reflection
+
+# H10: --skip-reflection flag support
+if echo "${ARGUMENTS:-}" | grep -q -- "--skip-reflection"; then
+  echo "ℹ vg-reflector skipped (--skip-reflection flag)"
+  exit 0
+fi
 
 BOOTSTRAP_DIR=".vg/bootstrap"
 if [ ! -d "$BOOTSTRAP_DIR" ]; then
@@ -301,6 +315,16 @@ After spawn exits:
 ```bash
 bash scripts/vg-narrate-spawn.sh vg-reflector returned \
   "${CANDIDATE_COUNT:-0} candidates"
+
+# H10 Batch 4: persist reflector output to REFLECTION.md artifact
+REFLECTION_OUT="${PHASE_DIR}/REFLECTION.md"
+if [ -f "${VG_TMP}/vg-reflector-${PHASE_NUMBER}.md" ]; then
+  cp "${VG_TMP}/vg-reflector-${PHASE_NUMBER}.md" "$REFLECTION_OUT"
+  echo "✓ Reflection captured: $REFLECTION_OUT"
+elif [ -f "${REFLECT_OUT:-}" ]; then
+  cp "$REFLECT_OUT" "$REFLECTION_OUT"
+  echo "✓ Reflection captured: $REFLECTION_OUT"
+fi
 ```
 
 ### Interactive promote flow (human gates)
