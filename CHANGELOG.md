@@ -1,5 +1,44 @@
 # Changelog
 
+## v4.7.0 — Deferred high-priority gaps (Batch 2 / G2+G14+C8+C11) (2026-05-13)
+
+Audit Gaps G2 (HIGH), G14 (HIGH), C8 (HIGH), C11 (MEDIUM) — lifecycle
+spec generator and review phase2a/2.8 structural gaps.
+
+### C8 — Phase 2a proof reuse splits cleanly (HIGH)
+review/api-and-discovery.md: if .contract-runtime-report.json fresh, phase2a
+short-circuited and skipped interface-standards + api-docs coverage.
+
+Fix: proof reuse only skips the live runtime probe. Interface-standards +
+api-docs validators always run unconditionally. SKIP_LIVE_PROBE flag controls
+only the live curl probe path. Event payload carries scope=live_probe_only.
+
+### G2 — Per-verb stage derivation (HIGH)
+generate-lifecycle-specs.py: REQUIRED_STAGES was fixed 7-tuple. Delete-only
+goals got full RCRURDR with no-op create/update stages.
+
+Fix: GOAL_TYPE_STAGES map + _stages_for_goal() heuristic. create-only /
+update-only / delete-only get 3-stage lifecycle. HTTP verb inference from
+mutation_evidence used as secondary signal. Unrecognised goal_type falls back
+to RCRURDR to preserve existing behaviour.
+
+### G14 — Read-only goals get lifecycle (HIGH)
+generate-lifecycle-specs.py: read-only goals were filtered out by
+_needs_lifecycle(). Coverage hole — no lifecycle produced for list/filter goals.
+
+Fix: _needs_lifecycle() returns True for goal_type=read-only. GOAL_TYPE_STAGES
+maps read-only → (read_before,) single-stage lifecycle. _read_before_action()
+produces filter-assertion action from persistence_check field.
+
+### C11 — Canonical url-runtime-status.json (MEDIUM)
+url-and-error.md: 3 fragmented skip/waive flags (--allow-no-url-sync,
+--skip-runtime, --allow-runtime-drift). Downstream couldn't distinguish
+'passed' from 'not executed'.
+
+Fix: scripts/emit-url-runtime-status.py atomic writer with state enum
+{passed|drift|skipped|unexecuted|waived} + reason + flags audit trail.
+url-and-error.md emits at end of phase 2.8 before mark_step.
+
 ## v4.6.0 — Review observability bug fixes (Batch 6 / H2+H6+H8) (2026-05-13)
 
 Audit Gaps H2 (HIGH), H6 (MEDIUM), H8 (MEDIUM) — observability bugs in
