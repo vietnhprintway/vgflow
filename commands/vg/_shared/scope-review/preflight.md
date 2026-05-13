@@ -172,8 +172,21 @@ PY
       emit_telemetry_v2 "gate_hit" "" "scope-review.incremental" \
         "scope-review-incremental" "PASS" \
         "{\"changed_count\":0,\"new_count\":0,\"removed_count\":0,\"early_exit\":true,\"conflicts_found\":0}"
-    # Still refresh baseline timestamp, then exit.
-    # (baseline hashes unchanged; just bump ts)
+    # F11 Batch 14: write updated baseline ts before exit so 'last checked'
+    # stays current on no-change runs. Hashes unchanged; only ts bumped.
+    ${PYTHON_BIN:-python3} - "$BASELINE_PATH" <<'PY'
+import json, sys
+from datetime import timezone, datetime
+from pathlib import Path
+p = Path(sys.argv[1])
+if p.exists():
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["baseline_ts"] = datetime.now(tz=timezone.utc).isoformat()
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass  # non-fatal: stale ts is cosmetic
+PY
     exit 0
   fi
 
