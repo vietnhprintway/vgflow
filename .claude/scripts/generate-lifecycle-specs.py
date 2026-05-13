@@ -32,6 +32,42 @@ REQUIRED_STAGES = (
     "read_after_delete",
 )
 
+# G2 Batch 2: per-verb stage derivation — shorten lifecycle for non-full-CRUD goals.
+GOAL_TYPE_STAGES: dict[str, tuple[str, ...]] = {
+    "create-only": ("read_before", "create", "read_after_create"),
+    "update-only": ("read_before", "update", "read_after_update"),
+    "delete-only": ("read_before", "delete", "read_after_delete"),
+    "read-only":   ("read_before",),  # G14 covered separately
+}
+
+
+def _stages_for_goal(goal: dict[str, Any]) -> tuple[str, ...]:
+    """Derive lifecycle stages per goal_type. Default RCRURDR for full mutation."""
+    gtype = (goal.get("goal_type") or "").strip().lower()
+    # Explicit goal_type mapping takes priority
+    if gtype in GOAL_TYPE_STAGES:
+        return GOAL_TYPE_STAGES[gtype]
+    # Non-empty but unrecognised goal_type (e.g. multi-actor, wizard) → full RCRURDR
+    # so existing tests and behaviours are not broken by unrecognised types.
+    if gtype:
+        return REQUIRED_STAGES
+    # goal_type absent — infer from HTTP verb hints in mutation_evidence
+    evidence = " ".join(
+        str(goal.get(k) or "")
+        for k in ("mutation_evidence", "persistence_check", "title")
+    ).upper()
+    has_post = "POST " in evidence or " POST" in evidence
+    has_put_patch = "PUT " in evidence or "PATCH " in evidence
+    has_del = "DELETE " in evidence
+    if has_post and not has_put_patch and not has_del:
+        return GOAL_TYPE_STAGES["create-only"]
+    if has_del and not has_post and not has_put_patch:
+        return GOAL_TYPE_STAGES["delete-only"]
+    if has_put_patch and not has_post and not has_del:
+        return GOAL_TYPE_STAGES["update-only"]
+    return REQUIRED_STAGES
+
+
 SIDE_EFFECT_WORD_RE = re.compile(
     r"\b("
     r"create|created|update|updated|delete|deleted|patch|post|put|"
@@ -493,7 +529,7 @@ def _goal_spec(
         "decision_refs": decision_refs,
         "steps": [
             _step(stage, goal, _stage_actor(stage, goal, actors), _contracts, _decisions, decision_refs)
-            for stage in REQUIRED_STAGES
+            for stage in _stages_for_goal(goal)
         ],
         "artifact_capture": _artifact_capture(goal),
         "cleanup": [
