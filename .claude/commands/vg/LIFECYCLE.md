@@ -179,6 +179,40 @@ Downstream consumers check `PIPELINE-STATE.json` for `next_command` and `next_co
 
 ---
 
+## Domain/Team Isolation (v4.15.0+)
+
+F7 Batch 12 introduces domain and team fields for multi-team parallel scheduling.
+
+### ROADMAP.md fields (per phase)
+
+```markdown
+## Phase {NN}: {Name}
+**Domain:** {business domain — e.g. identity, payments, catalog, infra}
+**Team:** {owning team — e.g. auth-team, platform-team, or "unassigned"}
+```
+
+### PIPELINE-STATE.json fields
+
+| Field | Type | Description |
+|---|---|---|
+| `domain` | string | Business domain from ROADMAP.md. Set by `specs/preflight.md`. |
+| `team` | string | Owning team. `"unassigned"` if not set in ROADMAP. |
+
+### Propagation
+
+`specs/preflight.md` (Step 3 — domain_team_propagation) reads `domain` + `team`
+from ROADMAP.md and:
+1. Exports `VG_PHASE_DOMAIN` + `VG_PHASE_TEAM` env vars.
+2. Writes `domain` + `team` into `PIPELINE-STATE.json`.
+
+### Future: Parallel Team Scheduler (v5.0+)
+
+The `domain` field provides the partition key for a future parallel scheduler.
+Teams with non-overlapping domains can run concurrent phases. Cross-domain deps
+are declared in `CROSS-PHASE-DEPS.md`. Full implementation deferred to v5.0+.
+
+---
+
 ## Cross-references
 
 - Skill discovery (which command for what intent): `_shared/discovery-flowchart.md`

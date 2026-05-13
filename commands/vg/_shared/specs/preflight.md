@@ -139,4 +139,38 @@ If SPECS.md does not exist, continue.
 ```
 </step>
 
+<step name="domain_team_propagation">
+## Step 3: Domain/Team Propagation (F7 Batch 12)
+
+Read `domain` and `team` fields from ROADMAP.md for the current phase. Propagate to
+PIPELINE-STATE.json and env vars. Enables multi-team parallel scheduling + event stream
+filtering by domain.
+
+```bash
+# F7 Batch 12: propagate domain/team from ROADMAP.md to PIPELINE-STATE
+ROADMAP_PATH="${PLANNING_DIR:-${PHASE_DIR}/../..}/ROADMAP.md"
+[ -f "$ROADMAP_PATH" ] || ROADMAP_PATH=".vg/ROADMAP.md"
+if [ -f "$ROADMAP_PATH" ]; then
+  DOMAIN=$(grep -A 10 "^## Phase ${PHASE_NUMBER}" "$ROADMAP_PATH" 2>/dev/null | grep -i "\*\*[Dd]omain:\*\*\|^[Dd]omain:" | head -1 | sed 's/.*[Dd]omain[:\*]*[[:space:]]*//' | tr -d '*' | xargs 2>/dev/null)
+  TEAM=$(grep -A 10 "^## Phase ${PHASE_NUMBER}" "$ROADMAP_PATH" 2>/dev/null | grep -i "\*\*[Tt]eam:\*\*\|^[Tt]eam:" | head -1 | sed 's/.*[Tt]eam[:\*]*[[:space:]]*//' | tr -d '*' | xargs 2>/dev/null)
+  if [ -n "$DOMAIN" ]; then
+    export VG_PHASE_DOMAIN="${DOMAIN}"
+    export VG_PHASE_TEAM="${TEAM:-unassigned}"
+    "${PYTHON_BIN:-python3}" -c "
+import json
+from pathlib import Path
+p = Path('${PHASE_DIR}/PIPELINE-STATE.json')
+if p.is_file():
+    data = json.loads(p.read_text(encoding='utf-8'))
+    data['domain'] = '${DOMAIN}'
+    data['team'] = '${TEAM:-unassigned}'
+    p.write_text(json.dumps(data, indent=2), encoding='utf-8')
+" 2>/dev/null || true
+    echo "✓ F7: domain=${DOMAIN} team=${TEAM:-unassigned} propagated to PIPELINE-STATE"
+  fi
+fi
+(type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "domain_team_propagation" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/domain_team_propagation.done" 2>/dev/null || true
+```
+</step>
+
 </process>
