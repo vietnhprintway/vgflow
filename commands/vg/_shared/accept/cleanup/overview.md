@@ -129,6 +129,20 @@ if [ -n "$(echo "$MISSING_ACCEPT_MARKERS" | xargs)" ]; then
     >/dev/null 2>&1 || true
   exit 1
 fi
+
+# F3 Batch 10: strict marker check — run_id match (propagated from test/close.md Batch 9)
+MARKER_LIB="${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg/_shared}/lib/marker-schema.sh"
+[ -f "$MARKER_LIB" ] || MARKER_LIB="commands/vg/_shared/lib/marker-schema.sh"
+[ -f "$MARKER_LIB" ] || MARKER_LIB=".claude/commands/vg/_shared/lib/marker-schema.sh"
+if [ -f "$MARKER_LIB" ]; then
+  source "$MARKER_LIB"
+  export VG_MARKER_STRICT=1
+  if ! verify_all_markers_strict_runid "${PHASE_DIR}" "${PHASE_NUMBER}" "${VG_RUN_ID:-}"; then
+    echo "⛔ Marker integrity gate failed — empty/stale/forged markers detected" >&2
+    echo "   Set VG_MARKER_STRICT=0 to bypass (UNSAFE — only for migration)." >&2
+    exit 1
+  fi
+fi
 ```
 
 ### Gate C — Marker + terminal emit + run-complete
