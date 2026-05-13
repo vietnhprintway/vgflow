@@ -552,6 +552,39 @@ def _read_before_action(goal: dict[str, Any]) -> str:
     return "Read baseline via read endpoint or DB query from TEST-GOALS; assert target entity absent or initial state matches precondition."
 
 
+# G3 Batch 3: step description built from endpoint binding
+_DEFAULT_DESCRIPTIONS: dict[str, str] = {
+    "read_before": "Read baseline via read endpoint or DB query from TEST-GOALS; assert target entity absent or initial state matches precondition.",
+    "create": "Execute primary API/UI action from TEST-GOALS; capture mutation evidence.",
+    "read_after_create": "Re-read from a fresh request/session; assert create effect persisted.",
+    "update": "Mutate the created resource again, exercise status transition, retry/idempotency, role switch, or configured update path.",
+    "read_after_update": "Re-read from a clean context and assert updated fields, derived state, events, permissions, or view state.",
+    "delete": "Cleanup by delete, revoke, cancel, deactivate, rollback fixture, or restore original view/config state.",
+    "read_after_delete": "Re-read active list/detail and assert no active test-owned resource remains; audit row may remain if required.",
+}
+
+
+def _step_description(stage: str, goal: dict[str, Any], endpoint: dict[str, str] | None) -> str:
+    """G3 Batch 3: build action description from endpoint binding when available.
+
+    When endpoint is bound, embed method + path directly in the description so
+    codegen has concrete references instead of generic template strings.
+    Falls back to _DEFAULT_DESCRIPTIONS[stage] when endpoint is absent.
+    """
+    if endpoint and endpoint.get("method") and endpoint.get("path"):
+        method, path = endpoint["method"], endpoint["path"]
+        if stage == "create":
+            return f"{method} {path} with sample payload from API-CONTRACTS; assert response status + body."
+        if stage == "update":
+            return f"{method} {path} for the created entity; assert update applied."
+        if stage == "delete":
+            return f"{method} {path}; assert 204/200 and resource gone."
+        if stage.startswith("read_"):
+            state = stage.replace("read_", "").replace("_", " ")
+            return f"GET {path}; assert {state} state per persistence_check."
+    return _DEFAULT_DESCRIPTIONS.get(stage, f"Execute {stage} stage.")
+
+
 def _step(
     stage: str,
     goal: dict[str, Any],
@@ -583,6 +616,9 @@ def _step(
         "read_after_delete": ["404/empty active list or terminal status", "revoked sessions/jobs", "cleanup confirmation"],
     }
     endpoint = _bind_endpoint(stage, goal, contracts or [])
+    # G3 Batch 3: override action description with endpoint-binding when available
+    if endpoint:
+        actions[stage] = _step_description(stage, goal, endpoint)
     # Build assertions from decision_refs + API-CONTRACTS
     assertions: list[dict[str, str]] = []
     if stage in {"create", "update"}:
