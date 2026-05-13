@@ -178,6 +178,40 @@ CONSOLE_PASS=$(echo "${SUBAGENT_OUTPUT}" | ${PYTHON_BIN:-python3} -c \
 echo "✓ Output validated: ${GOALS_VERIFIED} goal verdicts, console_pass=${CONSOLE_PASS}"
 ```
 
+### C6 Batch 4: strict schema validation
+
+```python
+# C6 Batch 4: strict schema validation
+STATUS_ENUM = {"PASSED", "FAILED", "BLOCKED", "UNREACHABLE", "SKIPPED", "TEST_PENDING"}
+
+# 1. Goal IDs reconciliation against vg-load index (GOAL-COVERAGE-MATRIX.json)
+try:
+    import json
+    from pathlib import Path
+    goal_id_set = set(
+        json.load(open(f"{PHASE_DIR}/GOAL-COVERAGE-MATRIX.json", encoding="utf-8"))
+        .get("goals", {}).keys()
+    )
+except Exception:
+    goal_id_set = set()
+returned_ids = {g.get("goal_id") for g in subagent_output.get("goals_verified", []) if g.get("goal_id")}
+unknown_ids = returned_ids - goal_id_set
+if goal_id_set and unknown_ids:
+    print(f"⚠ C6: subagent returned unknown goal_ids: {unknown_ids}")
+
+# 2. Status enum check (status_enum = STATUS_ENUM)
+for g in subagent_output.get("goals_verified", []):
+    s = g.get("status")
+    if s not in STATUS_ENUM:
+        print(f"⚠ C6: invalid status '{s}' for goal {g.get('goal_id')} (valid_statuses={sorted(STATUS_ENUM)})")
+
+# 3. evidence_ref existence check
+for g in subagent_output.get("goals_verified", []):
+    ev = g.get("evidence_ref")
+    if ev and not Path(ev).is_file():
+        print(f"⚠ C6: evidence_ref '{ev}' for goal {g.get('goal_id')} does not exist (evidence_ref_missing)")
+```
+
 ### Update GOAL-COVERAGE-MATRIX.md
 
 ```bash
