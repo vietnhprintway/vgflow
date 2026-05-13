@@ -1,5 +1,41 @@
 # Changelog
 
+## v4.16.0 — Batch 13: Rule 2 + Rule 6 closed → 12/12 on tinbeta criteria (2026-05-13)
+
+VGFlow scored 10/12 STRONG/BEST_MATCH on tinbeta/AGENTS.md 12-rule criteria pre-Batch-13.
+Batch 13 closes Rule 2 + Rule 6 PARTIAL → **12/12 STRONG/BEST_MATCH**.
+
+### Rule 2 (Simplicity First) — closed
+
+**`scripts/validators/verify-task-complexity.py`**: complexity-budget gate wired into
+`build/close.md` (step 12_run_complete area). Reads `complexity_budget:` field from
+PLAN.md per-task blocks; compares vs `.task-diff-stats.json` (git diff stats per task).
+Advisory by default (exit 0); `--strict` escalates to non-zero. Adaptation from plan:
+used `.step-markers/` (actual layout) instead of `.task-markers/` (plan template);
+parses `## Task T-XX` headers from PLAN.md for task IDs.
+
+### Rule 6 (Token budgets not advisory) — closed
+
+**`scripts/token-budget.py`**: per-task (4000) + per-session (30000) token usage ledger.
+Supports `--add N`, `--check` (WARN >=80%, BLOCK >=100%), `--allow-overrun`. Atomic
+writes via tempfile. Self-contained, no new deps. Out of scope: integration wiring into
+existing scripts (Batch 14).
+
+**`vg.config.template.md`** (all 3 locations): documents `token_budget.{per_task,
+per_session, enforce}` block per tinbeta/AGENTS.md Rule 6 defaults.
+
+### Tests
+
+- `tests/test_rule2_complexity_gate.py` — 4 tests, all green
+- `tests/test_rule6_token_budget.py` — 6 tests, all green
+
+### Baseline
+
+Full sweep: no new regressions vs v4.15.1 baseline.
+Pre-existing failures: `test_tasklist_depth_enforcement.py` (4 tests, baseline).
+
+---
+
 ## v4.15.1 — Codex mirror sync after Batches 10/11/12 (2026-05-13)
 
 Patch: v4.15.0 release CI failed `verify-codex-mirror-equivalence.py` —
