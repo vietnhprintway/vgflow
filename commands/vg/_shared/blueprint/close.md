@@ -346,6 +346,17 @@ fi
 ### 6.2.6 — terminal telemetry + run-complete
 
 ```bash
+# F1 Batch 10: emit next_command to PIPELINE-STATE.json for --auto-chain consumers
+"${PYTHON_BIN:-python3}" - <<PY
+import json, datetime
+from pathlib import Path
+p = Path("${PHASE_DIR}/PIPELINE-STATE.json")
+state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+state["next_command"] = "/vg:build ${PHASE_NUMBER}"
+state["next_command_emitted_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+
 # Terminal telemetry per runtime_contract
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.completed" \
   --payload "{\"phase\":\"${PHASE_NUMBER}\",\"plans\":${PLAN_COUNT},\"endpoints\":${ENDPOINT_COUNT}}" >/dev/null

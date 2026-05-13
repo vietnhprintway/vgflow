@@ -169,6 +169,17 @@ fi
 
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "commit_and_next" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/commit_and_next.done"
 
+# F1 Batch 10: emit next_command to PIPELINE-STATE.json for --auto-chain consumers
+"${PYTHON_BIN:-python3}" - <<PY
+import json, datetime
+from pathlib import Path
+p = Path("${PHASE_DIR}/PIPELINE-STATE.json")
+state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+state["next_command"] = "/vg:scope ${PHASE_NUMBER}"
+state["next_command_emitted_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+
 # Orchestrator run-complete — validates runtime_contract + emits specs.completed
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
 RUN_RC=$?

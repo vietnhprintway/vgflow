@@ -452,12 +452,19 @@ echo "Cleanup complete. Evidence preserved: SANDBOX-TEST.md, goal-*.png, *.spec.
 ```bash
 PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
 ${PYTHON_BIN} -c "
-import json; from pathlib import Path
+import json; from pathlib import Path, datetime as dt
 p = Path('${PIPELINE_STATE}')
 s = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
 s['status'] = 'tested'; s['pipeline_step'] = 'test-complete'
 s['test_verdict'] = '${VERDICT}'
 s['updated_at'] = __import__('datetime').datetime.now().isoformat()
+# F1 Batch 10: verdict-dependent next_command for --auto-chain consumers
+verdict = '${VERDICT}'
+if verdict in ('PASSED', 'GAPS_FOUND'):
+    s['next_command'] = '/vg:accept ${PHASE_NUMBER}'
+else:
+    s['next_command'] = '/vg:review --resume ${PHASE_NUMBER}'
+s['next_command_emitted_at'] = __import__('datetime').datetime.utcnow().isoformat() + 'Z'
 p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 

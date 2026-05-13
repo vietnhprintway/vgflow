@@ -79,6 +79,17 @@ Closes "AI paraphrases user answer wrongly into D-XX" gap.
 ## §5. Mark final step + emit completion + run-complete
 
 ```bash
+# F1 Batch 10: emit next_command to PIPELINE-STATE.json for --auto-chain consumers
+"${PYTHON_BIN:-python3}" - <<PY
+import json, datetime
+from pathlib import Path
+p = Path("${PHASE_DIR}/PIPELINE-STATE.json")
+state = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+state["next_command"] = "/vg:blueprint ${PHASE_NUMBER}"
+state["next_command_emitted_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+PY
+
 vg-orchestrator mark-step scope 5_commit_and_next
 vg-orchestrator emit-event scope.completed \
   --payload "{\"phase\":\"${PHASE_NUMBER}\",\"decisions\":${DECISION_COUNT},\"endpoints\":${ENDPOINT_COUNT},\"scenarios\":${TEST_SCENARIO_COUNT}}" >/dev/null
