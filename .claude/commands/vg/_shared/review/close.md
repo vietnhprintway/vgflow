@@ -247,6 +247,28 @@ p.write_text(json.dumps(s, indent=2))
 " 2>/dev/null
 ```
 
+**F11 Batch 11: review step-status ledger read — symmetric with test/close.md C5 pattern.**
+
+```bash
+# F11 Batch 11: read review step-status ledger for verdict computation.
+# Symmetric with test/close.md C5 pattern (Batch 9).
+REVIEW_STEP_LEDGER="${PHASE_DIR}/.review-step-status.json"
+if [ -f "$REVIEW_STEP_LEDGER" ]; then
+  ${PYTHON_BIN:-python3} - <<PYEOF
+import json, sys
+from pathlib import Path
+ledger = json.loads(Path("${REVIEW_STEP_LEDGER}").read_text(encoding="utf-8"))
+steps = ledger.get("steps", {})
+blocked = [s for s, v in steps.items() if v.get("status") in ("BLOCK", "FAIL")]
+if blocked:
+    print(f"⚠ F11: {len(blocked)} review step(s) with BLOCK/FAIL status: {blocked}")
+    print("  Review verdict may be affected. Check step details above.")
+else:
+    print(f"✓ F11: review ledger — {len(steps)} step(s) recorded, none BLOCK/FAIL")
+PYEOF
+fi
+```
+
 **v2.6.1 (2026-04-26): Auto-resolve hotfix debt entries from prior phases.**
 
 If THIS phase's review ran clean (no `--allow-orthogonal-hotfix` /

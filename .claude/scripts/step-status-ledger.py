@@ -35,9 +35,11 @@ def main() -> int:
                     choices=["PASS", "BLOCK", "FAIL", "WARN", "SKIP"])
     ap.add_argument("--reason", default="")
     ap.add_argument("--evidence-ref", default="")
+    ap.add_argument("--ledger", default=".test-step-status.json",
+                    help="Output ledger filename (default: .test-step-status.json)")
     args = ap.parse_args()
 
-    ledger = args.phase_dir / ".test-step-status.json"
+    ledger = args.phase_dir / args.ledger
     data = {"steps": {}}
     if ledger.is_file():
         try:
@@ -57,7 +59,8 @@ def main() -> int:
 
     # Atomic write
     args.phase_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(args.phase_dir), prefix=".test-step-status.", suffix=".tmp")
+    ledger_stem = Path(args.ledger).stem
+    fd, tmp_path = tempfile.mkstemp(dir=str(args.phase_dir), prefix=f"{ledger_stem}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)

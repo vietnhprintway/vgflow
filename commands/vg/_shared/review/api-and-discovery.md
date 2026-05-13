@@ -1194,4 +1194,14 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
   - `sequential` mode: exactly 1 Haiku agent at a time (mobile safety)
   - `none` mode: no Haiku agents spawned (cli-tool/library)
 
+```bash
+# F11 Batch 11: review lane step-status ledger — api-and-discovery step
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" \
+  --ledger ".review-step-status.json" \
+  --step "phase2a_api_contract_probe" \
+  --status "${PHASE2A_STATUS:-PASS}" \
+  --reason "${PHASE2A_REASON:-api-and-discovery completed}" || true
+```
+
 </step>

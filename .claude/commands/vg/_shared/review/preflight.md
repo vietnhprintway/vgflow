@@ -979,4 +979,14 @@ Per TASKLIST_POLICY, the tasklist shown by `emit-tasklist.py` is a binding contr
 - `## ━━━ 2b-2: Scanning /conversions as advertiser (3/7 views) ━━━`
 - `## ━━━ 3: Fixing Bug #2: S2SSecretSection crash (iter 1/5) ━━━`
 - `## ━━━ 4a: 38 goals loaded, 16 INFRA_PENDING (ClickHouse, pixel_server) ━━━`
+
+```bash
+# F11 Batch 11: review lane step-status ledger — preflight step
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" \
+  --ledger ".review-step-status.json" \
+  --step "review_preflight" \
+  --status "PASS" \
+  --reason "review preflight completed" || true
+```
 </step>
