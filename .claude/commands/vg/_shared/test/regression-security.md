@@ -77,6 +77,12 @@ Result:
 - All pass → PASS
 - Failures → record in SANDBOX-TEST.md with failure details
 
+On failure, append to SANDBOX-TEST.md:
+- trace.zip path: `test-results/<spec>/<test>/trace.zip` (open: `npx playwright show-trace <path>`)
+- video.webm path: `test-results/<spec>/<test>/video.webm`
+- screenshot path: `test-results/<spec>/<test>/test-failed-1.png`
+- After cleanup: traces/videos are preserved to `${PHASE_DIR}/debug-artifacts/` (non-PASSED verdict)
+
 On subsequent runs (`--regression-only`): just run generated tests. Fast, cheap, repeatable.
 
 Display:

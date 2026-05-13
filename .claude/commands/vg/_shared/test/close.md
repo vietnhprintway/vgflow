@@ -372,14 +372,35 @@ SANDBOX-TEST.md commits official evidence, clean up aggressively.
 | Goal result JSONs | `${VG_TMP}/goal-*-result.json` | DELETE (verdict folded) |
 | Baseline JSONs | `${VG_TMP}/goal-*-baseline.json` | DELETE |
 | MCP snapshot dumps | `**/.playwright-mcp/`, `./snapshot-*.yaml` | DELETE |
-| Debug videos/traces | `**/videos/*.webm`, `**/traces/*.zip` | DELETE if PASSED/GAPS |
+| Debug videos/traces | `**/videos/*.webm`, `**/traces/*.zip` | DELETE if PASSED only (keep for GAPS_FOUND + FAILED) |
 
 ```bash
 vg-orchestrator step-active complete
 
 echo "=== Test cleanup — removing transient artifacts ==="
 
-# 1. Playwright junk dirs
+# 0. Videos/traces — H1 fix: preserve BEFORE deleting test-results/ dirs.
+# C10 fix: keep for GAPS_FOUND too (any non-PASSED verdict = debug value).
+# Traces live inside test-results/<spec>/<test>/trace.zip — must copy out FIRST.
+if [ "$VERDICT" = "PASSED" ]; then
+  # Safe to wipe traces — all tests passed, no debug needed
+  find . -type f \( -name "*.webm" -o -name "trace.zip" \) \
+    -not -path "./node_modules/*" -not -path "./.git/*" -delete 2>/dev/null
+else
+  # FAILED or GAPS_FOUND — copy traces to PHASE_DIR before test-results/ is deleted
+  echo "Verdict = $VERDICT — keeping videos/traces for debug"
+  if [ -d "${PHASE_DIR}" ]; then
+    mkdir -p "${PHASE_DIR}/debug-artifacts"
+    find . -type f \( -name "*.webm" -o -name "trace.zip" \) \
+      -not -path "./node_modules/*" -not -path "./.git/*" \
+      -exec cp --parents {} "${PHASE_DIR}/debug-artifacts/" \; 2>/dev/null || \
+    find . -type f \( -name "*.webm" -o -name "trace.zip" \) \
+      -not -path "./node_modules/*" -not -path "./.git/*" \
+      -exec sh -c 'cp "$1" "${2}/$(basename "$1")" 2>/dev/null || true' _ {} "${PHASE_DIR}/debug-artifacts" \;
+  fi
+fi
+
+# 1. Playwright junk dirs (after trace preservation above)
 find . -type d \( -name "test-results" -o -name "playwright-report" \
   -o -name ".playwright-mcp" \) \
   -not -path "./node_modules/*" -not -path "./.git/*" \
@@ -398,14 +419,6 @@ fi
 rm -f "${VG_TMP}"/goal-*-result.json 2>/dev/null
 rm -f "${VG_TMP}"/goal-*-baseline.json 2>/dev/null
 rm -f "${VG_TMP}"/vg-crossai-${PHASE_NUMBER}-*.md 2>/dev/null
-
-# 5. Videos/traces — keep ONLY if FAILED (debug value)
-if [ "$VERDICT" = "PASSED" ] || [ "$VERDICT" = "GAPS_FOUND" ]; then
-  find . -type f \( -name "*.webm" -o -name "trace.zip" \) \
-    -not -path "./node_modules/*" -not -path "./.git/*" -delete 2>/dev/null
-else
-  echo "Verdict = $VERDICT — keeping videos/traces for debug"
-fi
 
 echo "Cleanup complete. Evidence preserved: SANDBOX-TEST.md, goal-*.png, *.spec.ts"
 ```
