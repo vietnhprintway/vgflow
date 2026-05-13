@@ -310,3 +310,49 @@ touch "${PHASE_DIR}/.step-markers/0d_amend_invalidation_check.done"
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 0d_amend_invalidation_check 2>/dev/null || true
 ```
 </step>
+
+<step name="0e_next_command_crosscheck">
+## Step 0e — F8 PIPELINE-STATE next_command cross-check (Batch 12)
+
+Read `PIPELINE-STATE.json:next_command` (written by `test/close.md` per F1 Batch 10).
+Cross-check it routes to `/vg:accept`. Mismatch = WARN + BLOCK unless `--force`.
+
+```bash
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator step-active 0e_next_command_crosscheck 2>/dev/null || true
+
+# F8 Batch 12: PIPELINE-STATE.next_command cross-check
+PIPELINE_STATE="${PHASE_DIR}/PIPELINE-STATE.json"
+if [ -f "$PIPELINE_STATE" ]; then
+  EXPECTED_NEXT=$("${PYTHON_BIN:-python3}" -c "
+import json, sys
+from pathlib import Path
+try:
+    data = json.loads(Path('${PIPELINE_STATE}').read_text(encoding='utf-8'))
+    print(data.get('next_command', ''))
+except Exception:
+    pass
+" 2>/dev/null)
+  if [ -n "$EXPECTED_NEXT" ]; then
+    if echo "$EXPECTED_NEXT" | grep -q "/vg:accept"; then
+      echo "✓ F8: PIPELINE-STATE next_command='${EXPECTED_NEXT}' matches /vg:accept invocation"
+    else
+      echo "⚠ F8 WARN: PIPELINE-STATE.next_command='${EXPECTED_NEXT}' does NOT route to /vg:accept"
+      echo "   Test verdict likely BLOCKED/FAILED. Expected next: ${EXPECTED_NEXT}"
+      echo "   Continue at your own risk via --force, OR run: ${EXPECTED_NEXT}"
+      if echo "${ARGUMENTS:-}" | grep -q -- "--force"; then
+        echo "   --force flag set; continuing /vg:accept anyway..."
+      else
+        "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+          "accept.routing_mismatch_block" \
+          --payload "{\"phase\":\"${PHASE_NUMBER}\",\"expected_next\":\"${EXPECTED_NEXT}\"}" \
+          >/dev/null 2>&1 || true
+        exit 1
+      fi
+    fi
+  fi
+fi
+
+touch "${PHASE_DIR}/.step-markers/0e_next_command_crosscheck.done"
+"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step accept 0e_next_command_crosscheck 2>/dev/null || true
+```
+</step>
