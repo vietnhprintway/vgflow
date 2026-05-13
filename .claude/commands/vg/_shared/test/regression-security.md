@@ -99,17 +99,34 @@ run_on_target "cd ${PROJECT_PATH} && \
   npx playwright test \
     --config ${GENERATED_TESTS_DIR}/playwright.config.generated.ts \
     ${GENERATED_TESTS_DIR}/{phase}-goal-*.spec.ts"
+
+# 4. H13 (v4.12.0): extract per-failure detail for AI introspection.
+# Playwright JSON reporter writes playwright-results.json; extractor walks it,
+# pulls error_message + stack + console messages from trace.zip per failure,
+# emits TEST-FAILURE-REPORT.md for AI to read. CLI list-reporter alone shows
+# only PASS/FAIL counts — AI cannot diagnose without this artifact.
+POSTFAIL_EXTRACT="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/playwright-postfail-extract.py"
+[ -f "$POSTFAIL_EXTRACT" ] || POSTFAIL_EXTRACT="${REPO_ROOT:-.}/scripts/playwright-postfail-extract.py"
+RESULTS_JSON="${PROJECT_PATH}/playwright-results.json"
+[ -f "$RESULTS_JSON" ] || RESULTS_JSON="${PROJECT_PATH}/${GENERATED_TESTS_DIR}/playwright-results.json"
+if [ -f "$POSTFAIL_EXTRACT" ] && [ -f "$RESULTS_JSON" ]; then
+  "${PYTHON_BIN:-python3}" "$POSTFAIL_EXTRACT" \
+    --phase-dir "${PHASE_DIR}" \
+    --results-json "$RESULTS_JSON" \
+    --test-results-dir "${PROJECT_PATH}/test-results" || true
+fi
 ```
 
 Result:
 - All pass → PASS
-- Failures → record in SANDBOX-TEST.md with failure details
+- Failures → record in SANDBOX-TEST.md with failure details + TEST-FAILURE-REPORT.md (H13)
 
 On failure, append to SANDBOX-TEST.md:
 - trace.zip path: `test-results/<spec>/<test>/trace.zip` (open: `npx playwright show-trace <path>`)
 - video.webm path: `test-results/<spec>/<test>/video.webm`
 - screenshot path: `test-results/<spec>/<test>/test-failed-1.png`
 - After cleanup: traces/videos are preserved to `${PHASE_DIR}/debug-artifacts/` (non-PASSED verdict)
+- **H13 — AI-readable**: `${PHASE_DIR}/TEST-FAILURE-REPORT.md` — per-failure error message + stack + console messages from trace.zip + attachment paths. Generated automatically; AI reads this directly to diagnose without invoking MCP replay.
 
 On subsequent runs (`--regression-only`): just run generated tests. Fast, cheap, repeatable.
 

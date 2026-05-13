@@ -1,5 +1,48 @@
 # Changelog
 
+## v4.12.0 — H13: AI test introspection (per-failure detail extractor) (2026-05-13)
+
+User feedback (dogfood on PrintwayV3 phase 6 G-08/G-31 tests): `/vg:test`
+5e_regression invokes `npx playwright test` CLI which streams only PASS/FAIL
+counts via the list reporter. AI sees no browser console messages, no
+network failures, no per-test error stacks. After a failed run, the AI has
+no way to diagnose WHY a test failed without manually opening trace.zip
+(binary) or replaying via Playwright MCP.
+
+Batch 5 (v4.5.0) fixed HUMAN visibility (headed browser). H13 fixes AI
+introspection.
+
+### Fix (two-part)
+
+1. **Generated Playwright config always emits JSON reporter.**
+   `templates/vg/playwright.config.generated.template.ts` previously emitted
+   JSON only in CI mode. Now JSON is in BOTH branches (CI: `dot+json`,
+   interactive: `list+json+html`). `playwright-results.json` always present.
+
+2. **New `scripts/playwright-postfail-extract.py`.** After the test run,
+   the extractor walks the JSON reporter output, pulls per-failure
+   error_message + stack + duration + attachments (trace.zip + video.webm
+   + screenshot paths), attempts to extract console messages from
+   trace.zip, and writes `${PHASE_DIR}/TEST-FAILURE-REPORT.md` — an
+   AI-readable summary that lists every failure with the diagnostic info
+   needed to root-cause without invoking MCP replay.
+
+3. **regression-security.md 5e_regression invokes the extractor**
+   automatically after `npx playwright test`. Advisory mode (extractor
+   `exit 0` even on missing/malformed JSON). The report is always present
+   on failure paths.
+
+### Tests
+
+`tests/test_h13_ai_test_introspection.py` — 6 tests covering template JSON
+reporter, extractor happy/empty/malformed paths, regression-security.md
+wiring. All pass.
+
+### Closes
+
+H13 gap (dogfood-discovered after the formal 23-gap audit). Brings AI test
+introspection on par with human visibility from Batch 5.
+
 ## v4.11.0 — Global-only install vg-orchestrator path fix (#185) (2026-05-13)
 
 User-reported via vg bug-reporter: global-only installs missing
