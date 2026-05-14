@@ -1,5 +1,29 @@
 # Changelog
 
+## v4.33.2 — generate-codex-skills HARD-GATE-CODEX prose fix (2026-05-15)
+
+v4.33.1 Test CI failed: `test_review_global_paths.py` flagged
+`codex-skills/vg-review/SKILL.md:166` for literal `.claude/scripts` and
+`.claude/commands` strings in HARD-GATE-CODEX prose block.
+
+Root cause: `scripts/generate-codex-skills.sh` line 144-145 emitted:
+```
+Use global VGFlow paths so global-only installs work without project-local
+`.claude/scripts` or `.claude/commands`:
+```
+
+The literal `.claude/scripts` triggered `test_review_global_paths.py`'s
+review-only path scrubber even though the prose was telling Codex NOT to
+use those paths.
+
+Fix: rephrase to `${VG_HOME}/scripts and ${VG_HOME}/commands/vg ... without
+project-local copies`. No `.claude/scripts` or `.claude/commands/vg` literals
+in generated review SKILL.md.
+
+Verified: 4/4 GREEN locally
+(test_review_global_paths.py + test_codex_test_accept_step_parity.py).
+Mirror equivalence: 63/63 OK.
+
 ## v4.33.1 — codex-skills mirror regen hotfix (2026-05-15)
 
 v4.33.0 release CI + Test CI both failed with codex mirror drift.
