@@ -445,6 +445,38 @@ Final verdict rule: `SEC_TIER0_EXIT != 0` → FAIL regardless of Tier 1-4 outcom
 B8 validators are structured truth gates; grep tiers are advisory complements.
 
 ```bash
+# G3 Batch 27: aggregate Tier 0/1/2 critical+high findings → set
+# SECURITY_STATUS. Default unconditional PASS removed.
+SECURITY_CRITICAL_COUNT="${SECURITY_CRITICAL_COUNT:-0}"
+SECURITY_HIGH_COUNT="${SECURITY_HIGH_COUNT:-0}"
+SECURITY_TIER_FAIL="${SECURITY_TIER_FAIL:-0}"
+
+# Incorporate Tier 0 exit code into SECURITY_TIER_FAIL
+if [ "${SEC_TIER0_EXIT:-0}" -ne 0 ]; then
+  SECURITY_TIER_FAIL=1
+fi
+
+# Incorporate Tier 3 contract mismatches (CRITICAL level)
+if [ "${COPY_MISMATCHES:-0}" -gt 0 ]; then
+  SECURITY_CRITICAL_COUNT=$((SECURITY_CRITICAL_COUNT + COPY_MISMATCHES))
+fi
+
+# Incorporate Tier 4 runtime auth failures (CRITICAL level)
+if [ "${NEG_FAILURES:-0}" -gt 0 ]; then
+  SECURITY_CRITICAL_COUNT=$((SECURITY_CRITICAL_COUNT + NEG_FAILURES))
+fi
+
+if [ "${SECURITY_CRITICAL_COUNT:-0}" -gt 0 ] || [ "${SECURITY_HIGH_COUNT:-0}" -gt 0 ] || [ "${SECURITY_TIER_FAIL:-0}" -gt 0 ]; then
+  SECURITY_STATUS="FAIL"
+  SECURITY_REASON="${SECURITY_CRITICAL_COUNT} critical + ${SECURITY_HIGH_COUNT} high findings"
+  echo "⛔ G3: security audit FAIL — ${SECURITY_REASON}" >&2
+  "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" emit-event \
+    "test.security_audit_failed" \
+    --payload "{\"phase\":\"${PHASE_NUMBER}\",\"critical\":${SECURITY_CRITICAL_COUNT},\"high\":${SECURITY_HIGH_COUNT}}" >/dev/null 2>&1 || true
+else
+  SECURITY_STATUS="PASS"
+fi
+
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
   --phase-dir "${PHASE_DIR}" --step "5f_security_audit" --status "${SECURITY_STATUS:-PASS}" \
