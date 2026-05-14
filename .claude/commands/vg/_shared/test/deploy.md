@@ -89,6 +89,23 @@ mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step test 5a_deploy 2>/dev/null || true
 ```
 
+```bash
+# Batch 26: FE route wiring probe — catch un-wired routes post-deploy
+ROUTE_PROBE="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/probe-fe-routes.py"
+[ -f "$ROUTE_PROBE" ] || ROUTE_PROBE="${REPO_ROOT:-.}/scripts/probe-fe-routes.py"
+if [ -f "$ROUTE_PROBE" ] && [ -d "${PHASE_DIR}/API-CONTRACTS" ]; then
+  FE_BASE_URL="${FE_BASE_URL:-http://localhost:5173}"
+  "${PYTHON_BIN:-python3}" "$ROUTE_PROBE" \
+    --phase-dir "${PHASE_DIR}" \
+    --base-url "$FE_BASE_URL" \
+    --json > "${PHASE_DIR}/.route-probe.json" 2>&1 || {
+    echo "WARN Batch 26: FE route probe found un-wired route(s) — see ${PHASE_DIR}/.route-probe.json" >&2
+    "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" emit-event \
+      "test.fe_route_unwired" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+  }
+fi
+```
+
 Display:
 ```
 5a Deploy:
