@@ -1195,6 +1195,46 @@ User sẽ thấy banner đầy đủ BEFORE spawn + structured description trong
   - `none` mode: no Haiku agents spawned (cli-tool/library)
 
 ```bash
+# F4 Batch 19: per-view evidence contract — Agent claims to tour N views,
+# must produce N scan-*.json files tagged with current run_id.
+NAV_DISCOVERY="${PHASE_DIR}/.review/nav-discovery.json"
+if [ ! -f "$NAV_DISCOVERY" ]; then
+  # Fallback: check top-level nav-discovery.json (older layout)
+  NAV_DISCOVERY="${PHASE_DIR}/nav-discovery.json"
+fi
+if [ -f "$NAV_DISCOVERY" ]; then
+  ASSIGNED_VIEWS=$("${PYTHON_BIN:-python3}" -c "
+import json
+d = json.loads(open('${NAV_DISCOVERY}', encoding='utf-8').read())
+print(len(d.get('views', d.get('assigned_views', []))))
+" 2>/dev/null || echo "0")
+  SCAN_COUNT=$(find "${PHASE_DIR}/.scan" -maxdepth 1 -name "scan-*.json" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${ASSIGNED_VIEWS:-0}" -ne "${SCAN_COUNT:-0}" ]; then
+    echo "⛔ F4 BLOCK: nav-discovery assigned ${ASSIGNED_VIEWS} views but only ${SCAN_COUNT} scan-*.json files found" >&2
+    echo "   Agent claims '${ASSIGNED_VIEWS} views toured' — evidence does not match." >&2
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.browser_tour_evidence_gap" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"assigned\":${ASSIGNED_VIEWS},\"scans\":${SCAN_COUNT}}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+  # Provenance — each scan must reference current run_id
+  CURRENT_RUN_ID="${VG_RUN_ID:-$(cat ".vg/active-runs/${VG_SESSION_ID:-current}.json" 2>/dev/null | "${PYTHON_BIN:-python3}" -c "import json,sys; print(json.load(sys.stdin).get('run_id',''))" 2>/dev/null)}"
+  if [ -n "$CURRENT_RUN_ID" ]; then
+    STALE_SCANS=$(find "${PHASE_DIR}/.scan" -name "scan-*.json" 2>/dev/null | while read f; do
+      if ! grep -q "\"run_id\": *\"${CURRENT_RUN_ID}\"" "$f" 2>/dev/null; then
+        echo "$f"
+      fi
+    done | wc -l | tr -d ' ')
+    if [ "${STALE_SCANS:-0}" -gt 0 ]; then
+      echo "⚠ F4: ${STALE_SCANS} scan(s) from prior runs detected (not current run_id ${CURRENT_RUN_ID})" >&2
+      "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "review.browser_tour_stale_scans" \
+        --payload "{\"phase\":\"${PHASE_NUMBER}\",\"stale\":${STALE_SCANS}}" >/dev/null 2>&1 || true
+    fi
+  fi
+  echo "✓ F4: ${SCAN_COUNT}/${ASSIGNED_VIEWS} views have scan evidence"
+fi
+```
+
+```bash
 # F11 Batch 11: review lane step-status ledger — api-and-discovery step
 "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
   --phase-dir "${PHASE_DIR}" \
