@@ -444,13 +444,13 @@ plan row or the next row. Do not exceed the 6-row `codex_plan_window` budget.
     `create_task_tracker` preflight runs filter-steps.py to count expected steps for `$PROFILE`.
     Browser-based steps (phase 2 discovery) carry `profile="web-fullstack,web-frontend-only"` — skipped for backend-only/cli/library.
 11. **Resume model (v1.14.4+)** — no mid-phase-2 resume. Step-level idempotency via `.step-markers/*.done` + per-view atomic `scan-*.json` is sufficient. If discovery dies mid-run, re-run `/vg:review {phase}` from scratch OR `/vg:review {phase} --retry-failed` (requires RUNTIME-MAP already written).
-12. **Post-build test-spec gate (v3.6.6)** — first full review requires `/vg:test-spec {phase}` artifacts (`DEEP-TEST-SPECS.md`, `LIFECYCLE-SPECS.json`, `TEST-FIXTURE-DAG.json`, `TEST-EXECUTION-PLAN.json`, `TEST-SPEC-LOCALIZER/PROMPT.md`, `PLAYWRIGHT-SPEC-PLAN.md`). Review consumes them as the lifecycle contract; it does not invent deep test specs late.
+12. **Review writes RUNTIME-MAP (v4.0)** — review produces `RUNTIME-MAP.json` + `GOAL-COVERAGE-MATRIX.md` that downstream `/vg:test-spec` consumes as lifecycle contract. Review does NOT depend on test-spec running first.
 </rules>
 
 <objective>
 Step 4 of V5.1 pipeline. Replaces old "audit" step. Combines static code scan + live browser discovery + iterative fix loop + goal comparison.
 
-Pipeline: specs → scope → blueprint → build → test-spec → **review** → test → accept
+Pipeline: specs → scope → blueprint → build → **review** → test-spec → test → accept
 
 4 Phases:
 - Phase 1: CODE SCAN — grep contracts + count elements (fast, automated, <10 sec)
