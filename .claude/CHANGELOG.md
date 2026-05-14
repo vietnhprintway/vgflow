@@ -1,5 +1,20 @@
 # Changelog
 
+## v4.33.1 — codex-skills mirror regen hotfix (2026-05-15)
+
+v4.33.0 release CI + Test CI both failed with codex mirror drift.
+Batches 29-35 modified `commands/vg/**/*.md` without regenerating
+`codex-skills/`. Test `test_codex_test_accept_step_parity.py` caught it.
+
+Fix: `bash scripts/generate-codex-skills.sh --force --force-overwrite-curated`
+regenerated 77 codex-skill mirrors. `verify-codex-mirror-equivalence.py`
+local run: 63/63 OK. Affected files (delta lines):
+- codex-skills/vg-review/SKILL.md
+- codex-skills/vg-scope/SKILL.md
+- codex-skills/vg-test-spec/SKILL.md
+- codex-skills/vg-test/SKILL.md (+58)
+- vg-accept/vg-blueprint/vg-build/vg-deploy/vg-field-test/vg-roam/vg-specs touched
+
 ## v4.33.0 — Batches 29–35: test+blueprint+testspec gate hardening (2026-05-15)
 
 7-batch shipment closing remaining SCAFFOLD/PARTIAL markers from

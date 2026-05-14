@@ -18,18 +18,21 @@ the workflow entrypoint. Keep the current Codex runtime, export
 `VG_RUNTIME=codex`, use Codex `update_plan` for the compact visible task
 window, and bind it with `vg-orchestrator tasklist-projected --adapter codex`.
 
-`.claude/scripts/*` and `.claude/commands/*` are canonical VGFlow source
-paths shared by both adapters; those paths do not mean the runtime changed to
-Claude. References below to "Claude CLI", `TodoWrite`, or Haiku describe the
-Claude adapter only. Codex must map them through this adapter contract instead
-of aborting the current run and relaunching Claude.
+VGFlow source paths are resolved through global `VG_HOME` (default:
+`~/.vgflow`). Project-local Claude workflow files may be absent in
+global-only installs; Codex must use
+`${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}` and
+`${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}` for workflow
+helpers. References below to "Claude CLI", `TodoWrite`, or Haiku describe
+the Claude adapter only. Codex must map them through this adapter contract
+instead of aborting the current run and relaunching Claude.
 
 ### Tool mapping
 
 | Claude Code concept | Codex-compatible pattern | Notes |
 |---|---|---|
 | AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it; prefer Codex-native options such as `codex-inline` when the source prompt distinguishes providers. |
-| Agent(...) / Task | Prefer `commands/vg/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
+| Agent(...) / Task | Prefer `${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
 | TaskCreate / TaskUpdate / TodoWrite | Compact Codex plan window + orchestrator step markers | Use `tasklist-contract.json` as source of truth. Do not paste the full hierarchy into Codex `update_plan`. Show at most 6 rows: active group/step first, next 2-3 pending steps, completed groups collapsed, and `+N pending`. After projecting, emit `vg-orchestrator tasklist-projected --adapter codex`. |
 | Playwright MCP | Main Codex orchestrator MCP tools, or smoke-tested subagents | If an MCP-using subagent cannot access tools in a target environment, fall back to orchestrator-driven/inline scanner flow. |
 | Graphify MCP | Python/CLI graphify calls | VGFlow's build/review paths already use deterministic scripts where possible. |
@@ -46,7 +49,7 @@ in the body below.
 
 | Source pattern | Claude path | Codex path |
 |---|---|---|
-| Planner/research/checker Agent | Use the source `Agent(...)` call and configured model tier | Use native Codex subagents only if the local Codex version has been smoke-tested; otherwise write the child prompt to a temp file and call `commands/vg/_shared/lib/codex-spawn.sh --tier planner` |
+| Planner/research/checker Agent | Use the source `Agent(...)` call and configured model tier | Use native Codex subagents only if the local Codex version has been smoke-tested; otherwise write the child prompt to a temp file and call `${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}/_shared/lib/codex-spawn.sh --tier planner` |
 | Build executor Agent | Use the source executor `Agent(...)` call | Use `codex-spawn.sh --tier executor --sandbox workspace-write` with explicit file ownership and expected artifact output |
 | Adversarial/CrossAI reviewer | Use configured external CLIs and consensus validators | Use configured `codex exec`/Gemini/Claude commands from `.claude/vg.config.md`; fail if required CLI output is missing or unparsable |
 | Haiku scanner / Playwright / Maestro / MCP-heavy work | Use Claude subagents where the source command requires them | Keep MCP-heavy work in the main Codex orchestrator unless child MCP access was smoke-tested; scanner work may run inline/sequential instead of parallel, but must write the same scan artifacts and events |
@@ -69,34 +72,6 @@ orchestrator that writes `.vg/events.db`:
 Codex hook parity is evidence-based: `.vg/events.db`, step markers,
 `must_emit_telemetry`, and `run-complete` output are authoritative. A Codex
 run is not complete just because the model says it is complete.
-
-<HARD-GATE-CODEX>
-Codex has no PreToolUse/PostToolUse hooks. Claude Code's `vg-step-tracker.py`
-hook auto-emits `must_touch_markers` declared in `commands/vg/deploy.md`;
-Codex does NOT receive that signal. AI MUST emit each HARD marker manually
-after the corresponding STEP's primary action completes — failure to do so
-causes the contract validator to reject the run with "8/N markers found".
-
-After each STEP's primary action completes, run:
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy <marker>
-```
-
-Required HARD markers for /vg:deploy (v2.65.0 A9):
-
-| STEP | Marker |
-|---|---|
-| 0 (parse + validate) | `0_parse_and_validate` |
-| 0a (env select + confirm) | `0a_env_select_and_confirm` |
-| 1 (deploy per env) | `1_deploy_per_env` |
-| 2 (persist summary) | `2_persist_summary` |
-| Final close | `complete` |
-
-All five are HARD — none has severity:warn in `commands/vg/deploy.md`. The
-existing skill body already emits these inline; this reminder protects
-against accidental removal during future regeneration.
-</HARD-GATE-CODEX>
 
 Before executing command bash blocks from a Codex skill, export
 `VG_RUNTIME=codex`. This is an adapter signal, not a source replacement:
@@ -152,7 +127,7 @@ that model in the target account, via `VG_CODEX_MODEL_PLANNER`,
 For subprocess-based children, use:
 
 ```bash
-bash .claude/commands/vg/_shared/lib/codex-spawn.sh \
+bash "${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}/_shared/lib/codex-spawn.sh" \
   --tier executor \
   --prompt-file "$PROMPT_FILE" \
   --out "$OUT_FILE" \
@@ -181,6 +156,31 @@ process that cannot see browser tools.
 
 Invoke this skill as `$vg-deploy`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
+
+<HARD-GATE-CODEX>
+Codex has no Claude PreToolUse/PostToolUse hook substrate. Claude hooks may
+auto-emit step markers, but Codex MUST emit the same hard markers explicitly
+after each matching STEP primary action.
+
+Use global VGFlow paths so global-only installs work without project-local
+`.claude/scripts` or `.claude/commands`:
+
+```bash
+VG_HOME="${VG_HOME:-$HOME/.vgflow}"
+VG_SCRIPT_ROOT="${VG_SCRIPT_ROOT:-${VG_HOME}/scripts}"
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step deploy 0_parse_and_validate
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step deploy 0a_env_select_and_confirm
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step deploy 1_deploy_per_env
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step deploy 2_persist_summary
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step deploy complete
+```
+
+Hook/spawn mechanics may differ by provider, but marker names, order, gates,
+must-write artifacts, and telemetry contract stay identical to the Claude
+command source.
+</HARD-GATE-CODEX>
+
+
 
 <HARD-GATE>
 You MUST follow STEP 0 through `complete` in exact order. Each step is gated
@@ -220,7 +220,7 @@ Downstream env gates (review/test/roam step 0a) read this state via
 evidence in the AskUserQuestion options. The pipeline becomes:
 
 ```
-specs → scope → blueprint → build → [DEPLOY] → review → test → [roam] → accept
+specs → scope → blueprint → build → [DEPLOY] → review → test-spec → test → [roam] → accept
                                        ↑                  ↑      ↑       ↑
                                    writes              all read DEPLOY-STATE
                                    DEPLOY-STATE        for env recommendation
@@ -235,46 +235,17 @@ AskUserQuestion. /vg:deploy just feeds the suggestion data layer.
 ### Preflight section (extracted v2.73.0 T1)
 
 Read `_shared/deploy/preflight.md` and follow it exactly.
-Includes 2 steps: 0_parse_and_validate (resolve phase dir, build-status gate, run-start, emit-tasklist, native tasklist projection) and 0a_env_select_and_confirm (multi-select env picker + prod danger gate with --prod-confirm-token bypass).
-
-Step coverage: 0_parse_and_validate, 0a_env_select_and_confirm.
-
-CODEX NOTE: After preflight's primary actions complete (args parsed, tasklist projected, env selection persisted, prod gate satisfied), emit the HARD markers manually (Codex hook fallback):
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy 0_parse_and_validate
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy 0a_env_select_and_confirm
-```
+Includes 2 steps: 0_parse_and_validate, 0a_env_select_and_confirm.
 
 ### Execute per-env (extracted v2.73.0 T2)
 
 Read `_shared/deploy/execute.md` and follow it exactly.
-Includes 1 step: 1_deploy_per_env (sequential per-env deploy loop — resolve env config, spawn vg-deploy-executor per env, parse RESULT_JSON, narrate health, accumulate into deploy-results.json, ask user on failure). Per-env contract refs: `_shared/deploy/per-env-executor-contract.md` (spawn schema + post-spawn validation) and `_shared/deploy/overview.md` (flow).
-
-Step coverage: 1_deploy_per_env.
-
-CODEX NOTE: For per-env executor spawn, the source `Agent(subagent_type="vg-deploy-executor", ...)` call maps to `codex-spawn.sh --tier executor --sandbox workspace-write` (per codex_spawn_precedence table above — build executor row). Independent envs run sequentially (rule 2: shared SSH/DB contention); do NOT parallelize. After deploy loop completes, emit:
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy 1_deploy_per_env
-```
+Includes 1 step: 1_deploy_per_env.
 
 ### Persist + close (extracted v2.73.0 T3 — final)
 
 Read `_shared/deploy/persist-and-close.md` and follow it exactly.
-Includes 2 closing steps: 2_persist_summary (merge per-env results into DEPLOY-STATE.json deployed.{env} block via vg-deploy-merge-summary.py, preserve preferred_env_for / preferred_env_for_skipped, emit phase.deploy_completed telemetry) and complete (close native tasklist + run-complete). Post-deploy reflector trigger fires when meta_memory_mode != "disabled".
-
-Step coverage: 2_persist_summary, complete.
-
-CODEX NOTE: After merge + summary persist and final close, emit the HARD markers + run-complete:
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy 2_persist_summary
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step deploy complete
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete 2>&1 | tail -1 || true
-```
-
-The terminal `vg-orchestrator run-complete` MUST be called by `_shared/deploy/persist-and-close.md`; on non-zero exit, fix evidence and retry per Stop hook parity contract above.
+Includes 2 steps: 2_persist_summary, complete.
 
 </process>
 

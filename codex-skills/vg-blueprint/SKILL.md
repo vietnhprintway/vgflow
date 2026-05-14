@@ -18,18 +18,21 @@ the workflow entrypoint. Keep the current Codex runtime, export
 `VG_RUNTIME=codex`, use Codex `update_plan` for the compact visible task
 window, and bind it with `vg-orchestrator tasklist-projected --adapter codex`.
 
-`.claude/scripts/*` and `.claude/commands/*` are canonical VGFlow source
-paths shared by both adapters; those paths do not mean the runtime changed to
-Claude. References below to "Claude CLI", `TodoWrite`, or Haiku describe the
-Claude adapter only. Codex must map them through this adapter contract instead
-of aborting the current run and relaunching Claude.
+VGFlow source paths are resolved through global `VG_HOME` (default:
+`~/.vgflow`). Project-local Claude workflow files may be absent in
+global-only installs; Codex must use
+`${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}` and
+`${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}` for workflow
+helpers. References below to "Claude CLI", `TodoWrite`, or Haiku describe
+the Claude adapter only. Codex must map them through this adapter contract
+instead of aborting the current run and relaunching Claude.
 
 ### Tool mapping
 
 | Claude Code concept | Codex-compatible pattern | Notes |
 |---|---|---|
 | AskUserQuestion | Ask concise questions in the main Codex thread | Codex does not expose the same structured prompt tool inside generated skills. Persist answers where the skill requires it; prefer Codex-native options such as `codex-inline` when the source prompt distinguishes providers. |
-| Agent(...) / Task | Prefer `commands/vg/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
+| Agent(...) / Task | Prefer `${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}/_shared/lib/codex-spawn.sh` or native Codex subagents | Use `codex exec` when exact model, timeout, output file, or schema control matters. |
 | TaskCreate / TaskUpdate / TodoWrite | Compact Codex plan window + orchestrator step markers | Use `tasklist-contract.json` as source of truth. Do not paste the full hierarchy into Codex `update_plan`. Show at most 6 rows: active group/step first, next 2-3 pending steps, completed groups collapsed, and `+N pending`. After projecting, emit `vg-orchestrator tasklist-projected --adapter codex`. |
 | Playwright MCP | Main Codex orchestrator MCP tools, or smoke-tested subagents | If an MCP-using subagent cannot access tools in a target environment, fall back to orchestrator-driven/inline scanner flow. |
 | Graphify MCP | Python/CLI graphify calls | VGFlow's build/review paths already use deterministic scripts where possible. |
@@ -46,7 +49,7 @@ in the body below.
 
 | Source pattern | Claude path | Codex path |
 |---|---|---|
-| Planner/research/checker Agent | Use the source `Agent(...)` call and configured model tier | Use native Codex subagents only if the local Codex version has been smoke-tested; otherwise write the child prompt to a temp file and call `commands/vg/_shared/lib/codex-spawn.sh --tier planner` |
+| Planner/research/checker Agent | Use the source `Agent(...)` call and configured model tier | Use native Codex subagents only if the local Codex version has been smoke-tested; otherwise write the child prompt to a temp file and call `${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}/_shared/lib/codex-spawn.sh --tier planner` |
 | Build executor Agent | Use the source executor `Agent(...)` call | Use `codex-spawn.sh --tier executor --sandbox workspace-write` with explicit file ownership and expected artifact output |
 | Adversarial/CrossAI reviewer | Use configured external CLIs and consensus validators | Use configured `codex exec`/Gemini/Claude commands from `.claude/vg.config.md`; fail if required CLI output is missing or unparsable |
 | Haiku scanner / Playwright / Maestro / MCP-heavy work | Use Claude subagents where the source command requires them | Keep MCP-heavy work in the main Codex orchestrator unless child MCP access was smoke-tested; scanner work may run inline/sequential instead of parallel, but must write the same scan artifacts and events |
@@ -124,7 +127,7 @@ that model in the target account, via `VG_CODEX_MODEL_PLANNER`,
 For subprocess-based children, use:
 
 ```bash
-bash .claude/commands/vg/_shared/lib/codex-spawn.sh \
+bash "${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg}/_shared/lib/codex-spawn.sh" \
   --tier executor \
   --prompt-file "$PROMPT_FILE" \
   --out "$OUT_FILE" \
@@ -153,6 +156,43 @@ process that cannot see browser tools.
 
 Invoke this skill as `$vg-blueprint`. Treat all user text after the skill name as arguments.
 </codex_skill_adapter>
+
+<HARD-GATE-CODEX>
+Codex has no Claude PreToolUse/PostToolUse hook substrate. Claude hooks may
+auto-emit step markers, but Codex MUST emit the same hard markers explicitly
+after each matching STEP primary action.
+
+Use global VGFlow paths so global-only installs work without project-local
+`.claude/scripts` or `.claude/commands`:
+
+```bash
+VG_HOME="${VG_HOME:-$HOME/.vgflow}"
+VG_SCRIPT_ROOT="${VG_SCRIPT_ROOT:-${VG_HOME}/scripts}"
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 0_design_discovery
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 0_amendment_preflight
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 1_parse_args
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint create_task_tracker
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2_verify_prerequisites
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2a_plan
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2a5_cross_system_check
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2b_contracts
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2b5_test_goals
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2b5d_expand_from_crud_surfaces
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2c_verify
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2c_verify_plan_paths
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2c_utility_reuse
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2c_compile_check
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2d_validation_gate
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2d_test_type_coverage
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2d_goal_grounding
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 2e_bootstrap_reflection
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT}/vg-orchestrator" mark-step blueprint 3_complete
+```
+
+Hook/spawn mechanics may differ by provider, but marker names, order, gates,
+must-write artifacts, and telemetry contract stay identical to the Claude
+command source.
+</HARD-GATE-CODEX>
 
 
 
@@ -212,53 +252,11 @@ Claude Code docs). DO NOT generate PLAN.md or API-CONTRACTS.md inline.
 | "Spawn Task() như cũ" | Tool name is `Agent`, not `Task` (Codex fix #3) |
 | "Block message bỏ qua, retry là xong" | §4.5 Layer 2: vg.block.fired must pair with vg.block.handled or Stop blocks |
 
-<HARD-GATE-CODEX>
-Codex has no PreToolUse/PostToolUse hooks. Claude Code's `vg-step-tracker.py`
-hook auto-emits `must_touch_markers` declared in `commands/vg/blueprint.md`;
-Codex does NOT receive that signal. AI MUST emit each HARD marker manually
-after the corresponding STEP's primary action completes — failure to do so
-causes the contract validator to reject the run with "8/N markers found".
-
-After each STEP's primary action completes, run:
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint <marker>
-```
-
-Required HARD markers for /vg:blueprint (v2.65.0 A9):
-
-| STEP | Marker(s) to emit |
-|---|---|
-| STEP 1 (preflight) | `0_amendment_preflight`, `0_design_discovery`, `1_parse_args`, `create_task_tracker`, `2_verify_prerequisites` |
-| STEP 3 (plan, subagent) | `2a_plan`, `2a5_cross_system_check` |
-| STEP 4 (contracts, subagent) | `2b_contracts`, `2b5_test_goals`, `2b5d_expand_from_crud_surfaces` |
-| STEP 5 (verify) | `2c_verify`, `2c_verify_plan_paths`, `2c_utility_reuse`, `2c_compile_check` |
-| STEP 6 (close) | `2d_validation_gate`, `2d_test_type_coverage`, `2d_goal_grounding`, `2e_bootstrap_reflection`, `3_complete` |
-
-Profile-gated markers (`2_fidelity_profile_lock`, `2b6c_view_decomposition`,
-`2b6_ui_spec`, `2b6b_ui_map`, `2b7_flow_detect`, `2b6d_fe_contracts`,
-`2b9_workflows`) and severity:warn markers (`2b5e_a_lens_walk`,
-`2b5e_edge_cases`, `2b8_rcrurdr_invariants`, `2b5a_codex_test_goal_lane`,
-`2d_crossai_review`) are advisory; emit them when the matching profile
-branch executes.
-</HARD-GATE-CODEX>
-
 ## Steps (6 checklist groups)
 
 ### STEP 1 — preflight
 Read `_shared/blueprint/preflight.md` and follow it exactly.
 This step includes the IMPERATIVE TodoWrite call after emit-tasklist.py.
-
-After STEP 1 finishes (Codex hook fallback — these markers fire only on
-Claude via hooks):
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 0_amendment_preflight
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 0_design_discovery
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 1_parse_args
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint create_task_tracker
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2_verify_prerequisites
-```
 
 ### `--only=<step>` (selective re-run, Codex round-2 Amendment D)
 
@@ -287,31 +285,10 @@ Read `_shared/blueprint/plan-overview.md` AND `_shared/blueprint/plan-delegation
 Then call `Agent(subagent_type="vg-blueprint-planner", prompt=<from delegation>)`.
 DO NOT plan inline.
 
-After the planner subagent returns (PLAN.md written + cross-system check done):
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2a_plan
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2a5_cross_system_check
-```
-
 ### STEP 4 — contracts (HEAVY)
 Read `_shared/blueprint/contracts-overview.md` AND `_shared/blueprint/contracts-delegation.md`.
 Then call `Agent(subagent_type="vg-blueprint-contracts", prompt=<from delegation>)`.
 DO NOT generate contracts inline.
-
-Contracts MUST NOT create `${PHASE_DIR}/LIFECYCLE-SPECS.json`. Blueprint only
-authors API/CRUD/TEST-GOALS. Post-build `/vg:test-spec` owns
-`LIFECYCLE-SPECS.json`, `DEEP-TEST-SPECS.md`, `TEST-FIXTURE-DAG.json`, and
-`PLAYWRIGHT-SPEC-PLAN.md` after implemented DOM/routes/API/forms exist.
-
-After the contracts subagent returns (API-CONTRACTS.md, TEST-GOALS, expand
-from CRUD surfaces complete):
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b_contracts
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b5_test_goals
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b5d_expand_from_crud_surfaces
-```
 
 After contracts subagent returns, run `2b5e_a_lens_walk` then `2b5e_edge_cases`:
 
@@ -331,28 +308,8 @@ EDGE-CASES table. Output: `EDGE-CASES.md` (Layer 3) + `EDGE-CASES/index.md`
 ### STEP 5 — verify (7 grep/path checks)
 Read `_shared/blueprint/verify.md` and follow it exactly.
 
-After STEP 5's verify checks all pass:
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c_verify
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c_verify_plan_paths
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c_utility_reuse
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2c_compile_check
-```
-
 ### STEP 6 — close (reflection + run-complete + tasklist clear)
 Read `_shared/blueprint/close.md` and follow it exactly.
-
-After STEP 6 finishes (validation gate, type coverage, goal grounding,
-reflection, run-complete):
-
-```bash
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2d_validation_gate
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2d_test_type_coverage
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2d_goal_grounding
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2e_bootstrap_reflection
-"${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 3_complete
-```
 
 ## Diagnostic flow (5 layers — see vg-meta-skill.md)
 
