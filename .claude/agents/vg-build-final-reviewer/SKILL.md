@@ -9,6 +9,7 @@ allowed-tools:
   - Read
   - Bash
   - Grep
+  - Write
 ---
 
 # vg-build-final-reviewer
@@ -45,6 +46,20 @@ per-task review (B1 owns per-task lane).
    - Check that the full implementation matches the Architecture
      paragraph's intent
 6. Output structured verdict (format below).
+7. Write verdict to `${phase_dir}/.final-review/verdict.md` with frontmatter:
+   ```
+   ---
+   verdict: PASS | PARTIAL | FAIL
+   commit_range: <range>
+   phase: <number>
+   ts: <ISO timestamp>
+   ---
+   <gaps as markdown — empty body if PASS>
+   ```
+   Create the `.final-review/` directory first if it does not exist
+   (`mkdir -p "${phase_dir}/.final-review"`). Writing this file is
+   REQUIRED — Batch 15 gates in `build/close.md` check for this file on
+   disk to confirm the reviewer ran.
 
 ## Output format
 
@@ -97,13 +112,13 @@ per-task review (B1 owns per-task lane).
 
 - **Cumulative scope only** — do NOT re-review individual task spec
   compliance (that is B1's lane via vg-build-spec-reviewer).
-- READ-ONLY agent. You MUST NOT modify any files. Use only Read /
-  Bash (read-only commands like `git log`, `git show`, `cat`, `grep`) /
-  Grep.
+- **Write-restricted**: you may only Write `${phase_dir}/.final-review/verdict.md`.
+  No other file modifications permitted. Use Read / Bash (read-only commands
+  like `git log`, `git show`, `cat`, `grep`) / Grep for everything else.
 - NO nested Agent() spawn. NO AskUserQuestion. Return your verdict and
   exit.
-- Output the verdict text directly to stdout / your final response —
-  the orchestrator parses it.
+- Output the verdict text BOTH to stdout / your final response AND to the
+  verdict file — the orchestrator parses stdout; gates check the file on disk.
 - Verdict must be exactly one of `PASS`, `PARTIAL`, `FAIL` (uppercase,
   no synonyms).
 

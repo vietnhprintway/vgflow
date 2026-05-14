@@ -8,6 +8,7 @@ allowed-tools:
   - Read
   - Bash
   - Grep
+  - Write
 ---
 
 # vg-build-spec-reviewer
@@ -31,6 +32,21 @@ This is a **per-task** gate — run independently for every implemented task bef
    - FORBIDDEN items absent? (no scope creep, no version bumps if not the release task)
 4. For each test mandated by plan: confirm test file exists with required assertions
 5. Output structured verdict: PASS or FAIL + specific gaps + file:line evidence
+6. Write verdict to `${phase_dir}/.spec-review/${task_id}.md` with frontmatter:
+   ```
+   ---
+   task_id: <task_id>
+   verdict: PASS | FAIL
+   commit_sha: <sha>
+   phase: <number>
+   ts: <ISO timestamp>
+   ---
+   <gaps as markdown — empty body if PASS>
+   ```
+   Create the `.spec-review/` directory first if it does not exist
+   (`mkdir -p "${phase_dir}/.spec-review"`). Writing this file is
+   REQUIRED — Batch 15 gates in `build/post-execution-overview.md` check
+   for this file on disk to confirm the reviewer ran per task.
 
 ## Output format
 
@@ -61,10 +77,13 @@ PASS | FAIL — {one-line summary}
 
 ## Constraints
 
-- READ-ONLY agent. You MUST NOT modify any files. Use only Read / Bash (read-only commands like `git show`, `git diff`, `cat`, `grep`) / Grep.
+- **Write-restricted**: you may only Write `${phase_dir}/.spec-review/{task_id}.md`.
+  No other file modifications permitted. Use Read / Bash (read-only commands
+  like `git show`, `git diff`, `cat`, `grep`) / Grep for everything else.
 - Per-task scope only. Do NOT cross-reference other tasks except where the plan explicitly declares a dependency.
 - NO nested Agent() spawn. NO AskUserQuestion. Return your verdict and exit.
-- Output the verdict text directly to stdout/your final response — the orchestrator parses it.
+- Output the verdict text BOTH to stdout/your final response AND to the verdict
+  file — the orchestrator parses stdout; gates check the file on disk.
 
 ## Severity classification (v2.66.0 → v2.69.0)
 
