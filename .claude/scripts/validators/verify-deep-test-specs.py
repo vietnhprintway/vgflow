@@ -134,18 +134,81 @@ def validate_goal_contract(out: Output, args: argparse.Namespace, phase_dir: Pat
                 add_error(out, args, type=f"execution_plan_{key}_missing", message=f"{goal_id} execution_plan.{key} missing", file=lifecycle_path, expected=f"{key}[] non-empty")
 
 
+def _check_goal_parity(phase_dir: Path) -> tuple[bool, list[str]]:
+    """Returns (ok, omitted_goal_ids). Goals are 'automatable' unless skipped."""
+    import re
+    tg_path = phase_dir / "TEST-GOALS.md"
+    ls_path = phase_dir / "LIFECYCLE-SPECS.json"
+    if not tg_path.is_file() or not ls_path.is_file():
+        return True, []  # nothing to check
+    automatable_goals: set[str] = set()
+    body = tg_path.read_text(encoding="utf-8")
+    for m in re.finditer(r"^##\s+(G-\d+)\b", body, re.M):
+        gid = m.group(1)
+        # Find this goal's section
+        sec_start = m.start()
+        next_sec = re.search(r"\n##\s+G-\d+\b", body[sec_start + 1:])
+        sec_end = sec_start + 1 + next_sec.start() if next_sec else len(body)
+        sec = body[sec_start:sec_end]
+        if re.search(r"automation:\s*(?:no|skip|deferred)", sec, re.I):
+            continue
+        automatable_goals.add(gid)
+    try:
+        ls = json.loads(ls_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False, sorted(automatable_goals)
+    emitted = set(ls.get("goals", {}).keys())
+    skipped_with_reason: set[str] = set()
+    for gid, gdata in ls.get("goals", {}).items():
+        if isinstance(gdata, dict) and (gdata.get("skipped", False) or gdata.get("skip_reason")):
+            skipped_with_reason.add(gid)
+    omitted = automatable_goals - emitted - skipped_with_reason
+    return len(omitted) == 0, sorted(omitted)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", required=True)
+    # --phase-dir takes precedence for direct path; --phase uses find_phase_dir
+    parser.add_argument("--phase", default=None)
+    parser.add_argument("--phase-dir", default=None, type=Path,
+                        help="Direct path to phase directory (overrides --phase)")
     parser.add_argument("--severity", choices=["block", "warn"], default="block")
+    parser.add_argument("--check-goal-parity", action="store_true",
+                        help="F3 Batch 22: fail if TEST-GOALS.md automatable goals "
+                             "are missing from LIFECYCLE-SPECS.json")
     args = parser.parse_args()
+
+    if args.phase_dir is None and args.phase is None:
+        parser.error("--phase or --phase-dir is required")
 
     out = Output(validator="deep-test-specs")
     with timer(out):
-        phase_dir = find_phase_dir(args.phase)
-        if phase_dir is None:
-            out.add(Evidence(type="phase_not_found", message=f"Phase not found: {args.phase}"))
-            emit_and_exit(out)
+        if args.phase_dir is not None:
+            phase_dir = args.phase_dir
+            if not phase_dir.is_dir():
+                out.add(Evidence(type="phase_not_found", message=f"Phase dir not found: {phase_dir}"))
+                emit_and_exit(out)
+        else:
+            phase_dir = find_phase_dir(args.phase)
+            if phase_dir is None:
+                out.add(Evidence(type="phase_not_found", message=f"Phase not found: {args.phase}"))
+                emit_and_exit(out)
+
+        # F3 Batch 22: goal parity check
+        if args.check_goal_parity:
+            ok, omitted = _check_goal_parity(phase_dir)
+            if not ok:
+                out.add(
+                    Evidence(
+                        type="goal_parity_fail",
+                        message=f"F3 parity: automatable goals missing from LIFECYCLE-SPECS.json: {', '.join(omitted)}",
+                        file=str(phase_dir / "LIFECYCLE-SPECS.json"),
+                        expected="all TEST-GOALS.md automatable goals present in LIFECYCLE-SPECS.json",
+                        fix_hint="Run /vg:test-spec to regenerate LIFECYCLE-SPECS.json with all goals.",
+                    ),
+                    escalate=True,
+                )
+                emit_and_exit(out)
 
         for filename, min_bytes in (*REQUIRED_FILES, *REQUIRED_LOCALIZER_FILES):
             path = phase_dir / filename
