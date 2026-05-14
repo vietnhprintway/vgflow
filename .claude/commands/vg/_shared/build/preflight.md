@@ -148,7 +148,7 @@ vg-orchestrator step-active 1_parse_args
 #   --allow-coverage-regression      (close.md PR-D route schema coverage)
 # All gate-skip flags route through forbidden_without_override (entry
 # frontmatter); --allow-coverage-regression is informational + accept-and-log.
-VALID_FLAGS_PATTERN='^--(wave|only|status|gaps-only|interactive|auto|reset-queue|skip-design-check|skip-design-pixel-gate|skip-uimap-injection-audit|skip-task-fidelity-audit|skip-context-rebuild|resume|skip-truthcheck|skip-compliance|skip-reflection|skip-cross-phase-ripple|skip-ux-gates|skip-spec-review|skip-final-review|allow-missing-commits|allow-missing-fixtures|allow-r5-violation|allow-verify-divergence|allow-coverage-regression|allow-rule-not-implemented|allow-ux-violations|override-reason|force|help)$'
+VALID_FLAGS_PATTERN='^--(wave|only|status|gaps-only|interactive|auto|reset-queue|skip-design-check|skip-design-pixel-gate|skip-uimap-injection-audit|skip-task-fidelity-audit|skip-context-rebuild|resume|skip-truthcheck|skip-compliance|skip-reflection|skip-cross-phase-ripple|skip-ux-gates|skip-spec-review|skip-final-review|skip-pre-test|skip-contract-runtime|allow-missing-commits|allow-missing-fixtures|allow-r5-violation|allow-verify-divergence|allow-coverage-regression|allow-rule-not-implemented|allow-ux-violations|override-reason|force|help)$'
 UNKNOWN_FLAGS=""
 for tok in ${ARGUMENTS:-}; do
   case "$tok" in
@@ -167,7 +167,8 @@ if [ -n "$UNKNOWN_FLAGS" ]; then
   echo "                --reset-queue, --skip-design-check, --skip-design-pixel-gate,"
   echo "                --skip-uimap-injection-audit, --skip-task-fidelity-audit,"
   echo "                --skip-context-rebuild, --resume, --skip-truthcheck, --skip-compliance,"
-  echo "                --skip-reflection, --allow-missing-commits, --allow-missing-fixtures,"
+  echo "                --skip-reflection, --skip-pre-test, --skip-contract-runtime,"
+  echo "                --allow-missing-commits, --allow-missing-fixtures,"
   echo "                --allow-r5-violation, --allow-verify-divergence, --allow-coverage-regression,"
   echo "                --allow-rule-not-implemented, --override-reason=<text>, --force, --help"
   echo "   Có thể bạn gõ sai chính tả (typo). Check lại arguments trước khi chạy."
