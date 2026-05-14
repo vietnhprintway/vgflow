@@ -1,5 +1,62 @@
 # Changelog
 
+## v4.25.0 — Review scaffold + classification gaps (Batch 22) (2026-05-14)
+
+Closes all 10 Codex review+test-spec audit findings across Batch 19 (v4.24.0)
++ Batch 22 (v4.25.0). 4 HIGH + 1 MED resolved with TDD-verified fixes.
+
+### F7 (HIGH): MATRIX-INTENT.json deterministic generator
+`commands/vg/_shared/review/matrix-intent.md:47` — matrix-intent.md only ran
+`mark-step`. No script wrote `MATRIX-INTENT.json`. Receipt counts (READY 11 /
+BLOCKED 0 / NOT_SCANNED 4) came from elsewhere — file missing or stale.
+
+Fix: New `scripts/generate-matrix-intent.py` reads `GOAL-COVERAGE-MATRIX.json`,
+computes per-goal verdict (READY_BEHAVIORAL / READY_STRUCTURAL / BLOCKED /
+NOT_SCANNED) + writes `MATRIX-INTENT.json` with summary counts.
+`matrix-intent.md` invokes generator before mark-step. Failure = BLOCK.
+`review.md` must_write contract adds `MATRIX-INTENT.json` (content_min_bytes: 200).
+
+### F3 (HIGH): Deep test-spec goal parity check
+`scripts/validators/verify-deep-test-specs.py:198` — validator checked files +
+emitted goal shape only. Did NOT compare against full `TEST-GOALS.md` list.
+Automatable goals could be silently dropped from `LIFECYCLE-SPECS.json`.
+
+Fix: `--check-goal-parity` flag computes set diff:
+  automatable_goals (from TEST-GOALS.md) - emitted_goals - goals_with_skip_reason.
+Non-empty diff → exit 1, names omitted goals. Also adds `--phase-dir` flag.
+
+### F8 (HIGH): Lens probe skip override-debt + coverage hard-block
+`lens-and-findings.md:23,151,196` — lens probe eligibility fail wrote
+`.recursive-probe-skipped.yaml` + bypassed coverage. Coverage failure emitted
+prompt only (didn't exit). '12 lens probes' could reduce to zero probes plus
+skip marker, review still PASS.
+
+Fix: Skip path emits `vg-orchestrator override` + `review.lens_skipped` event
+with reason (logs override-debt). Coverage failure exits 1 unless
+`--allow-lens-coverage-gap` set.
+
+### F9 (HIGH): CRUD lane SKIPPED/NO_SURFACE/FAILED/PASS classification
+`lens-and-findings.md:666,723,757` — CRUD findings lane skipped on missing
+CRUD-SURFACES, missing kit, auth fail, or no run artifacts — all silently
+continued with markers written. 'Few findings' could mean 'few probes ran'.
+
+Fix: Explicit CRUD_STATE classification:
+- NO_SURFACE: CRUD-SURFACES.md missing → review.crud_no_surface event
+- SKIPPED: kit missing or auth fail → review.crud_skipped event
+- FAILED: probe ran but matrix returned errors
+- PASS: all probes returned clean
+
+### F10 (MED): Separate static inventory from runtime visited counts
+`code-scan.md:300,315` + `api-and-discovery.md:711` — counts labelled as depth
+proof mixed static grep counts (routes/models/services) with runtime browser tour
+evidence. User saw 65 routes registered, assumed deep coverage.
+
+Fix: `review/close.md` recap template now has two sections:
+- **Static inventory** (grep — routes/models/services counts from code-scan)
+- **Runtime visited** (browser tour — views toured / scan files / EXPECTED)
+
+---
+
 ## v4.24.1 — Hotfix Batch 19 CI fails (2026-05-14)
 
 v4.24.0 release CI broke 3 tests:
