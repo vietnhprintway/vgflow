@@ -1,5 +1,51 @@
 # Changelog
 
+## v4.21.0 — Post-wave continuation hotfix (PrintwayV3 dogfood) (2026-05-14)
+
+Real-world dogfood feedback from PrintwayV3 Phase 7 Wave 14:
+- /vg:build waves completed but AI ended turn before running STEP 5
+  post-execution. vg-build-post-executor subagent never spawned →
+  L2/L3/L5/L6 fidelity gates skipped + truthcheck.json missing +
+  vitest count drift (94 per-wave summary vs 100+ full run because
+  Phase 7 tests landed in earlier waves weren't counted).
+- User re-ran /vg:build → preflight blocked with stale markers error
+  and suggested --reset-queue (DESTRUCTIVE: wipes wave commits)
+  instead of --resume (correct continuation).
+
+Two-part fix:
+
+### 1. Stop hook enforces post-wave continuation
+
+`scripts/hooks/vg-stop.sh` new check #4: when command=vg:build AND
+\${phase_dir}/.step-markers/wave-*.done > 0 AND 9_post_execution.done
+missing AND is_final_wave=true → BLOCK Stop with POST-WAVE
+CONTINUATION failure. AI cannot end turn without STEP 5 running.
+
+Prose instruction at commands/vg/build.md:315 ("MUST IMMEDIATELY
+proceed to NEXT STEP IN SAME ASSISTANT TURN") is now hook-enforced.
+
+### 2. Preflight partial-state detection
+
+`commands/vg/_shared/build/preflight.md` Step 2 marker sanity check now
+distinguishes:
+- waves done + post-exec missing → suggest --resume (continue)
+- waves done + post-exec missing → DO NOT suggest --reset-queue (which
+  would destroy wave commits)
+- Error path explicit: "These markers are LEGITIMATE — build needs to
+  continue STEP 5/6/7."
+
+Old error message still works for unrelated stale-marker cases (now
+suggests both --resume and --reset-queue with semantic distinction).
+
+### Tests
+
+`tests/test_post_wave_continuation_hotfix.py` (4 tests).
+
+### Closes
+
+PrintwayV3 dogfood report: "chạy xong build theo từng wave, không thấy
+chạy tiếp post build... yêu cầu chạy lại thì báo lỗi này"
+
 ## v4.20.0 — Batch 17: F6+F7+F8 UI artifact enforcement gates (2026-05-14)
 
 Closes 3 HIGH audit findings — blueprint UI artifacts (UI-RUNTIME-CONTRACT,

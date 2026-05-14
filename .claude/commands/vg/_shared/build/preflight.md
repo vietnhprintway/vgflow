@@ -574,7 +574,24 @@ Confirm marker dir is empty on fresh build (or populated as expected on resume):
 ```bash
 EXISTING_COUNT=$(ls "$MARKER_DIR"/*.done 2>/dev/null | wc -l | tr -d ' ')
 if [[ ! "$ARGUMENTS" =~ --resume ]] && [ "$EXISTING_COUNT" -ne 0 ]; then
-  echo "⛔ Fresh build but ${EXISTING_COUNT} stale markers in ${MARKER_DIR}. Run with --reset-queue or manually clean."
+  # Bug fix v4.21.0: detect partial-build-state — waves done, post-execution missing.
+  # When waves emit `wave.completed` but `9_post_execution.done` absent, treat as
+  # resume case (auto-suggest --resume rather than wipe with --reset-queue).
+  WAVES_DONE=$(ls "$MARKER_DIR"/wave-*.done 2>/dev/null | wc -l | tr -d ' ')
+  POST_EXEC_DONE=$([ -f "$MARKER_DIR/9_post_execution.done" ] && echo "1" || echo "0")
+  if [ "$WAVES_DONE" -gt 0 ] && [ "$POST_EXEC_DONE" = "0" ]; then
+    echo "⛔ Build in partial state: ${WAVES_DONE} wave(s) completed but STEP 5 post-execution NOT done."
+    echo "   Markers present: ${EXISTING_COUNT} in ${MARKER_DIR}"
+    echo ""
+    echo "   These markers are LEGITIMATE — build needs to continue STEP 5/6/7."
+    echo "   Re-run with --resume to continue from post-execution:"
+    echo "     /vg:build ${PHASE_NUMBER:-${PHASE_ARG}} --resume"
+    echo ""
+    echo "   Or to RESTART from scratch (wipe waves + commits — destructive):"
+    echo "     /vg:build ${PHASE_NUMBER:-${PHASE_ARG}} --reset-queue"
+    exit 1
+  fi
+  echo "⛔ Fresh build but ${EXISTING_COUNT} stale markers in ${MARKER_DIR}. Run with --resume to continue, or --reset-queue to restart."
   exit 1
 fi
 echo "▸ Step plan: $EXPECTED_COUNT steps for profile=$PROFILE. Progress tracked via ${MARKER_DIR}/*.done."

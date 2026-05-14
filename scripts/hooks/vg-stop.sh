@@ -74,6 +74,27 @@ if command -v vg-orchestrator >/dev/null 2>&1; then
   fi
 fi
 
+# 4. Post-wave continuation gate (v4.21.0 — dogfood feedback PrintwayV3 Phase 7).
+# When /vg:build waves complete on the final-wave run, AI must immediately
+# proceed to STEP 5 (post-execution) in same turn. Prose instruction at
+# commands/vg/build.md:315 is not hook-enforced — AI can end turn after waves.
+# This block detects: build command + waves done + post-execution missing +
+# is_final_wave=true, BLOCK Stop with continuation prompt.
+if [ "$command" = "vg:build" ] || [ "$command" = "build" ]; then
+  # Locate phase_dir from active-run
+  phase_dir="$(parse_field phase_dir 2>/dev/null || echo "")"
+  if [ -n "$phase_dir" ] && [ -d "$phase_dir/.step-markers" ]; then
+    waves_done=$(ls "$phase_dir/.step-markers"/wave-*.done 2>/dev/null | wc -l | tr -d ' ')
+    post_exec_done="0"
+    [ -f "$phase_dir/.step-markers/9_post_execution.done" ] && post_exec_done="1"
+    is_final_wave="true"
+    [ -f ".vg/runs/${run_id}/.is-final-wave" ] && is_final_wave=$(cat ".vg/runs/${run_id}/.is-final-wave" 2>/dev/null)
+    if [ "$waves_done" -gt 0 ] && [ "$post_exec_done" = "0" ] && [ "$is_final_wave" = "true" ]; then
+      failures+=("POST-WAVE CONTINUATION: ${waves_done} wave(s) done but STEP 5 post-execution not run. AI MUST continue in same turn: spawn vg-build-post-executor + STEP 5.1 spec reviewers + STEP 5.5 fix-loop + STEP 6/7. Do NOT end turn after waves return. See commands/vg/build.md:315.")
+    fi
+  fi
+fi
+
 if [ "${#failures[@]}" -gt 0 ]; then
   gate_id="Stop-runtime-contract"
   block_dir=".vg/blocks/${run_id}"
