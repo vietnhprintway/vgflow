@@ -1,5 +1,104 @@
 # Changelog
 
+## v4.31.0 — Batch 27: test scaffold CRITICAL fixes (write_report + regression rc + security FAIL) (2026-05-15)
+
+3 CRITICAL gaps from Codex test flow audit fixed:
+
+**G1 CRITICAL — write_report actually writes SANDBOX-TEST.md** (`close.md`)
+- `close.md:148-217` showed markdown template as prose only — no bash Write op.
+- `must_write` contract claimed file but AI was trusted to follow through.
+- Fix: bash heredoc inserts frontmatter + verdict + stage marker summary +
+  references to `.verdict-computed.json` and `TEST-FAILURE-REPORT.md` BEFORE
+  `git add`. Stop hook `must_write` satisfied without AI follow-through.
+
+**G2 CRITICAL — 5e_regression captures Playwright rc, marks FAIL on non-zero** (`regression-security.md`)
+- `npx playwright test` invocation had no `$?` capture.
+- `REGRESSION_STATUS` defaulted to `PASS` at line 258 regardless of outcome.
+- Fix: `set +e` wrapper, `PLAYWRIGHT_RC=$?` capture, branch:
+  rc != 0 → `REGRESSION_STATUS=FAIL` + `REGRESSION_REASON` + emit
+  `test.regression_failed` event. rc == 0 → `REGRESSION_STATUS=PASS`.
+
+**G3 CRITICAL — 5f_security_audit FAIL on Tier findings** (`regression-security.md`)
+- Tier 0/1/2/3/4 populated findings vars but step-marker fired with
+  `SECURITY_STATUS=PASS` default. Critical/high findings ignored.
+- Fix: aggregation block after all Tier checks: aggregate
+  `SECURITY_CRITICAL_COUNT` + `SECURITY_HIGH_COUNT` + `SEC_TIER0_EXIT` +
+  Tier 3/4 counts. Any > 0 → `SECURITY_STATUS=FAIL` + emit
+  `test.security_audit_failed`. Else → `SECURITY_STATUS=PASS`.
+
+Tests: `tests/test_batch27_write_report_artifact.py`,
+`tests/test_batch27_regression_rc_check.py`,
+`tests/test_batch27_security_audit_fail.py` (6 tests total).
+
+## v4.30.0 — F10 CRITICAL fix: spec-stage-coverage validator broken (2026-05-15)
+
+Codex audit Finding F10 (CRITICAL): `verify-spec-stage-coverage.py`
+(Batch 23, v4.26.0) read field `goals[].stages[]` but
+`generate-lifecycle-specs.py:693` emits `goals[].steps[]`. Each step
+dict has both `name` AND `stage` keys.
+
+Validator's `gdata.get("stages", [])` returned `[]` → no stages required
+→ **shallow specs PASSED for ENTIRE existence of Batch 23 (4 releases:
+v4.26.0, v4.27.x, v4.28.x, v4.29.0).** User dogfood bug (test mở modal
+xong dừng) NEVER caught because validator read wrong field.
+
+### Fix
+
+`scripts/validators/verify-spec-stage-coverage.py` lines 115-127:
+- Try `gdata.get("steps", gdata.get("stages", []))` for compat
+- Per-step prefer `s.get("stage", s.get("name", ""))` extraction
+
+Regression test: `tests/test_f10_stage_coverage_steps_field.py` (2 tests)
+reproduces canonical LIFECYCLE-SPECS.json shape from generator + asserts
+shallow spec fails validation.
+
+### Context
+
+Codex audit `docs/plans/2026-05-15-codex-review-testspec-test-flow-audit.md`
+found 12 gaps total (7 CRITICAL). F10 was the most insidious — validator
+silently no-op. Remaining 11 findings → upcoming Batch 27+ (review→test-spec
+artifact gating, GOAL-COVERAGE-MATRIX JSON drift, READY status routing,
+edge/negative specs not first-class, manifest schema, etc).
+
+## v4.29.0 — Batch 26: FE route wiring runtime probe + BE-FE consumer parity (2026-05-15)
+
+User dogfood gap: tests didn't probe FE consumer routes declared in API-CONTRACTS
+BLOCK 5 consumers[].route. Un-wired React Router entries render 404 fallback at
+HTTP 200 — silent failure. Also no BE-FE consumer parity check (orphan endpoints).
+
+**New scripts:**
+- `scripts/probe-fe-routes.py` — curl-based navigation probe per BLOCK 5 route.
+  Detects 404 fallback page patterns (data-testid, h1, class patterns). --dry-run
+  mode for CI. --json structured output. Exit 1 on any failed route.
+- `scripts/validators/verify-be-fe-consumer-parity.py` — set diff BE endpoints
+  (API-CONTRACTS.md headers) vs FE consumers (BLOCK 5 url field). Orphan FE
+  consumer (FE references non-existent BE endpoint) -> BLOCK exit 1. Orphan BE
+  endpoint (no FE consumer) -> WARN exit 0.
+
+**Wired:**
+- `commands/vg/_shared/test/deploy.md`: post-deploy FE route probe. WARN-only at
+  v4.29.0, emits test.fe_route_unwired event. Writes .route-probe.json artifact.
+- `commands/vg/_shared/review/api-and-discovery.md`: BE-FE parity check alongside
+  existing BE probe. Orphan FE consumer -> BLOCK + emit contract.orphan_fe_consumer.
+
+Global paths pattern enforced (${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}).
+
+Tests: 6 new (test_batch26_probe_fe_routes x3, test_batch26_be_fe_parity x3,
+test_batch26_route_probe_wired x2 minus 2 = actually 8 total).
+
+## v4.28.1 — Codex mirror sync for Batch 25 pipeline order (2026-05-15)
+
+v4.28.0 release CI failed `verify-codex-mirror-equivalence.py` — 10
+codex-skills mirrors drifted after Batch 25 propagated pipeline order
+changes (review → test-spec → test) into canonical command files but
+codex mirrors were left at old order.
+
+Synced post-batch:
+- vg-amend, vg-map, vg-next, vg-phase, vg-polish, vg-prioritize,
+  vg-progress, vg-project, vg-roadmap, vg-scope-review SKILL.md mirrors
+
+`verify-codex-mirror-equivalence.py`: 0 drift.
+
 ## v4.28.0 — Batch 25: Pipeline order canonicalization (review → test-spec → test) (2026-05-15)
 
 Canonicalizes v4.0 pipeline order `specs → scope → blueprint → build → review → test-spec → test → accept`

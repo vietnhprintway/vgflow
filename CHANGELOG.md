@@ -1,5 +1,35 @@
 # Changelog
 
+## v4.31.0 — Batch 27: test scaffold CRITICAL fixes (write_report + regression rc + security FAIL) (2026-05-15)
+
+3 CRITICAL gaps from Codex test flow audit fixed:
+
+**G1 CRITICAL — write_report actually writes SANDBOX-TEST.md** (`close.md`)
+- `close.md:148-217` showed markdown template as prose only — no bash Write op.
+- `must_write` contract claimed file but AI was trusted to follow through.
+- Fix: bash heredoc inserts frontmatter + verdict + stage marker summary +
+  references to `.verdict-computed.json` and `TEST-FAILURE-REPORT.md` BEFORE
+  `git add`. Stop hook `must_write` satisfied without AI follow-through.
+
+**G2 CRITICAL — 5e_regression captures Playwright rc, marks FAIL on non-zero** (`regression-security.md`)
+- `npx playwright test` invocation had no `$?` capture.
+- `REGRESSION_STATUS` defaulted to `PASS` at line 258 regardless of outcome.
+- Fix: `set +e` wrapper, `PLAYWRIGHT_RC=$?` capture, branch:
+  rc != 0 → `REGRESSION_STATUS=FAIL` + `REGRESSION_REASON` + emit
+  `test.regression_failed` event. rc == 0 → `REGRESSION_STATUS=PASS`.
+
+**G3 CRITICAL — 5f_security_audit FAIL on Tier findings** (`regression-security.md`)
+- Tier 0/1/2/3/4 populated findings vars but step-marker fired with
+  `SECURITY_STATUS=PASS` default. Critical/high findings ignored.
+- Fix: aggregation block after all Tier checks: aggregate
+  `SECURITY_CRITICAL_COUNT` + `SECURITY_HIGH_COUNT` + `SEC_TIER0_EXIT` +
+  Tier 3/4 counts. Any > 0 → `SECURITY_STATUS=FAIL` + emit
+  `test.security_audit_failed`. Else → `SECURITY_STATUS=PASS`.
+
+Tests: `tests/test_batch27_write_report_artifact.py`,
+`tests/test_batch27_regression_rc_check.py`,
+`tests/test_batch27_security_audit_fail.py` (6 tests total).
+
 ## v4.30.0 — F10 CRITICAL fix: spec-stage-coverage validator broken (2026-05-15)
 
 Codex audit Finding F10 (CRITICAL): `verify-spec-stage-coverage.py`
