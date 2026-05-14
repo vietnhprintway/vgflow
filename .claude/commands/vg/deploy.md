@@ -84,7 +84,7 @@ Downstream env gates (review/test/roam step 0a) read this state via
 evidence in the AskUserQuestion options. The pipeline becomes:
 
 ```
-specs → scope → blueprint → build → [DEPLOY] → review → test → [roam] → accept
+specs → scope → blueprint → build → [DEPLOY] → review → test-spec → test → [roam] → accept
                                        ↑                  ↑      ↑       ↑
                                    writes              all read DEPLOY-STATE
                                    DEPLOY-STATE        for env recommendation

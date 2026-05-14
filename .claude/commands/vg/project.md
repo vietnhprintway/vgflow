@@ -39,7 +39,7 @@ Use markdown headers in your text output between tool calls (e.g. `## ━━━ 
 <objective>
 First command in VG pipeline. Captures project identity, derives foundation (8 platform/runtime/data/auth/hosting/distribution/scale/compliance dimensions), and auto-generates `vg.config.md` from foundation. All downstream commands (roadmap, scope, blueprint) consume FOUNDATION.md.
 
-Pipeline: **project** → roadmap → map → prioritize → specs → scope → blueprint → build → review → test → accept
+Pipeline: **project** → roadmap → map → prioritize → specs → scope → blueprint → build → review → test-spec → test → accept
 </objective>
 
 <process>
