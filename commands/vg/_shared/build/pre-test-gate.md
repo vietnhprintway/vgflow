@@ -47,9 +47,15 @@ if [[ "$ARGUMENTS" =~ --skip-pre-test ]]; then
   # Emit override.used so the contract validator's forbidden_without_override
   # check is satisfied (Codex round 2 fix #8: do NOT exit 0 here — that would
   # bypass STEP 7 close).
-  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator override-use \
+  # F2 Batch 16: parse --override-reason=<text> from ARGUMENTS + use real 'override' subcommand
+  OVERRIDE_REASON=$(echo "${ARGUMENTS}" | sed -nE 's/.*--override-reason=([^ ]+).*/\1/p' | head -1)
+  if [ -z "$OVERRIDE_REASON" ]; then
+    echo "⛔ F2: --skip-pre-test requires --override-reason=<text> on the command line" >&2
+    exit 1
+  fi
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator override \
     --flag "--skip-pre-test" \
-    --reason "${OVERRIDE_REASON}" 2>/dev/null || true
+    --reason "${OVERRIDE_REASON}" || true
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
     "build.pre_test_skipped" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" 2>/dev/null || true
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step build 12_5_pre_test_gate || true
@@ -69,9 +75,15 @@ if [[ "$ARGUMENTS" =~ --skip-ui-runtime-contract ]]; then
     echo "⛔ --skip-ui-runtime-contract requires --override-reason=<text ≥50 chars + ticket ref>"
     exit 1
   fi
-  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator override-use \
+  # F2 Batch 16: parse --override-reason=<text> from ARGUMENTS + use real 'override' subcommand
+  OVERRIDE_REASON=$(echo "${ARGUMENTS}" | sed -nE 's/.*--override-reason=([^ ]+).*/\1/p' | head -1)
+  if [ -z "$OVERRIDE_REASON" ]; then
+    echo "⛔ F2: --skip-ui-runtime-contract requires --override-reason=<text> on the command line" >&2
+    exit 1
+  fi
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator override \
     --flag "--skip-ui-runtime-contract" \
-    --reason "${OVERRIDE_REASON}" 2>/dev/null || true
+    --reason "${OVERRIDE_REASON}" || true
   echo "▸ UI runtime contract gate skipped (override logged)"
 else
   UI_RUNTIME_VALIDATOR="${REPO_ROOT}/.claude/scripts/validators/verify-ui-runtime-contract.py"
