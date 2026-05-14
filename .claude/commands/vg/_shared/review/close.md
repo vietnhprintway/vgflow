@@ -488,8 +488,16 @@ if [ -f "$MATRIX_LINK_VAL" ]; then
 }
 JSON
     blocking_gate_prompt_emit "matrix_evidence_link" "$EVIDENCE_PATH" "warn"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns non-zero on critical/error; warn returns 0.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=matrix_evidence_link ]]; then
+        echo "⛔ F6: blocking gate 'matrix_evidence_link' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -580,8 +588,16 @@ except: print("   (could not parse error)")
 }
 JSON
     blocking_gate_prompt_emit "rcrurd_post_state" "$EVIDENCE_PATH" "error"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns 2 on error; caller must resolve or exit.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=rcrurd_post_state ]]; then
+        echo "⛔ F6: blocking gate 'rcrurd_post_state' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -615,8 +631,16 @@ except: print('?')
 }
 JSON
     blocking_gate_prompt_emit "matrix_staleness" "$EVIDENCE_PATH" "warn"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns non-zero on critical/error; warn returns 0.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=matrix_staleness ]]; then
+        echo "⛔ F6: blocking gate 'matrix_staleness' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -657,8 +681,16 @@ if [ -f "$PROV_VAL" ]; then
 }
 JSON
     blocking_gate_prompt_emit "evidence_provenance" "$EVIDENCE_PATH" "error"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns 2 on error; caller must resolve or exit.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=evidence_provenance ]]; then
+        echo "⛔ F6: blocking gate 'evidence_provenance' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -689,8 +721,16 @@ if [ -f "$MUT_SUBMIT_VAL" ]; then
 }
 JSON
     blocking_gate_prompt_emit "mutation_submit" "$EVIDENCE_PATH" "error"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns 2 on error; caller must resolve or exit.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=mutation_submit ]]; then
+        echo "⛔ F6: blocking gate 'mutation_submit' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -721,8 +761,16 @@ if [ -f "$RCRURD_VAL" ]; then
 }
 JSON
     blocking_gate_prompt_emit "rcrurd_depth" "$EVIDENCE_PATH" "warn"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns non-zero on critical/error; warn returns 0.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=rcrurd_depth ]]; then
+        echo "⛔ F6: blocking gate 'rcrurd_depth' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 
@@ -747,8 +795,16 @@ if [ -f "$ASSERTED_VAL" ]; then
 }
 JSON
     blocking_gate_prompt_emit "asserted_drift" "$EVIDENCE_PATH" "error"
+    EMIT_RC=$?
     # AI controller calls AskUserQuestion → resolve via Leg 2.
     # Leg 2 exit codes: 0=continue, 1=continue-with-debt, 2=route-amend (exit 0), 3=abort (exit 1), 4=re-prompt.
+    # F6 Batch 19: emit returns 2 on error; caller must resolve or exit.
+    if [ "$EMIT_RC" -ne 0 ]; then
+      if [[ ! "${ARGUMENTS:-}" =~ --gate-resolved=asserted_drift ]]; then
+        echo "⛔ F6: blocking gate 'asserted_drift' must be resolved (rc=$EMIT_RC). AI controller must call blocking_gate_prompt_resolve or exit." >&2
+        exit 1
+      fi
+    fi
   fi
 fi
 

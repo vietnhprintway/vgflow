@@ -78,7 +78,14 @@ sys.stdout.write(json.dumps(sys.stdin.read()))
   ]
 }
 EOF
-  return 0
+  # F6 Batch 19: emit must signal severity to caller. Critical/error returns
+  # non-zero so caller cannot fall through to run-complete without explicit
+  # resolve via blocking_gate_prompt_resolve (Leg 2).
+  case "$severity" in
+    critical|error) return 2 ;;  # caller MUST resolve via Leg 2 or exit
+    warn) return 0 ;;             # advisory — caller may proceed
+    *) return 2 ;;
+  esac
 }
 
 # Leg 2: dispatch based on user choice
