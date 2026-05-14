@@ -212,6 +212,55 @@ Gate (weighted):
 Commit artifacts:
 
 ```bash
+# G1 Batch 27: actually write SANDBOX-TEST.md so must_write contract satisfied.
+# AI may extend with goal details, but bash MUST create file with frontmatter
+# + verdict line for Stop hook to find.
+SANDBOX_TEST="${PHASE_DIR}/SANDBOX-TEST.md"
+TS=$(date -u +%FT%TZ)
+DEPLOY_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+ENV_NAME="${ENV:-sandbox}"
+
+cat > "$SANDBOX_TEST" <<EOF
+---
+phase: "${PHASE_NUMBER}"
+tested: "${TS}"
+status: "${VERDICT}"
+deploy_sha: "${DEPLOY_SHA}"
+environment: "${ENV_NAME}"
+---
+
+# Sandbox Test Report — Phase ${PHASE_NUMBER}
+
+## Verdict: ${VERDICT}
+
+Counters (from .verdict-computed.json):
+
+\`\`\`json
+$(cat "${PHASE_DIR}/.verdict-computed.json" 2>/dev/null || echo '{}')
+\`\`\`
+
+## Stage Markers
+
+- 5a Deploy: $([ -f "${PHASE_DIR}/.step-markers/5a_deploy.done" ] && echo "✓ done" || echo "skipped")
+- 5b Runtime Contract: $([ -f "${PHASE_DIR}/.step-markers/5b_runtime_contract_verify.done" ] && echo "✓ done" || echo "skipped")
+- 5c Goal Verification: $([ -f "${PHASE_DIR}/.step-markers/5c_goal_verification.done" ] && echo "✓ done" || echo "skipped")
+- 5e Regression: $([ -f "${PHASE_DIR}/.step-markers/5e_regression.done" ] && echo "✓ done — status=${REGRESSION_STATUS:-?}" || echo "skipped")
+- 5f Security: $([ -f "${PHASE_DIR}/.step-markers/5f_security_audit.done" ] && echo "✓ done — status=${SECURITY_STATUS:-?}" || echo "skipped")
+
+## Detail
+
+AI controller MUST extend this report with per-goal pass/fail table,
+fix-loop summary, and screenshots after computing verdict. The bash
+above ensures the artifact EXISTS (Stop hook must_write satisfied) —
+AI controller appends/refines.
+
+See:
+- \`${PHASE_DIR}/TEST-FAILURE-REPORT.md\` (H13 — per-failure detail)
+- \`${PHASE_DIR}/.verdict-computed.json\` (canonical counters)
+EOF
+
+echo "✓ G1: wrote ${SANDBOX_TEST} (${VERDICT})"
+
 git add "${PHASE_DIR}/SANDBOX-TEST.md" "${SCREENSHOTS_DIR}/" \
         "${GENERATED_TESTS_DIR}/" 2>/dev/null || true
 git commit -m "test(${PHASE_NUMBER}): goal verification — ${VERDICT}, ${PASSED_GOALS:-?}/${TOTAL_GOALS:-?} goals passed"
