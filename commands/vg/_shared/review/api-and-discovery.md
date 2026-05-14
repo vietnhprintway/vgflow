@@ -227,6 +227,21 @@ fi
 
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "phase2a_api_contract_probe" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/phase2a_api_contract_probe.done"
 "${PYTHON_BIN:-python3}" ${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator mark-step review phase2a_api_contract_probe 2>/dev/null || true
+
+# Batch 26: BE-FE consumer parity check
+PARITY_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-be-fe-consumer-parity.py"
+[ -f "$PARITY_VAL" ] || PARITY_VAL="${REPO_ROOT:-.}/scripts/validators/verify-be-fe-consumer-parity.py"
+if [ -f "$PARITY_VAL" ]; then
+  "${PYTHON_BIN:-python3}" "$PARITY_VAL" --phase-dir "${PHASE_DIR}" --json \
+    > "${PHASE_DIR}/.be-fe-parity.json" 2>&1
+  PARITY_RC=$?
+  if [ "$PARITY_RC" -ne 0 ]; then
+    echo "BLOCK Batch 26: orphan FE consumer (references non-existent BE endpoint)" >&2
+    "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" emit-event \
+      "contract.orphan_fe_consumer" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+    exit 1
+  fi
+fi
 ```
 
 </step>
