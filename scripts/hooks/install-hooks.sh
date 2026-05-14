@@ -99,6 +99,8 @@ VG_ENTRIES = {
     "SessionStart": [{"matcher": "startup|resume|clear|compact", "hooks": [{"type": "command", "command": _cmd("vg-session-start.sh")}]}],
     "PreToolUse": [
         {"matcher": "Bash", "hooks": [{"type": "command", "command": _cmd("vg-pre-tool-use-bash.sh")}]},
+        # Batch 20: deploy contract drift guard — blocks Bash deploy commands that deviate from .vg/DEPLOY-CONTRACT.json
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": _cmd("vg-deploy-contract-guard.sh")}]},
         {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": _cmd("vg-pre-tool-use-write.sh")}]},
         {"matcher": "Agent", "hooks": [{"type": "command", "command": _cmd("vg-pre-tool-use-agent.sh")}]},
     ],
