@@ -1,5 +1,22 @@
 # Changelog
 
+## v4.36.1 — Batch 46: Codex F5 closure + F12 manifest-gap CrossAI trigger (2026-05-15)
+
+F5 HIGH (closure verification): critical negative/failure variants
+(401/403/422) previously deep-probe only. Batch 37 made negative_specs[]
+first-class in LIFECYCLE-SPECS schema → critical variants now mandatory.
+This batch verifies F5 closure via test.
+
+F12 MEDIUM: CrossAI semantic sweep skippable when no qualifying
+goal_type. Happy-only manifests passed deterministic gates without
+adversarial review.
+
+Fix: test-spec.md CrossAI auto-trigger Python heuristic extended.
+Parses CODEGEN-MANIFEST.json; if any goal lacks 'edge' OR 'negative'
+spec_kind → fire CrossAI with reason 'manifest_spec_kind_gap:G-NN'.
+
+Tests: tests/test_batch46_crossai_mandatory_on_gaps.py (4 GREEN).
+
 ## v4.36.0 — Batches 44-45: pre-push drift guard + Codex F6+F9 (2026-05-15)
 
 ### Batch 44 — pre-push codex mirror drift guard
