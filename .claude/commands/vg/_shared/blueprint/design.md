@@ -36,10 +36,20 @@ Resolution order (highest precedence first):
 ```bash
 vg-orchestrator step-active 2_fidelity_profile_lock
 
+# Batch 50: FIDELITY_STATUS observability across both branches.
+FIDELITY_STATUS="UNKNOWN"
 # Skip if no design assets in scope (pure backend phase)
 if [ ! -f "${PHASE_DIR}/design-normalized/_INDEX.md" ] \
    && ! grep -lE "(\.tsx|\.jsx|\.vue|\.svelte)" "${PHASE_DIR}"/PLAN*.md 2>/dev/null | head -1 >/dev/null; then
   echo "ℹ No design or FE work in phase — skip fidelity profile lock"
+  FIDELITY_STATUS="SKIPPED_NO_DESIGN"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+    "blueprint.fidelity_no_design" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" \
+    >/dev/null 2>&1 || true
+  # Batch 50: also mark step on skip branch so downstream isn't blocked waiting.
+  mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
+  (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2_fidelity_profile_lock" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2_fidelity_profile_lock.done"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2_fidelity_profile_lock 2>/dev/null || true
 else
   PROFILE_LOCK_FILE="${PHASE_DIR}/.fidelity-profile.lock"
 
@@ -64,10 +74,14 @@ else
     echo "  → ${PROFILE_LOCK_FILE}"
     echo "  /vg:review post-wave drift gate (D-12b/c/e) will use threshold=${THRESHOLD}"
   fi
+  FIDELITY_STATUS="PASS"
 
   (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2_fidelity_profile_lock" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2_fidelity_profile_lock.done"
   "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2_fidelity_profile_lock 2>/dev/null || true
 fi
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "2_fidelity_profile_lock" --status "${FIDELITY_STATUS}" \
+  2>/dev/null || true
 ```
 
 **Override path** (DEBT — recorded in override-debt register):

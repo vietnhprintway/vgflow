@@ -461,8 +461,14 @@ vg-orchestrator step-active 2b5d_expand_from_crud_surfaces
 echo ""
 echo "━━━ 2b5d — Expand TEST-GOALS from CRUD-SURFACES ━━━"
 
+# Batch 50: EXPAND_STATUS observability.
+EXPAND_STATUS="UNKNOWN"
 if [ ! -f "${PHASE_DIR}/CRUD-SURFACES.md" ]; then
   echo "  (no CRUD-SURFACES.md — skipping expansion)"
+  EXPAND_STATUS="SKIPPED_NO_SURFACES"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+    "blueprint.expand_skipped_no_surfaces" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" \
+    >/dev/null 2>&1 || true
 else
   ${PYTHON_BIN:-python3} .claude/scripts/expand-test-goals-from-crud-surfaces.py \
     --phase-dir "$PHASE_DIR"
@@ -471,13 +477,21 @@ else
   if [ "$EXPAND_RC" -eq 0 ] && [ -f "${PHASE_DIR}/TEST-GOALS-EXPANDED.md" ]; then
     EXPANDED_COUNT=$(grep -c "^id: G-CRUD-" "${PHASE_DIR}/TEST-GOALS-EXPANDED.md" 2>/dev/null || echo 0)
     echo "  ✓ ${EXPANDED_COUNT} expansion goal(s) → TEST-GOALS-EXPANDED.md"
+    EXPAND_STATUS="PASS"
     type -t emit_telemetry_v2 >/dev/null 2>&1 && \
       emit_telemetry_v2 "blueprint_2b5d_expanded" "${PHASE_NUMBER}" "blueprint.2b5d-expand" \
         "test_goals_expansion" "PASS" "{\"expanded\":${EXPANDED_COUNT}}" 2>/dev/null || true
   else
     echo "  ⚠ Expansion failed (rc=${EXPAND_RC}) — codegen falls back to TEST-GOALS.md only"
+    EXPAND_STATUS="FAIL"
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+      "blueprint.test_goals_expansion_failed" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"rc\":${EXPAND_RC}}" \
+      >/dev/null 2>&1 || true
   fi
 fi
+"${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+  --phase-dir "${PHASE_DIR}" --step "2b5d_expand_from_crud_surfaces" --status "${EXPAND_STATUS}" \
+  2>/dev/null || true
 
 mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
 (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2b5d_expand_from_crud_surfaces" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2b5d_expand_from_crud_surfaces.done"
@@ -501,10 +515,18 @@ each step independently but miss continuity failures.
 ```bash
 vg-orchestrator step-active 2b7_flow_detect
 
+# Batch 50: FLOW_DETECT_STATUS observability.
+FLOW_DETECT_STATUS="UNKNOWN"
 # Profile gate — skip if backend-only / non-web
 case "${PHASE_PROFILE:-feature}" in
   web-fullstack|web-frontend-only|feature) ;;
   *) echo "  Profile=${PHASE_PROFILE} — skip flow detect (no UI flows)"
+     FLOW_DETECT_STATUS="SKIPPED_PROFILE"
+     "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+       "blueprint.flow_detect_skipped_profile" --payload "{\"phase\":\"${PHASE_NUMBER}\",\"profile\":\"${PHASE_PROFILE}\"}" \
+       >/dev/null 2>&1 || true
+     "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/step-status-ledger.py" \
+       --phase-dir "${PHASE_DIR}" --step "2b7_flow_detect" --status "${FLOW_DETECT_STATUS}" 2>/dev/null || true
      mkdir -p "${PHASE_DIR}/.step-markers" 2>/dev/null
      (type -t mark_step >/dev/null 2>&1 && mark_step "${PHASE_NUMBER:-unknown}" "2b7_flow_detect" "${PHASE_DIR}") || touch "${PHASE_DIR}/.step-markers/2b7_flow_detect.done"
      "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator mark-step blueprint 2b7_flow_detect 2>/dev/null || true
@@ -513,6 +535,10 @@ esac
 
 if [ ! -f "${PHASE_DIR}/TEST-GOALS.md" ]; then
   echo "  (no TEST-GOALS.md — skip flow detect)"
+  FLOW_DETECT_STATUS="SKIPPED_NO_GOALS"
+  "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+    "blueprint.flow_detect_skipped_no_goals" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" \
+    >/dev/null 2>&1 || true
 else
   echo ""
   echo "━━━ 2b7 — FLOW-SPEC auto-detect ━━━"
