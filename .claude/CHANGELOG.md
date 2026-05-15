@@ -1,5 +1,30 @@
 # Changelog
 
+## v4.38.0 — Batch 48: Codex F7 closure (derive EDGE-CASES) (2026-05-15)
+
+Codex F7 HIGH: blueprint owns EDGE-CASES generation. Phases where blueprint
+was skipped or pre-Batch-37 → EDGE-CASES/ absent → codegen falls back to
+single-path specs → edge case coverage absent at /vg:test.
+
+Fix: new scripts/derive-edge-cases-from-lifecycle.py reads
+LIFECYCLE-SPECS.json edge_cases[] (Batch 37 first-class) and emits
+EDGE-CASES/G-NN.md per goal with variant_id rows + yaml fences.
+
+test-spec.md after 2_generate_deep_specs:
+- Check [ ! -d \${PHASE_DIR}/EDGE-CASES ]
+- If missing, invoke derive script with --phase + --phase-dir
+
+variant_id format: {goal_id}-{kind-letter}{index}
+- G-01-b1 = G-01 boundary variant 1
+- G-01-u3 = G-01 unicode_special variant 3
+
+Downstream Batch 45 F6 verify-edge-coverage gate enforces test.each([])
+binds to these variant_ids.
+
+12/12 Codex audit findings now closed (F1-F12).
+
+Tests: tests/test_batch48_derive_edge_cases.py (6 GREEN).
+
 ## v4.37.0 — Batch 47: scaffold-detector hotspots (C swallow + H glob) (2026-05-15)
 
 scaffold-detector.py --scan-dir commands/vg reported 24 findings:
