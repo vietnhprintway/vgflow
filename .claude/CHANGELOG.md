@@ -1,5 +1,37 @@
 # Changelog
 
+## v4.37.0 — Batch 47: scaffold-detector hotspots (C swallow + H glob) (2026-05-15)
+
+scaffold-detector.py --scan-dir commands/vg reported 24 findings:
+5 A (Agent in comments — false positives), 5 F (SlashCommand fragments —
+false positives), 11 H (glob bypass — most are doc tables), 2 C (failure
+swallow), 1 G (unconditional marker — false positive prose).
+
+Real fixes (C HIGH + H LOW):
+
+### Pattern C (failure swallow):
+
+commands/vg/build.md:343 — partial-wave run-complete double \`|| true\`
+swallowed both fallback attempts. Fixed: set +e, capture PARTIAL_RC,
+emit build.run_complete_partial_failed on rc!=0.
+
+commands/vg/_shared/deploy/persist-and-close.md:100 — run-complete piped
+to \`tail -1 || true\` swallowed orchestrator integrity rc. Fixed: capture
+RUN_COMPLETE_RC, tail after capture, emit deploy.run_complete_failed event.
+
+### Pattern H (glob bypass):
+
+commands/vg/_shared/test/codegen/delegation.md:362 — R7 console check
+used \`tests_dir.rglob("*.spec.ts")\` instead of CODEGEN-MANIFEST.json
+(canonical). Fixed: prefer manifest read, fallback glob only when
+manifest absent.
+
+Post-fix scan: 24 → 21 findings. C 2→0, H 11→10. Remaining 21 are
+false positives (Agent() in comments documenting expected behavior,
+doc tables listing file patterns, prose describing anti-patterns).
+
+Tests: tests/test_batch47_scaffold_hotspots.py (4 GREEN).
+
 ## v4.36.1 — Batch 46: Codex F5 closure + F12 manifest-gap CrossAI trigger (2026-05-15)
 
 F5 HIGH (closure verification): critical negative/failure variants
