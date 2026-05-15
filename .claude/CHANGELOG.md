@@ -1,5 +1,46 @@
 # Changelog
 
+## v4.40.0 — Batches 49+50: 6 PARTIAL blueprint markers status observability (2026-05-15)
+
+Closes Batch 33 deferral. 6 PARTIAL markers in verify.md + design.md +
+contracts-overview.md previously fired even when validator absent or
+step skipped silently → step-status-ledger had no record.
+
+### Batch 49 — verify.md
+
+- 2c_verify_plan_paths: PATH_STATUS={PASS|WARN|FAIL|SKIPPED}.
+  Emits blueprint.plan_path_invalid (FAIL) +
+  blueprint.path_checker_absent (SKIPPED).
+- 2c_utility_reuse: UTIL_STATUS={PASS|WARN|FAIL_OVERRIDDEN|SKIPPED}.
+  Emits blueprint.utility_checker_absent with file-missing flags.
+- 2c_compile_check: COMPILE_STATUS={PASS|FAIL|SKIPPED}.
+  Emits blueprint.contract_compile_failed (FAIL) +
+  blueprint.compile_cmd_unset (SKIPPED — was silent).
+
+### Batch 50 — design.md + contracts-overview.md
+
+- 2_fidelity_profile_lock (design.md): no-design skip branch never marked
+  + emitted nothing. FIDELITY_STATUS={PASS|SKIPPED_NO_DESIGN}.
+  Skip branch now marks + emits blueprint.fidelity_no_design.
+- 2b5d_expand (contracts-overview.md): EXPAND_STATUS={PASS|SKIPPED_NO_SURFACES|FAIL}.
+  Emits blueprint.expand_skipped_no_surfaces / blueprint.test_goals_expansion_failed.
+- 2b7_flow_detect (contracts-overview.md): FLOW_DETECT_STATUS={PASS|
+  SKIPPED_PROFILE|SKIPPED_NO_GOALS}. Two skip paths now emit
+  blueprint.flow_detect_skipped_profile (with profile name) and
+  blueprint.flow_detect_skipped_no_goals.
+
+All 6 still mark step (advisory) but step-status-ledger + event stream
+make outcomes observable. Operators can grep events to find phases
+silently skipping checks.
+
+Remaining PARTIAL markers (2b6_ui_spec + 2b6b_ui_map in design.md) involve
+multi-Agent-spawn flows with 3+ mark-step sites per step — defer to
+future batch with redesigned subagent return contract.
+
+Tests: tests/test_batch49_partial_marker_status.py (4 GREEN) +
+tests/test_batch50_more_partial_markers.py (4 GREEN).
+Regression: 115 GREEN.
+
 ## v4.38.0 — Batch 48: Codex F7 closure (derive EDGE-CASES) (2026-05-15)
 
 Codex F7 HIGH: blueprint owns EDGE-CASES generation. Phases where blueprint
