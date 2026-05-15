@@ -189,6 +189,38 @@ if [ ! -f "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" ] && [ ! -f "${PHASE_DIR}/GOAL-
   fi
 fi
 
+# Batch 45 F9: NOT_SCANNED rejection — same gate as /vg:test preflight.
+# Previously only enforced at /vg:test → test-spec generated artifacts
+# from stale review verdicts. Block here too.
+if [ -f "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md" ]; then
+  INTERMEDIATE=$("${PYTHON_BIN:-python3}" -c "
+import re
+from pathlib import Path
+try:
+    gcm = Path('${PHASE_DIR}/GOAL-COVERAGE-MATRIX.md').read_text(encoding='utf-8')
+except Exception:
+    gcm = ''
+pat = re.compile(r'\|\s*(G-\d+)\s*\|[^|]+\|\s*(NOT_SCANNED|FAILED)\s*\|', re.I)
+hits = pat.findall(gcm)
+for gid, status in hits:
+    print(f'{gid}|{status}')
+" 2>/dev/null || echo "")
+  if [ -n "$INTERMEDIATE" ]; then
+    COUNT=$(echo "$INTERMEDIATE" | wc -l | tr -d ' ')
+    echo "⛔ Batch 45 F9: ${COUNT} goals NOT_SCANNED/FAILED in GOAL-COVERAGE-MATRIX:" >&2
+    echo "$INTERMEDIATE" | sed 's/^/   /' >&2
+    echo "" >&2
+    echo "test-spec must NOT generate artifacts from stale review. Resolve in review first:" >&2
+    echo "  /vg:review ${PHASE_NUMBER} --retry-failed" >&2
+    "${PYTHON_BIN:-python3}" "$ORCH" emit-event "test_spec.not_scanned_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"count\":${COUNT}}" >/dev/null 2>&1 || true
+    if [[ ! "${ARGUMENTS:-}" =~ --allow-not-scanned ]]; then
+      exit 1
+    fi
+    echo "⚠ --allow-not-scanned set — proceeding with ${COUNT} stale goal(s) (debt logged)" >&2
+  fi
+fi
+
 # Stale-matrix check: review SHA in matrix vs current HEAD. If matrix written
 # before latest build commits, re-review recommended.
 if [ -f "${PHASE_DIR}/GOAL-COVERAGE-MATRIX.json" ] && [ -d "${PHASE_DIR}/.review-state" ]; then

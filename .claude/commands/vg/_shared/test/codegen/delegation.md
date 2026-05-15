@@ -407,15 +407,18 @@ Before goal-test binding gate, verify each variant from EDGE-CASES has a
 matching `test()` or `test.each()` row in generated `.spec.ts`:
 
 ```bash
-if [ "$EDGE_CASES_AVAILABLE" = "true" ]; then
-  # For each goal in goals_index, load edge cases + grep generated specs
+# Batch 45 F6 fix: deterministic gate — no env-var dependency.
+# Previously relied on EDGE_CASES_AVAILABLE / GOALS_LIST / ALLOW_SKIP
+# which no orchestrator step set → gate was dead code.
+if [ -d "${PHASE_DIR}/EDGE-CASES" ]; then
   EDGE_GAP_COUNT=0
-  for gid in $GOALS_LIST; do
-    EDGE_FILE="${PHASE_DIR}/EDGE-CASES/${gid}.md"
+  # Iterate EDGE-CASES/G-*.md directly — derive goal list inline.
+  for EDGE_FILE in "${PHASE_DIR}/EDGE-CASES/"G-*.md; do
     [ -f "$EDGE_FILE" ] || continue
+    gid=$(basename "$EDGE_FILE" .md)
 
-    # Extract variant_ids from edge case file
-    VARIANTS=$(grep -oE "${gid}-[a-z]\d+" "$EDGE_FILE" | sort -u)
+    # Extract variant_ids from edge case file (G-NN-a1, G-NN-b2, etc.)
+    VARIANTS=$(grep -oE "${gid}-[a-z][0-9]+" "$EDGE_FILE" | sort -u)
     for vid in $VARIANTS; do
       # Variant must appear in spec.ts comment OR test name
       if ! grep -rqE "vg-edge-case[: ]+${vid}|test\\(['\"].*${vid}|test\\.each.*${vid}" "${GENERATED_TESTS_DIR}/" 2>/dev/null; then
@@ -425,11 +428,16 @@ if [ "$EDGE_CASES_AVAILABLE" = "true" ]; then
     done
   done
   if [ "$EDGE_GAP_COUNT" -gt 0 ]; then
-    echo "⛔ ${EDGE_GAP_COUNT} variant(s) không có test coverage."
+    echo "⛔ Batch 45 F6: ${EDGE_GAP_COUNT} variant(s) không có test coverage."
     echo "   AI phải re-codegen với test.each(...) per variant từ EDGE-CASES."
     echo "   Reference variant_id ở comment hoặc test name."
-    # Emit l2_escalation if user passed --skip-edge-cases-binding
-    [ -z "$ALLOW_SKIP" ] && exit 1
+    "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" \
+      emit-event "test.edge_coverage_failed" \
+      --payload "{\"phase\":\"${PHASE_NUMBER}\",\"gaps\":${EDGE_GAP_COUNT}}" >/dev/null 2>&1 || true
+    if [[ ! "${ARGUMENTS:-}" =~ --skip-edge-coverage ]]; then
+      exit 1
+    fi
+    echo "⚠ --skip-edge-coverage set — proceeding with ${EDGE_GAP_COUNT} gap(s) (debt logged)"
   fi
 fi
 ```
