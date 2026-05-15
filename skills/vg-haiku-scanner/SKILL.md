@@ -680,6 +680,18 @@ optional fields — no breaking change for web.
       "screenshot": "{SCREENSHOTS_DIR}/scan-{VIEW_SLUG}-loading.png"
     }
   },
+  "data_observations": {
+    "cardinality": {"tables_total_rows": 168, "tables_visible_rows": 25, "filters_observed": 2, "sort_columns_observed": 1, "search_inputs_observed": 1},
+    "status_diversity": {"http_status_codes_seen": [200, 304], "non_2xx_count": 0, "console_error_count": 0},
+    "distinct_values_per_filter": [
+      {"filter_name": "Status", "distinct_count": 3, "sampled_values": ["all", "active", "archived"]},
+      {"filter_name": "Owner", "distinct_count": null, "sampled_values": null}
+    ],
+    "sampled_status_distribution": {"Active": 134, "Archived": 28, "Unknown": 6},
+    "row_id_pattern": "site-NNN (zero-padded 3 digits)",
+    "captured_at": "{ISO timestamp}"
+  },
+  "_data_observations_note": "Batch 59: emit when table/list has ≥3 rows. Recipe generator reads to size pagination_edge seeds, validate filter_combination distinctness, and detect single-value columns that cause empty filter results.",
   "disabled_elements": [ { "ref": "e30", "name": "Bulk Delete", "enable_attempted": true, "enabled_after": true } ],
   "sub_views_discovered": ["/sites/456"],
   "errors": [

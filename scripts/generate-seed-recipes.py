@@ -118,6 +118,8 @@ def _aggregate_scan_signals(scans: list[dict]) -> dict:
         "error_state_5xx":  {trigger, view} | None,
         "loading_state":    {trigger, view} | None,
         "search":           [{placeholder, debounce_ms_observed, view}],
+        "data_observations":[{view, cardinality, distinct_values_per_filter,
+                              sampled_status_distribution, row_id_pattern}],  # Batch 59
         "views_scanned":    int,
       }
     """
@@ -130,6 +132,7 @@ def _aggregate_scan_signals(scans: list[dict]) -> dict:
         "error_state_5xx": None,
         "loading_state": None,
         "search": [],
+        "data_observations": [],  # Batch 59
         "views_scanned": len(scans),
     }
     for scan in scans:
@@ -194,6 +197,17 @@ def _aggregate_scan_signals(scans: list[dict]) -> dict:
                     "debounce_ms_observed": s.get("debounce_ms_observed"),
                     "view": view,
                 })
+        # Batch 59: data_observations field for richer recipe sizing
+        do = scan.get("data_observations")
+        if isinstance(do, dict):
+            agg["data_observations"].append({
+                "view": view,
+                "cardinality": do.get("cardinality"),
+                "distinct_values_per_filter": do.get("distinct_values_per_filter"),
+                "sampled_status_distribution": do.get("sampled_status_distribution"),
+                "row_id_pattern": do.get("row_id_pattern"),
+                "status_diversity": do.get("status_diversity"),
+            })
     return agg
 
 
@@ -202,17 +216,43 @@ def _observed_for_kind(kind: str, agg: dict) -> dict | None:
     if kind == "filter_combination":
         if not agg["filters"]:
             return None
-        return {
+        # Batch 59: include distinct_values_per_filter so AI knows real
+        # cardinality before deciding filter combinations.
+        distinct_map: dict = {}
+        for do in agg["data_observations"]:
+            for dv in do.get("distinct_values_per_filter") or []:
+                if isinstance(dv, dict) and dv.get("filter_name"):
+                    distinct_map[dv["filter_name"]] = {
+                        "distinct_count": dv.get("distinct_count"),
+                        "sampled_values": dv.get("sampled_values"),
+                    }
+        out = {
             "real_filters": agg["filters"][:6],
             "hint": (
                 "Use observed filter options to seed >=2 rows hitting "
                 "different combinations; do NOT invent filter names."
             ),
         }
+        if distinct_map:
+            out["filter_cardinality"] = distinct_map
+            out["hint"] += (
+                " WARN: a filter with distinct_count=1 always returns full "
+                "set — pick filters with distinct_count>=2 for meaningful "
+                "combinations."
+            )
+        return out
     if kind == "pagination_edge":
         if not agg["pagination"] and not agg["row_counts"]:
             return None
-        return {
+        # Batch 59: cite sampled_status_distribution so AI knows whether
+        # the seeded rows must vary by status (else pagination test
+        # doesn't exercise filter+pagination interaction).
+        status_dist: dict = {}
+        for do in agg["data_observations"]:
+            if do.get("sampled_status_distribution"):
+                status_dist = do["sampled_status_distribution"]
+                break
+        out = {
             "real_pagination": agg["pagination"][:3] or None,
             "real_row_counts": agg["row_counts"][:6] or None,
             "hint": (
@@ -221,6 +261,9 @@ def _observed_for_kind(kind: str, agg: dict) -> dict | None:
                 "rows the test inserted."
             ),
         }
+        if status_dist:
+            out["status_distribution"] = status_dist
+        return out
     if kind == "empty_string":
         # use observed empty_state as cross-check (informational)
         if agg["empty_state"] is None:
