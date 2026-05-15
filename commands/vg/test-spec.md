@@ -320,6 +320,42 @@ if [ -f "$SEED_VAL" ] && [ -f "${PHASE_DIR}/SEED-RECIPE.md" ]; then
   fi
 fi
 
+# Batch 55: emit runSeedRecipe/cleanup helper stub per variant_id.
+# Codegen wraps test.each with runSeedRecipe(variant.id) but helper
+# function doesn't exist unless humans hand-write it → runtime ReferenceError.
+# Generator emits TypeScript switch/case stub with throw-by-default branches
+# so AI follow-up MUST replace stubs before tests run.
+HELPER_GEN="${REPO_ROOT}/.claude/scripts/generate-seed-helper-stub.py"
+[ -f "$HELPER_GEN" ] || HELPER_GEN="${REPO_ROOT}/scripts/generate-seed-helper-stub.py"
+[ -f "$HELPER_GEN" ] || HELPER_GEN="${VG_HOME}/scripts/generate-seed-helper-stub.py"
+HELPER_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-seed-helper-stub.py"
+[ -f "$HELPER_VAL" ] || HELPER_VAL="${REPO_ROOT}/scripts/validators/verify-seed-helper-stub.py"
+[ -f "$HELPER_VAL" ] || HELPER_VAL="${VG_HOME}/scripts/validators/verify-seed-helper-stub.py"
+if [ -f "$HELPER_GEN" ] && [ -f "${PHASE_DIR}/SEED-RECIPE.md" ]; then
+  HELPER_OUT="${PHASE_DIR}/tests/_helpers/seed-recipes.ts"
+  if [ ! -f "$HELPER_OUT" ]; then
+    echo "▸ Batch 55: seed helper stub missing — generating..."
+    "${PYTHON_BIN:-python3}" "$HELPER_GEN" \
+      --phase "${PHASE_NUMBER}" \
+      --phase-dir "${PHASE_DIR}" 2>&1 | sed 's/^/  /' || true
+  fi
+  if [ -f "$HELPER_VAL" ]; then
+    HELPER_FLAGS=""
+    [[ ! "${ARGUMENTS:-}" =~ --allow-seed-helper-shortfall ]] && HELPER_FLAGS="--strict"
+    if ! "${PYTHON_BIN:-python3}" "$HELPER_VAL" \
+         --phase "${PHASE_NUMBER}" \
+         --phase-dir "${PHASE_DIR}" \
+         $HELPER_FLAGS; then
+      "${PYTHON_BIN:-python3}" "$ORCH" emit-event "test_spec.seed_helper_shortfall" \
+        --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+      if [[ ! "${ARGUMENTS:-}" =~ --allow-seed-helper-shortfall ]]; then
+        echo "⛔ Batch 55 BLOCK: seed helper stub incomplete" >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
+
 touch "${PHASE_DIR}/.step-markers/test-spec/2_generate_deep_specs.done"
 "${PYTHON_BIN:-python3}" "$ORCH" mark-step test-spec 2_generate_deep_specs 2>/dev/null || true
 ```
