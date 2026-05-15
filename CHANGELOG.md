@@ -1,5 +1,41 @@
 # Changelog
 
+## v4.36.0 — Batches 44-45: pre-push drift guard + Codex F6+F9 (2026-05-15)
+
+### Batch 44 — pre-push codex mirror drift guard
+
+v4.33.0 + v4.34.0 hotfixes both caused by tag pushed before codex regen.
+Local git pre-push hook now blocks tag push when verify-codex-mirror-
+equivalence.py reports drift. Bypass: VG_SKIP_CODEX_GUARD=1.
+
+Files:
+- scripts/git-hooks/pre-push (executable)
+- scripts/git-hooks/install.sh (idempotent installer)
+- tests/test_batch44_pre_push_hook.py (5 GREEN)
+
+Install: bash scripts/git-hooks/install.sh
+
+### Batch 45 — Codex F6 + F9 (CRITICAL + HIGH)
+
+F6 CRITICAL (commands/vg/_shared/test/codegen/delegation.md F.2.5):
+edge-case variant coverage gate gated on EDGE_CASES_AVAILABLE /
+GOALS_LIST / ALLOW_SKIP env vars never set by orchestrator → gate
+was dead code. Phases shipped without edge coverage despite validator.
+
+Fix: deterministic gate — directory existence check
+\`[ -d \"\${PHASE_DIR}/EDGE-CASES\" ]\`, iterate EDGE-CASES/G-*.md inline,
+\`--skip-edge-coverage\` flag check via ARGUMENTS. Emits
+test.edge_coverage_failed event.
+
+F9 HIGH (commands/vg/test-spec.md): NOT_SCANNED rejection only enforced
+at /vg:test preflight. test-spec generated artifacts from stale review
+verdicts.
+
+Fix: replicate NOT_SCANNED|FAILED regex check in test-spec.md
+1_build_artifact_gate. exit 1 unless --allow-not-scanned escape.
+
+Tests: tests/test_batch45_codex_f6_f9.py (5 GREEN).
+
 ## v4.35.0 — Batches 41-43: scanner active probing + variation + axe-core (2026-05-15)
 
 3 follow-up batches closing scanner depth chain from Batch 40 (filter/sort/
