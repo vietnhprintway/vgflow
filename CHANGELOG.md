@@ -1,5 +1,26 @@
 # Changelog
 
+## v4.42.0 — Batch 52: codegen wires SEED-RECIPE into spec body
+
+Closes Batch 51 chain. SEED-RECIPE.md declared but codegen subagent
+didn't read → test.each(variant) still ran on undefined state.
+
+Fix: delegation.md inputs add @SEED-RECIPE.md + @EDGE-CASES/. New
+<seed_contract> section mandates per-variant beforeEach(runSeedRecipe)/
+afterEach(cleanup) + try/finally pattern.
+
+verify-spec-seed-binding.py validator: per variant_id occurrence in spec,
+±300 char window must contain runSeedRecipe + cleanup. --strict default
+in test-spec pipeline; --allow-seed-binding-shortfall escape.
+
+End-to-end chain Batch 36-52:
+  edge_cases/negative_specs first-class (B37)
+  → SEED-RECIPE.md per variant (B51)
+  → spec body seed binding (B52)
+  → validator enforces
+
+Tests: tests/test_batch52_seed_binding_in_spec.py (6 GREEN).
+
 ## v4.41.0 — Batch 51: seed contract foundation (SEED-RECIPE per variant)
 
 User: "test specs mà không đưa ra phương án seed data thì test specs sẽ
