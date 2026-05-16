@@ -199,6 +199,95 @@ def _field(body: str, name: str) -> str:
     return ""
 
 
+def _parse_chain_steps(text: str) -> list[dict[str, Any]]:
+    """B65a (codex BLOCKER #2): parse chain_steps[] YAML block from TEST-GOAL
+    frontmatter. Each step has step_id + description + target_view_class +
+    expected_state + downstream_effects[].
+
+    Format (per TEST-GOAL-enriched-template.md):
+        chain_steps:
+          - step_id: S1
+            description: "..."
+            target_view_class: source_view
+            expected_state: list_loaded
+            downstream_effects: []
+          - step_id: S2
+            ...
+
+    Returns empty list when no chain_steps block found.
+    """
+    block_m = re.search(
+        r"^chain_steps:\s*\n((?:\s+(?:-\s+|\s).*\n)+)",
+        text,
+        re.MULTILINE,
+    )
+    if not block_m:
+        return []
+    block = block_m.group(1)
+    steps: list[dict[str, Any]] = []
+    # Split by step_id markers — each `- step_id:` starts a new step
+    step_starts = list(re.finditer(r"^\s*-\s+step_id:\s*(\S+)", block, re.MULTILINE))
+    for i, sm in enumerate(step_starts):
+        start = sm.start()
+        end = step_starts[i + 1].start() if i + 1 < len(step_starts) else len(block)
+        chunk = block[start:end]
+        step_id = sm.group(1).strip().strip('"\'')
+        desc_m = re.search(r"description:\s*\"?([^\"\n]+)\"?", chunk)
+        tvc_m = re.search(r"target_view_class:\s*(\S+)", chunk)
+        es_m = re.search(r"expected_state:\s*(\S+)", chunk)
+        # downstream_effects block — inline `[]` or YAML list
+        de_inline_m = re.search(r"downstream_effects:\s*\[(.*?)\]", chunk)
+        downstream: list[str] = []
+        if de_inline_m:
+            raw = de_inline_m.group(1).strip()
+            if raw:
+                downstream = [s.strip().strip('"\'') for s in raw.split(",") if s.strip()]
+        else:
+            de_block_m = re.search(
+                r"downstream_effects:\s*\n((?:\s+-\s+.*\n)+)",
+                chunk,
+                re.MULTILINE,
+            )
+            if de_block_m:
+                for line in de_block_m.group(1).splitlines():
+                    item_m = re.match(r"\s+-\s+\"?(.+?)\"?\s*$", line)
+                    if item_m:
+                        downstream.append(item_m.group(1).strip())
+        steps.append({
+            "step_id": step_id,
+            "description": (desc_m.group(1).strip() if desc_m else ""),
+            "target_view_class": (tvc_m.group(1).strip().strip('"\'') if tvc_m else ""),
+            "expected_state": (es_m.group(1).strip().strip('"\'') if es_m else ""),
+            "downstream_effects": downstream,
+        })
+    return steps
+
+
+def _parse_enables(text: str) -> list[str]:
+    """B65a (codex BLOCKER #2): parse enables[] from TEST-GOAL frontmatter.
+
+    Inline form: `enables: [G-04, G-07]`
+    Block form:  `enables:\\n  - G-04\\n  - G-07`
+    """
+    inline_m = re.search(r"^enables:\s*\[(.*?)\]", text, re.MULTILINE)
+    if inline_m:
+        raw = inline_m.group(1)
+        return [s.strip().strip('"\'') for s in raw.split(",") if s.strip()]
+    block_m = re.search(
+        r"^enables:\s*\n((?:\s+-\s+.*\n)+)",
+        text,
+        re.MULTILINE,
+    )
+    if block_m:
+        out: list[str] = []
+        for line in block_m.group(1).splitlines():
+            item_m = re.match(r"\s+-\s+\"?(G-[\w.-]+)\"?", line)
+            if item_m:
+                out.append(item_m.group(1))
+        return out
+    return []
+
+
 def _parse_goal_block(text: str, source: Path) -> dict[str, Any] | None:
     heading = re.search(r"^#\s+(G-[\w.-]+):?\s*(.+)$", text, re.MULTILINE)
     if not heading:
@@ -228,6 +317,9 @@ def _parse_goal_block(text: str, source: Path) -> dict[str, Any] | None:
         "actors": _field(text, "actors") or _field(text, "actor"),
         # G6: artifact_kind field
         "artifact_kind": _field(text, "artifact_kind"),
+        # B65a (codex BLOCKER #2): chain_steps + enables now parsed first-class
+        "chain_steps": _parse_chain_steps(text),
+        "enables": _parse_enables(text),
         "source": str(source),
     }
 
@@ -854,6 +946,13 @@ def _step(
         "error_state_4xx": "Trigger 4xx/5xx response (invalid filter, unauthorized, server down); assert user-facing error message, no white-screen, retry CTA where applicable.",
         "loading_state": "Throttle network; assert skeleton/spinner shown during fetch, replaced by content on resolve, no layout shift after replace.",
         "accessibility": "Tab through interactive controls; assert focus visible, ARIA labels on inputs, screen-reader announcements for state changes, color contrast ≥4.5:1 on text.",
+        # B65a (post-codex audit): FEATURE_CHAIN_STAGES descriptions. B62-pre
+        # added the stages tuple but _step actions/evidence dicts didn't have
+        # entries → KeyError when feature_chain goals processed.
+        "visibility_check": "Navigate to a target view OUTSIDE the source view family (dashboard/audit log/sibling list); assert the just-mutated entity appears with correct count delta and the chain's expected_state per chain_steps[].",
+        "interaction_chain": "Click the entity in the target view; assert detail view loads with mutation reflected end-to-end (status, badges, derived fields); verify chain_steps[].downstream_effects on this hop.",
+        "cascade_check": "After update mutation, re-verify visibility in target view(s); assert status flip propagates to dashboard counters, badge updates, and any subscribed sibling views per chain_steps downstream_effects.",
+        "archive_visibility_check": "After delete/archive, assert entity present in audit_log/archive list AND absent from primary list; verify archive_count +1 / active_count -1 per chain_steps downstream_effects.",
     }
     evidence = {
         "read_before": ["response envelope", "DB/query snapshot", "no stale fixture collision"],
@@ -872,6 +971,16 @@ def _step(
         "read_after_update": ["fresh read response", "event/webhook/queue capture when applicable", "no cross-tenant leakage"],
         "delete": ["cleanup mutation response or fixture cleanup receipt", "audit reason", "session/job/resource cleanup marker"],
         "read_after_delete": ["404/empty active list or terminal status", "revoked sessions/jobs", "cleanup confirmation"],
+        # B65a: FEATURE_CHAIN_STAGES evidence entries (paired with actions above)
+        "visibility_check": ["screenshot of target view", "entity_id presence in DOM",
+                              "observed_count_delta vs pre-mutation"],
+        "interaction_chain": ["detail route URL", "entity field values match source mutation",
+                               "no console errors during navigation"],
+        "cascade_check": ["target view re-snapshot", "dashboard counter post-update",
+                          "audit_log entry for update"],
+        "archive_visibility_check": ["primary list screenshot (entity absent)",
+                                      "archive list screenshot (entity present)",
+                                      "active_count -1, archive_count +1 deltas"],
     }
     endpoint = _bind_endpoint(stage, goal, contracts or [])
     # G3 Batch 3: override action description with endpoint-binding when available
@@ -962,11 +1071,17 @@ def _goal_spec(
         "edge_cases": _derive_edge_cases(goal),
         # Batch 37 F4: first-class negative path variants per goal
         "negative_specs": _derive_negative_specs(goal),
+        # B65a (codex BLOCKER #2): persist chain_steps + enables so codegen
+        # consumer (B65c) can iterate per chain step with test.step() inside
+        # test.each(variants). Without this, chain_steps die at the producer.
+        "chain_steps": goal.get("chain_steps") or [],
+        "enables": goal.get("enables") or [],
+        "goal_class": goal.get("goal_class") or "",
         "cleanup": [
             {"target": fixture["id"], "action": fixture["cleanup"]}
             for fixture in reversed(fixture_dag)
         ],
-        "generator_note": "Generated from phase docs; executable tests must bind TS-XX to this goal and implement these steps. Edge cases + negative specs MUST be rendered as test.each([...]) variants.",
+        "generator_note": "Generated from phase docs; executable tests must bind TS-XX to this goal and implement these steps. Edge cases + negative specs MUST be rendered as test.each([...]) variants. B65a: chain_steps + enables now persisted for feature_chain goals.",
     }
 
 

@@ -1,0 +1,66 @@
+# Codex Audit — B65/B66/B67 Test Flow Hardening
+
+**Date:** 2026-05-16
+**Verdict:** BLOCK
+
+## BLOCKER findings (must fix before B65 starts)
+
+1. **B65 targets the wrong schema source for `chain_steps`.** `commands/vg/_shared/test/codegen/delegation.md:126-135` defines `VARIANTS.json` as variant rows with `variant_id, kind, label, input_hint, expected, source, priority, idempotent`; `scripts/validators/verify-variants-json.py:29` confirms required fields exclude chain data. `chain_steps` belongs to TEST-GOALS frontmatter (`TEST-GOAL-enriched-template.md:169`). Do not stuff chain metadata into VARIANTS.
+
+2. **`chain_steps` are currently lost before codegen.** `scripts/enrich-test-goals.py:256` and `:268` create `goal_class=feature_chain` and `chain_steps`, but `render_markdown` only emits id/title/priority/surface/source/evidence/trigger/main_steps/postcondition (`:669-694`). `scripts/generate-lifecycle-specs.py:202-232` parses no `chain_steps`, and `_goal_spec` outputs no `chain_steps` (`:936-970`). Delegation prompt changes cannot consume data that never reaches artifacts.
+
+3. **Existing validator conflicts with feature-chain lifecycle.** `scripts/generate-lifecycle-specs.py:67-79` defines 11 `FEATURE_CHAIN_STAGES`, but `scripts/validators/verify-deep-test-specs.py:106-109` hard-requires `stages == REQUIRED_STAGES` and expects "full ordered RCRURDR stages". Strict feature-chain validation will block valid feature-chain output.
+
+4. **Proposed "one `test()` per chain_step" breaks the existing seed/variant contract.** Current codegen contract mandates `test.each(variants)` and per-variant seed/cleanup (`delegation.md:108-118`, `:134-135`). Per-step tests either lose sequential state or multiply into steps × variants. Correct shape: `test.each(variants)` outer test, `test.step()` inner chain steps.
+
+5. **B63 producer emits invalid chain depth.** `scripts/enrich-test-goals.py:268-301` emits only S1-S4, while blueprint requires "chain_steps ≥ 8" and downstream effects (`commands/vg/_shared/blueprint/close.md:330-333`); validator blocks len < 8 (`verify-feature-chain-coverage.py:158-161`). Fix producer before consumer.
+
+## MAJOR concerns (fix before merge)
+
+- **Flaky pre-check is unsafe as specified.** Current regression run has no retry knobs (`commands/vg/_shared/test/regression-security.md:213-216`). Retrying every failure 3x can triple CI time, and "1+ pass → quarantine" can hide real race bugs. Retry only failed test IDs on the same SHA/env and require stable evidence before `FLAKY`.
+
+- **`--retry-only` is not wired.** `commands/vg/test.md:4` argument hint excludes it; preflight flag list excludes it (`preflight.md:114-115`). Add parse, routing, telemetry, and guarantee it skips classify+fix.
+
+- **Cross-phase ripple via grep is high false-positive and incomplete.** Existing ripple already admits git-diff fallback "may miss indirect callers" (`fix-loop-and-verdict.md:359`). P{N+1}/P{N+2} grep adds variable-name collisions and misses sideways/older dependencies. Use graph/symbol references or CROSS-PHASE-DEPS, not raw grep.
+
+- **Classifier must be advisory.** Current classification is prose-only (`fix-loop-and-verdict.md:33-39`), but a heuristic classifier can misroute infra outages into code fixes. Add `UNKNOWN`, evidence refs, confidence thresholds, and block CODE_BUG auto-fix below threshold.
+
+- **B67 "every goal_id has variant" is false.** `verify-variants-json.py:81-83` says no lifecycle variants means `VARIANTS.json optional`. Exclude MANUAL/INFRA/DEFERRED and goals with no edge/negative variants.
+
+- **Full API probing in preflight is scope creep.** Preflight currently checks artifact presence and stage coverage (`preflight.md:118-122`, `:298-301`). Probe only safe smoke endpoints and seed existence; full API contract verification belongs runtime.
+
+## MINOR concerns (note + proceed)
+
+- `min_assertions = chain_steps × 2` rewards count, not quality, and blocks pure navigation steps. Validate per-step `target_view_class`, `expected_state`, and concrete downstream assertions instead.
+
+- Prompt overload risk is real. `delegation.md` is already ~691 lines. Prefer deterministic `PLAYWRIGHT-SPEC-PLAN.md` generation plus a concise codegen prompt.
+
+- `verify-fix-targets-goal.py` overlaps QA-Checker (`fix-loop-and-verdict.md:397-427`). Integrate it pre-commit or as QA-Checker input, not a duplicate gate.
+
+## Recommended adjustments
+
+1. Make `chain_steps` first-class end-to-end: render in `TEST-GOALS-DISCOVERED`, parse as YAML, persist in `LIFECYCLE-SPECS.json`, include in `PLAYWRIGHT-SPEC-PLAN.md` and manifest metadata.
+2. Emit feature-chain specs as one closed-loop test per selected variant, with `test.step()` per chain step.
+3. Update validators before strict mode: goal-class stage sets in `verify-deep-test-specs.py`; feature-chain patterns in `verify-spec-stage-coverage.py`; legacy warn/re-gen path.
+4. B66 first adds a failure report schema: `{spec, test_id, goal_id, sha, error, stack, console, network}`. Classifier consumes that, not raw logs.
+5. B67 consistency checks expected artifacts by goal status and variant presence, not every goal blindly.
+
+## Checklist
+
+| Concern | Status |
+|---|---|
+| Schema collision (test.each + chain_steps) | BLOCK |
+| Cost explosion (32 test/goal) | BLOCK |
+| Prompt overload | RISK |
+| Validator over-strict | BLOCK |
+| Flaky detection CI cost | RISK |
+| Cross-phase ripple FP rate | RISK |
+| Classifier accuracy | RISK |
+| Preflight probe speed | RISK |
+| Legacy phase migration | BLOCK |
+
+---
+
+## Auditor source
+
+Codex CLI v0.130.0 (`bash .claude/commands/vg/_shared/lib/codex-spawn.sh --tier adversarial --sandbox read-only`), 2026-05-16. Content was emitted to stdout because sandbox prevented direct file write; persisted to this path by orchestrator.

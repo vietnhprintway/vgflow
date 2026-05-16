@@ -265,26 +265,37 @@ def classify_elements(view: str, scan: dict, runtime_view: dict,
                 "limitations": obs.get("limitations") or [],
             },
             "trigger": f"{action.upper()} on {obs.get('source_view')}",
+            # B65a (codex BLOCKER #5): chain_steps must be ≥8 (B62 validator
+            # MIN_CHAIN_STEPS=8). Previous S1-S4 emitted invalid chain length,
+            # blocked by verify-feature-chain-coverage.py downstream.
             "chain_steps": [
                 {
                     "step_id": "S1",
-                    "description": f"User on source view {obs.get('source_view')}",
+                    "description": f"User on source view {obs.get('source_view')} as authenticated role",
                     "target_view_class": "source_view",
-                    "expected_state": f"{action}_form_ready",
+                    "expected_state": "list_loaded_baseline",
                     "downstream_effects": [],
                 },
                 {
                     "step_id": "S2",
-                    "description": f"Perform {action} → server returns 2xx",
+                    "description": f"Open {action} form / dialog",
+                    "target_view_class": "source_view_modal" if action == "create" else "source_view",
+                    "expected_state": f"{action}_form_ready",
+                    "downstream_effects": [],
+                },
+                {
+                    "step_id": "S3",
+                    "description": f"Submit {action} → server returns 2xx, toast confirms",
                     "target_view_class": "source_view_modal" if action == "create" else "source_view",
                     "expected_state": f"{action}_persisted",
                     "downstream_effects": [
                         f"entity {entity_canon} state change",
+                        "audit_log entry appended",
                     ],
                 },
                 {
-                    "step_id": "S3",
-                    "description": f"Navigate to {target_class} ({obs.get('target_view')})",
+                    "step_id": "S4",
+                    "description": f"Navigate to target view {target_class} ({obs.get('target_view')})",
                     "target_view_class": target_class,
                     "expected_state": f"propagation_visible_in_{target_class}",
                     "downstream_effects": [
@@ -292,11 +303,39 @@ def classify_elements(view: str, scan: dict, runtime_view: dict,
                     ],
                 },
                 {
-                    "step_id": "S4",
-                    "description": f"Re-open detail and assert state synced",
+                    "step_id": "S5",
+                    "description": "Click entity in target view → detail view loads",
                     "target_view_class": "sibling_list",
                     "expected_state": "detail_reflects_source_mutation",
                     "downstream_effects": [],
+                },
+                {
+                    "step_id": "S6",
+                    "description": "Edit/touch entity → status flips visibly on source view",
+                    "target_view_class": "source_view",
+                    "expected_state": "entity_status_updated",
+                    "downstream_effects": [
+                        "status badge updated",
+                    ],
+                },
+                {
+                    "step_id": "S7",
+                    "description": "Delete/archive entity via source-view confirm dialog",
+                    "target_view_class": "source_view_modal",
+                    "expected_state": "entity_deleted_or_archived",
+                    "downstream_effects": [
+                        "row_count delta on source list",
+                    ],
+                },
+                {
+                    "step_id": "S8",
+                    "description": "Verify entity present in archive/audit-log but gone from primary",
+                    "target_view_class": "audit_log",
+                    "expected_state": "entity_in_archive_only",
+                    "downstream_effects": [
+                        "archive_count +1",
+                        "active_count -1",
+                    ],
                 },
             ],
             "main_steps": [
@@ -672,6 +711,12 @@ def render_markdown(stubs: list[dict], existing_count: int,
         lines.append(f"priority: {stub['priority']}")
         lines.append(f"surface: {stub['surface']}")
         lines.append(f"source: {stub['source']}")
+        # B65a (codex BLOCKER #2): emit goal_class so downstream parser dispatches correctly
+        if stub.get("goal_class"):
+            lines.append(f"goal_class: {stub['goal_class']}")
+        # B65a (codex BLOCKER #2): emit enables[] for FLOW-SPEC walker forward edges
+        if stub.get("enables") is not None:
+            lines.append(f"enables: {json.dumps(stub['enables'])}")
         lines.append(f"evidence:")
         for k, v in (stub.get("evidence") or {}).items():
             if v is not None:
@@ -681,6 +726,26 @@ def render_markdown(stubs: list[dict], existing_count: int,
         for step in stub.get("main_steps") or []:
             for sk, sv in step.items():
                 lines.append(f"  - {sk}: \"{sv}\"")
+        # B65a (codex BLOCKER #2): emit chain_steps so generate-lifecycle-specs +
+        # codegen consumer can reach this data. Was lost: stub created chain_steps
+        # but render_markdown never emitted them → producer chain broken.
+        if stub.get("chain_steps"):
+            lines.append("chain_steps:")
+            for cs in stub["chain_steps"]:
+                lines.append(f"  - step_id: {cs.get('step_id', '?')}")
+                if cs.get("description"):
+                    lines.append(f"    description: \"{cs['description']}\"")
+                if cs.get("target_view_class"):
+                    lines.append(f"    target_view_class: {cs['target_view_class']}")
+                if cs.get("expected_state"):
+                    lines.append(f"    expected_state: {cs['expected_state']}")
+                de = cs.get("downstream_effects") or []
+                if de:
+                    lines.append(f"    downstream_effects:")
+                    for d in de:
+                        lines.append(f"      - \"{d}\"")
+                else:
+                    lines.append(f"    downstream_effects: []")
         if stub.get("alternate_flows"):
             lines.append("alternate_flows:")
             for af in stub["alternate_flows"]:
