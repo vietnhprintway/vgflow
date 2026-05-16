@@ -62,7 +62,11 @@ else
     # `source=<src> profile=<name> threshold=<n>`.
     RESOLVED_ERR_FILE="${VG_TMP:-${PHASE_DIR}/.vg-tmp}/threshold-resolver.err"
     mkdir -p "$(dirname "$RESOLVED_ERR_FILE")" 2>/dev/null
-    THRESHOLD=$(${PYTHON_BIN} "${REPO_ROOT}/.claude/scripts/lib/threshold-resolver.py" \
+    # Batch 61: 3-tier fallback for slim-entry projects
+    TR_SCRIPT="${REPO_ROOT}/.claude/scripts/lib/threshold-resolver.py"
+    [ -f "$TR_SCRIPT" ] || TR_SCRIPT="${REPO_ROOT}/scripts/lib/threshold-resolver.py"
+    [ -f "$TR_SCRIPT" ] || TR_SCRIPT="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/lib/threshold-resolver.py"
+    THRESHOLD=$(${PYTHON_BIN} "$TR_SCRIPT" \
         --phase "${PHASE_NUMBER}" --verbose 2> "$RESOLVED_ERR_FILE")
     PROFILE=$(grep -oE 'profile=[a-z-]+' "$RESOLVED_ERR_FILE" | head -1 | cut -d= -f2)
     SOURCE=$(grep -oE 'source=[a-z._-]+' "$RESOLVED_ERR_FILE"  | head -1 | cut -d= -f2)
@@ -650,8 +654,12 @@ else
       echo "        no deterministic injection, executor falls back to full UI-MAP (cost spike)."
     else
       echo "ℹ UI-MAP.md đã có — skip regeneration. Xoá file để regenerate."
-      if [ -x "${REPO_ROOT}/.claude/scripts/validators/verify-uimap-schema.py" ]; then
-        ${PYTHON_BIN} "${REPO_ROOT}/.claude/scripts/validators/verify-uimap-schema.py" \
+      # Batch 61: 3-tier fallback
+      UIMAP_PRE_VAL="${REPO_ROOT}/.claude/scripts/validators/verify-uimap-schema.py"
+      [ -f "$UIMAP_PRE_VAL" ] || UIMAP_PRE_VAL="${REPO_ROOT}/scripts/validators/verify-uimap-schema.py"
+      [ -f "$UIMAP_PRE_VAL" ] || UIMAP_PRE_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-uimap-schema.py"
+      if [ -x "$UIMAP_PRE_VAL" ] || [ -f "$UIMAP_PRE_VAL" ]; then
+        ${PYTHON_BIN} "$UIMAP_PRE_VAL" \
             --phase "${PHASE_NUMBER}" 2>&1 | tail -5
       fi
     fi
@@ -661,13 +669,19 @@ else
     if [ ! -f "${PHASE_DIR}/UI-MAP.md" ]; then
       echo "⛔ F8 BLOCK: UI-MAP.md missing after planner spawn — Agent did not write." >&2
       echo "   FE phase requires UI-MAP. Re-run blueprint or set config 'ui_map.enabled: false' to bypass." >&2
-      "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.ui_map_missing" \
+      # Batch 61: orchestrator 3-tier fallback
+      ORCH_BIN="${REPO_ROOT:-.}/.claude/scripts/vg-orchestrator"
+      [ -f "$ORCH_BIN" ] || ORCH_BIN="${REPO_ROOT:-.}/scripts/vg-orchestrator"
+      [ -f "$ORCH_BIN" ] || ORCH_BIN="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator"
+      "${PYTHON_BIN:-python3}" "$ORCH_BIN" emit-event "blueprint.ui_map_missing" \
         --payload "{\"phase\":\"${PHASE_NUMBER}\",\"fe_tasks\":${FE_TASKS}}" >/dev/null 2>&1 || true
       exit 1
     fi
     # Schema validation: run uimap validator if present
+    # Batch 61: 3-tier fallback (was 2-tier)
     UIMAP_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-uimap-schema.py"
     [ -x "$UIMAP_VAL" ] || UIMAP_VAL="${REPO_ROOT:-.}/scripts/validators/verify-uimap-schema.py"
+    [ -f "$UIMAP_VAL" ] || UIMAP_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-uimap-schema.py"
     if [ -f "$UIMAP_VAL" ]; then
       ${PYTHON_BIN:-python3} "$UIMAP_VAL" --phase "${PHASE_NUMBER}" 2>&1 | tail -5
       UIMAP_RC=$?
@@ -712,6 +726,8 @@ vg-orchestrator step-active 2b6d_ui_runtime_contract
 
 EMITTER="${REPO_ROOT}/.claude/scripts/blueprint/emit-ui-runtime-contract.py"
 [ -f "$EMITTER" ] || EMITTER="${REPO_ROOT}/scripts/blueprint/emit-ui-runtime-contract.py"
+# Batch 61: 3-tier — fall through to ~/.vgflow when project lacks local scripts
+[ -f "$EMITTER" ] || EMITTER="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/blueprint/emit-ui-runtime-contract.py"
 
 if [ ! -f "$EMITTER" ]; then
   echo "⚠ emit-ui-runtime-contract.py missing — skip UI runtime contract (v3.2.0 #173 Stage 2)"

@@ -144,7 +144,10 @@ vg-orchestrator step-active 2c_verify_plan_paths
 # Batch 49: PATH_STATUS observability. Marker still fires (advisory step)
 # but step-status-ledger now records SKIPPED/PASS/WARN/FAIL explicitly.
 PATH_STATUS="UNKNOWN"
-PATH_CHECKER=".claude/scripts/verify-plan-paths.py"
+# Batch 61: 3-tier fallback for slim-entry projects
+PATH_CHECKER="${REPO_ROOT:-.}/.claude/scripts/verify-plan-paths.py"
+[ -f "$PATH_CHECKER" ] || PATH_CHECKER="${REPO_ROOT:-.}/scripts/verify-plan-paths.py"
+[ -f "$PATH_CHECKER" ] || PATH_CHECKER="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/verify-plan-paths.py"
 if [ -f "$PATH_CHECKER" ]; then
   echo ""
   echo "━━━ PLAN path validation ━━━"
@@ -207,7 +210,10 @@ vg-orchestrator step-active 2c_utility_reuse
 
 # Batch 49: UTIL_STATUS observability.
 UTIL_STATUS="UNKNOWN"
-UTILITY_CHECKER=".claude/scripts/verify-utility-reuse.py"
+# Batch 61: 3-tier fallback
+UTILITY_CHECKER="${REPO_ROOT:-.}/.claude/scripts/verify-utility-reuse.py"
+[ -f "$UTILITY_CHECKER" ] || UTILITY_CHECKER="${REPO_ROOT:-.}/scripts/verify-utility-reuse.py"
+[ -f "$UTILITY_CHECKER" ] || UTILITY_CHECKER="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/verify-utility-reuse.py"
 PROJECT_MD="${PLANNING_DIR}/PROJECT.md"
 
 if [ -f "$UTILITY_CHECKER" ] && [ -f "$PROJECT_MD" ]; then
@@ -818,7 +824,10 @@ computes display from API raw data).
 ```bash
 vg-orchestrator step-active 2d_goal_grounding
 
-GROUNDING_VAL=".claude/scripts/validators/verify-goal-grounding.py"
+# Batch 61: 3-tier fallback
+GROUNDING_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-goal-grounding.py"
+[ -f "$GROUNDING_VAL" ] || GROUNDING_VAL="${REPO_ROOT:-.}/scripts/validators/verify-goal-grounding.py"
+[ -f "$GROUNDING_VAL" ] || GROUNDING_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-goal-grounding.py"
 if [ -f "$GROUNDING_VAL" ] && [ -f "${PHASE_DIR}/TEST-GOALS.md" ]; then
   echo "━━━ PR-F goal_grounding gate ━━━"
 

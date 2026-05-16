@@ -250,8 +250,13 @@ Closes "AI bịa goal/decision" gap. Migration: pre-2026-05-01 phases use
 ```bash
 TRACE_MODE="${VG_TRACEABILITY_MODE:-block}"
 
+# Batch 61: 3-tier fallback (REPO_ROOT/.claude → REPO_ROOT/scripts → VG_HOME)
+# so slim-entry projects without local .claude/scripts/ still work.
+
 # L6a — goal frontmatter completeness (spec_ref + decisions + business_rules + expected_assertion + goal_class)
-TRACE_VAL=".claude/scripts/validators/verify-goal-traceability.py"
+TRACE_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-goal-traceability.py"
+[ -f "$TRACE_VAL" ] || TRACE_VAL="${REPO_ROOT:-.}/scripts/validators/verify-goal-traceability.py"
+[ -f "$TRACE_VAL" ] || TRACE_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-goal-traceability.py"
 if [ -f "$TRACE_VAL" ]; then
   TRACE_FLAGS="--severity ${TRACE_MODE}"
   [[ "${ARGUMENTS}" =~ --allow-traceability-gaps ]] && TRACE_FLAGS="$TRACE_FLAGS --allow-traceability-gaps"
@@ -261,13 +266,19 @@ if [ -f "$TRACE_VAL" ]; then
     echo "⛔ Goal traceability gate failed."
     echo "   Goals must cite: spec_ref, decisions, business_rules, expected_assertion, goal_class."
     echo "   Template: commands/vg/_shared/templates/TEST-GOAL-enriched-template.md"
-    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.traceability_blocked" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
+    # vg-orchestrator resolves via VG_SCRIPT_ROOT/VG_HOME fallback
+    ORCH_BIN="${REPO_ROOT:-.}/.claude/scripts/vg-orchestrator"
+    [ -f "$ORCH_BIN" ] || ORCH_BIN="${REPO_ROOT:-.}/scripts/vg-orchestrator"
+    [ -f "$ORCH_BIN" ] || ORCH_BIN="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator"
+    "${PYTHON_BIN:-python3}" "$ORCH_BIN" emit-event "blueprint.traceability_blocked" --payload "{\"phase\":\"${PHASE_NUMBER}\"}" >/dev/null 2>&1 || true
     exit 1
   fi
 fi
 
 # D-XX → tasks coverage
-DTASK_VAL=".claude/scripts/validators/verify-decisions-to-tasks.py"
+DTASK_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-decisions-to-tasks.py"
+[ -f "$DTASK_VAL" ] || DTASK_VAL="${REPO_ROOT:-.}/scripts/validators/verify-decisions-to-tasks.py"
+[ -f "$DTASK_VAL" ] || DTASK_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-decisions-to-tasks.py"
 if [ -f "$DTASK_VAL" ]; then
   DTASK_FLAGS="--severity ${TRACE_MODE}"
   [[ "${ARGUMENTS}" =~ --allow-uncovered-decisions ]] && DTASK_FLAGS="$DTASK_FLAGS --allow-uncovered-decisions"
@@ -281,7 +292,9 @@ if [ -f "$DTASK_VAL" ]; then
 fi
 
 # D-XX → goals coverage
-DGOAL_VAL=".claude/scripts/validators/verify-decisions-to-goals.py"
+DGOAL_VAL="${REPO_ROOT:-.}/.claude/scripts/validators/verify-decisions-to-goals.py"
+[ -f "$DGOAL_VAL" ] || DGOAL_VAL="${REPO_ROOT:-.}/scripts/validators/verify-decisions-to-goals.py"
+[ -f "$DGOAL_VAL" ] || DGOAL_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-decisions-to-goals.py"
 if [ -f "$DGOAL_VAL" ]; then
   DGOAL_FLAGS="--severity ${TRACE_MODE}"
   [[ "${ARGUMENTS}" =~ --allow-uncovered-decisions ]] && DGOAL_FLAGS="$DGOAL_FLAGS --allow-uncovered-decisions"
@@ -302,6 +315,8 @@ fi
 # is missing on any endpoint. Legacy phases escape via --allow-block5-missing
 # (set ALLOW_BLOCK5_MISSING_FLAG from slim-entry arg-parser when user passes flag).
 BLOCK5_VALIDATOR="${REPO_ROOT:-.}/.claude/scripts/validators/verify-fe-contract-block5.py"
+[ -f "$BLOCK5_VALIDATOR" ] || BLOCK5_VALIDATOR="${REPO_ROOT:-.}/scripts/validators/verify-fe-contract-block5.py"
+[ -f "$BLOCK5_VALIDATOR" ] || BLOCK5_VALIDATOR="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-fe-contract-block5.py"
 if [ -f "$BLOCK5_VALIDATOR" ] && [ -d "${PHASE_DIR}/API-CONTRACTS" ]; then
   python3 "$BLOCK5_VALIDATOR" \
     --contracts-dir "${PHASE_DIR}/API-CONTRACTS" \

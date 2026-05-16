@@ -136,7 +136,10 @@ fi
 # validator's _truthy() treats as missing → 225 violations at /vg:review).
 # Run validator NOW (post-spawn) so blueprint blocks instead of review.
 if [ -f "${PHASE_DIR}/CRUD-SURFACES.md" ] && [[ ! "$ARGUMENTS" =~ --crossai-only ]]; then
-  CRUD_VALIDATOR=".claude/scripts/validators/verify-crud-surface-contract.py"
+  # Batch 61: 3-tier fallback
+  CRUD_VALIDATOR="${REPO_ROOT:-.}/.claude/scripts/validators/verify-crud-surface-contract.py"
+  [ -f "$CRUD_VALIDATOR" ] || CRUD_VALIDATOR="${REPO_ROOT:-.}/scripts/validators/verify-crud-surface-contract.py"
+  [ -f "$CRUD_VALIDATOR" ] || CRUD_VALIDATOR="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-crud-surface-contract.py"
   if [ -f "$CRUD_VALIDATOR" ]; then
     if ! "${PYTHON_BIN:-python3}" "$CRUD_VALIDATOR" --phase "${PHASE_NUMBER}" --json > /tmp/.crud-strictness.$$ 2>&1; then
       MISSING_COUNT=$(grep -c crud_surface_missing_field /tmp/.crud-strictness.$$ 2>/dev/null || echo 0)
