@@ -1,7 +1,7 @@
 ---
 name: vg:test
 description: Execute Playwright tests + fix-loop (user-confirm) + matrix verdict + security audit
-argument-hint: "<phase> [--skip-deploy] [--regression-only] [--smoke-only] [--fix-only] [--skip-flow] [--allow-missing-console-check] [--headed] [--headless] [--ui] [--slow-mo <ms>]"
+argument-hint: "<phase> [--skip-deploy] [--regression-only] [--smoke-only] [--fix-only] [--retry-only] [--skip-flow] [--allow-missing-console-check] [--headed] [--headless] [--ui] [--slow-mo <ms>]"
 allowed-tools:
   - Read
   - Write

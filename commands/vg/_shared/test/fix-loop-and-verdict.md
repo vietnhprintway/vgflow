@@ -20,6 +20,29 @@ export MAX_ITER
 
 **If no errors found in Phase 2 → skip to Phase 4.**
 **If --fix-only → load RUNTIME-MAP, find errors, fix them.**
+**If --retry-only (B66) → skip classify + fix. Re-run failed test IDs on
+same SHA once. Emit retry report. Use for flaky-suspect debugging
+without spawning fixer agents.**
+
+```bash
+# B66 (codex MAJOR): --retry-only mode for flaky-suspect debugging.
+# Skips classify + fix dispatch. Re-runs failed test IDs from RUNTIME-MAP
+# on same SHA, emits .retry-report.json so operator can diff pass/fail
+# across runs before deciding to fix.
+if [[ "${ARGUMENTS:-}" =~ --retry-only ]]; then
+  echo "▸ B66 --retry-only mode: skip classify + fix-loop, re-run failed tests once"
+  FAILED_IDS=$("${PYTHON_BIN:-python3}" -c "import json;d=json.load(open('${PHASE_DIR}/RUNTIME-MAP.json',encoding='utf-8'));print(' '.join(e.get('test_id','') for e in d.get('errors',[]) if e.get('test_id')))")
+  if [ -n "$FAILED_IDS" ]; then
+    echo "  Failed IDs: $FAILED_IDS"
+    # Re-run via Playwright spec runner. Same env, same SHA, fresh process.
+    npx playwright test --grep "$FAILED_IDS" --reporter json > "${PHASE_DIR}/.retry-report.json" 2>&1 || true
+    "${PYTHON_BIN:-python3}" "${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/vg-orchestrator" emit-event \
+      "review.retry_only_completed" --payload "{\"failed_count\":$(echo $FAILED_IDS | wc -w | tr -d ' ')}" >/dev/null 2>&1 || true
+  fi
+  # Skip to verdict — no fix attempts in this mode
+  exit 0
+fi
+```
 
 ### 3a: Error Summary
 
@@ -37,6 +60,43 @@ For each error:
 - **INFRA ISSUE** → escalate to user (service unavailable, config wrong)
 - **SPEC GAP** → record in SPEC-GAPS.md (see 3b-spec-gaps) — feature not built, decision missing from CONTEXT/PLAN
 - **PRE-EXISTING** → don't fix, write to `${PLANNING_DIR}/KNOWN-ISSUES.json` (see below)
+- **FLAKY (B66)** → same SHA previously passed OR 2-of-3 same-SHA retries
+  passed → environmental, quarantine to `KNOWN-FLAKY.json` (see 3b-flaky)
+- **UNKNOWN (B66)** → heuristic match below 0.6 confidence → escalate to
+  user. Do NOT auto-dispatch fixer agent. Codex audit MAJOR: heuristic
+  classifier risks misrouting infra outages → code fixes; UNKNOWN
+  prevents over-confident wrong fixes.
+
+**B66 advisory classifier (codex MAJOR mitigation):** use
+`scripts/classify-test-failure.py` for code-backed classification (was
+prose-only). Builds failure-report JSON from RUNTIME-MAP + console +
+network + previous_runs[]. Output: `{class, confidence, reasons,
+evidence_refs}`. Fix dispatcher only auto-spawns fixer for
+class ∈ {CODE_BUG, SPEC_GAP} AND confidence ≥ 0.7. Else → write to
+REVIEW-FEEDBACK.md and escalate.
+
+```bash
+# B66 — advisory classify before fix dispatch
+CLASSIFY_SCRIPT="${REPO_ROOT:-.}/.claude/scripts/classify-test-failure.py"
+[ -f "$CLASSIFY_SCRIPT" ] || CLASSIFY_SCRIPT="${REPO_ROOT:-.}/scripts/classify-test-failure.py"
+[ -f "$CLASSIFY_SCRIPT" ] || CLASSIFY_SCRIPT="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/classify-test-failure.py"
+# For each error → build failure-report.json → classify → route
+# Only auto-fix when class in {CODE_BUG, SPEC_GAP} AND confidence >= 0.7.
+# UNKNOWN / FLAKY / INFRA_ISSUE → no fixer spawn, escalate user.
+```
+
+### 3b-flaky: B66 flaky quarantine
+
+When classifier returns `class: FLAKY` for a test:
+- Append entry to `${PLANNING_DIR}/KNOWN-FLAKY.json`
+- Skip fix dispatch for that test
+- Telemetry: `review.flaky_quarantined` event with {test_id, sha, prev_passes}
+- Operator decides: investigate later OR mark as `skip` in spec
+
+Codex MAJOR: same-SHA retry only (NOT 3x global retry). Re-running
+EVERY failed test 3x triples CI time. Classifier detects flaky from
+historical `previous_runs[]` array passed in failure-report — if same
+SHA passed ≥1 of prior attempts, it's flaky without burning extra runs.
 
 ### 3b-spec-gaps: Feed SPEC_GAPS back to blueprint (fixes G9)
 
@@ -357,6 +417,32 @@ Narrator chỉ hiển thị model id user đã config, KHÔNG hardcode "Sonnet"/
    fi
    ```
    Without graphify: step 3d re-verifies affected views by git diff only (may miss indirect callers).
+
+   **B66 (codex MAJOR): prefer CROSS-PHASE-DEPS over raw grep for
+   cross-phase ripple.** Existing artifact
+   `${PLANNING_DIR}/CROSS-PHASE-DEPS.json` (written by blueprint)
+   maps phase → phase dependencies via static symbol references.
+   When ripple analysis finds caller files crossing phase boundaries,
+   consult CROSS-PHASE-DEPS for downstream phases to flag for
+   re-verification. Raw grep across P{N+1}/P{N+2} has high
+   false-positive rate (variable name collisions) and misses
+   sideways/older dependencies that the blueprint already encoded.
+
+   ```bash
+   # B66 cross-phase ripple via CROSS-PHASE-DEPS (codex MAJOR fix)
+   CROSS_DEPS="${PLANNING_DIR}/CROSS-PHASE-DEPS.json"
+   if [ -f "$CROSS_DEPS" ] && [ -f "${PHASE_DIR}/.fix-ripple.json" ]; then
+     "${PYTHON_BIN:-python3}" -c "
+   import json
+   ripple = json.load(open('${PHASE_DIR}/.fix-ripple.json'))
+   deps = json.load(open('$CROSS_DEPS'))
+   # deps schema: { 'P{N}': { 'depends_on': [...], 'depended_by': [...] } }
+   downstream = deps.get('P${PHASE_NUMBER}', {}).get('depended_by', [])
+   if downstream:
+       print(f'⚠ ripple may cross-phase affect: {downstream}')
+   "
+   fi
+   ```
 4. Commit with message: `fix({phase}): {description}`
 
 After all fixes:
