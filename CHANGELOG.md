@@ -1,5 +1,24 @@
 # Changelog
 
+## v4.57.0 — B65b: validator per-goal-class stage sets (codex BLOCKER #3)
+
+scripts/validators/verify-deep-test-specs.py hard-required `stages
+== REQUIRED_STAGES` (RCRURDR 7 stages). Blocked valid feature_chain
+(11 stages) + readonly (9 stages) output.
+
+Fix: per-goal-class stage sets mirror generate-lifecycle-specs.py
+dispatch precedence:
+  1. goal_class (feature_chain | post_create_cascade | readonly)
+  2. goal_type (create-only | update-only | delete-only | read-only)
+  3. fallback REQUIRED_STAGES (full RCRURDR)
+
+New `_expected_stages_for_spec(spec)` returns (stages, dispatch_key)
+so error messages cite which path matched. Stage tuples mirror
+generator with parity tests.
+
+Tests: tests/test_batch65b_validator_stage_sets.py (13 GREEN).
+143 cross-batch tests still green.
+
 ## v4.56.0 — B68: cascade post-build continuation gates
 
 Closes user report: "vẫn còn tình trạng bỏ quên các bước sau khi
