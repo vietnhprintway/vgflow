@@ -1,5 +1,30 @@
 # Changelog
 
+## v4.51.1 — B62-pre: goal_class dispatch + enables/Deps symmetry (audit BLOCKERs)
+
+Foundation patch for the feature-chain coverage plan (B62+B63+B64).
+Codex audit (dev-phases/feature-chain-design/CODEX-AUDIT.md) flagged
+2 BLOCKERs that would make B62 silent no-op:
+
+- ID-1: `scripts/generate-lifecycle-specs.py` `_stages_for_goal()` only
+  dispatched on `goal_type`. Adding `feature_chain` to `goal_class`
+  enum had no pipeline effect.
+- ID-2: `enables[]` (forward) vs `Dependencies[]` (backward) symmetry
+  undefined. FLOW-SPEC walker would double-traverse.
+
+Fix:
+- generate-lifecycle-specs.py: add GOAL_CLASS_STAGES + FEATURE_CHAIN_STAGES
+  (11 stages incl. visibility_check, cascade_check, archive_visibility_check).
+  Dispatch precedence: goal_class > goal_type > HTTP-verb inference.
+- verify-enables-deps-symmetry.py (new validator): A.enables=[B] MUST
+  mirror B.Dependencies=[A]. BLOCK strict mode.
+- contracts-overview.md FLOW-SPEC walker: documented truth-source
+  (Dependencies[] canonical, enables[] validated separately, walker
+  reads backward edges only — no double-traversal).
+
+Tests: tests/test_batch62_pre_blocker_fixes.py (13 GREEN). Pre-B62
+lifecycle tests (B36+B37+B48 = 17) still green — zero regression.
+
 ## v4.51.0 — Batch 61: blueprint script 3-tier fallback (slim-entry fix)
 
 User report: Phase 8 blueprint fails "scripts thiếu tại
