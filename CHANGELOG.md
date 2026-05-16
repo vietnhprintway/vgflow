@@ -1,5 +1,38 @@
 # Changelog
 
+## v4.56.0 — B68: cascade post-build continuation gates
+
+Closes user report: "vẫn còn tình trạng bỏ quên các bước sau khi
+build, không cross ai check, không làm các step sau".
+
+v4.21.0 hotfix d19403d (Stop hook check #4) only caught STEP 5
+missing. AI could still mark STEP 5 done then end turn before:
+- STEP 6 (CrossAI verify-loop) — HARD-GATE per crossai-loop.md
+- STEP 7 (postmortem_sanity, run_complete)
+- Actual `vg-orchestrator run-complete` invocation
+
+Result: AI announced "build done" but CrossAI never ran, postmortem
+skipped, run-complete never executed.
+
+Fix: scripts/hooks/vg-stop.sh extended with 4 new cascade checks:
+- 4b: STEP 5 done + 11_crossai missing → BLOCK
+- 4c: 11_crossai done + 10_postmortem missing → BLOCK
+- 4d: 10_postmortem done + 12_run_complete missing → BLOCK
+- 4e: 12_run_complete marker exists + run state=active → BLOCK
+  (catches marker-written-before-real-run-complete race per
+   close.md:275 vs close.md:818)
+
+Codex audit (dev-phases/test-flow-hardening/B68-CODEX-AUDIT.md)
+flagged 2 BLOCKER + 2 MAJOR in initial draft. All addressed:
+- postmortem_done was read but unenforced (BLOCKER #1) → 4c gates it
+- 12_run_complete.done not canonical (BLOCKER #2) → 4e checks
+  vg-orchestrator run-status state
+- CrossAI event name corrected: build.crossai_loop_complete
+  (not "crossai.verdict") per MAJOR #1
+
+Tests: tests/test_batch68_cascade_post_build_gates.py (14 GREEN).
+4 prior post_wave tests still green. 130 total tests green.
+
 ## v4.55.0 — B65a: chain_steps end-to-end producer chain (codex audit fixes)
 
 Codex audit of B65/B66/B67 plan returned BLOCK verdict. 5 BLOCKERs +
