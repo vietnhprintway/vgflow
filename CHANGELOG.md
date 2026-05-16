@@ -1,5 +1,22 @@
 # Changelog
 
+## v4.51.2 — fix #188: vg_uninstall ValueError on sibling-project symlink
+
+Bug-auto report e6f720cc: vg_uninstall.py crashed mid-cleanup with
+ValueError when .claude/scripts was a symlink to a sibling clone
+(e.g. PrintwayV3 → vgflow-bugfix). Path.resolve() followed symlink
+→ outside root → relative_to() ValueError → update exit !=0.
+
+Two-layer defense:
+- _collect_paths(): filter paths outside root_resolved at collection
+- _backup_then_remove(): try/except guard per path (belt-and-suspenders)
+
+Both layers print clear stderr message identifying offending path.
+
+Tests: tests/test_issue_188_vg_uninstall_sibling.py (4 GREEN).
+
+Closes #188.
+
 ## v4.51.1 — B62-pre: goal_class dispatch + enables/Deps symmetry (audit BLOCKERs)
 
 Foundation patch for the feature-chain coverage plan (B62+B63+B64).
