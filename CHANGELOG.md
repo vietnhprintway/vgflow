@@ -1,5 +1,39 @@
 # Changelog
 
+## v4.61.0 — B69: pipeline routing fixes — review→test-spec→test chain (4 bugs)
+
+User report: "pipeline vẫn bị gợi ý thiếu ở bước review -> test-specs
+-> test. thiếu test-specs". /vg:test-spec silently skipped between
+review and test, causing review preflight to BLOCK next run.
+
+3 parallel audits found 4 concrete bugs:
+
+B1 — commands/vg/_shared/build/close.md never emitted next_command.
+B2 — commands/vg/test-spec.md:841 set next_command='/vg:review'
+     (review already ran upstream).
+B3 — commands/vg/_shared/review/close.md printed user message but
+     didn't emit PIPELINE-STATE.next_command='/vg:test-spec'.
+B4 — commands/vg/LIFECYCLE.md mermaid wrong order
+     (build → test-spec → review) contradicting code.
+
+Fix:
+- build/close.md emits next_command='/vg:review {phase}'
+- review/close.md emits next_command='/vg:test-spec {phase}'
+- test-spec.md emits next_command='/vg:test {phase}' (not /vg:review)
+- LIFECYCLE.md mermaid corrected (P4 → P5 → P5B → P6)
+- Phase contracts table reordered (Review=5, Test Spec=5b)
+- Auto-chain table updated with B69 emissions
+- test-spec.md objective rewritten to match canonical order
+
+Canonical pipeline now matches code dependencies:
+  specs → scope → blueprint → build → review → test-spec → test → accept
+
+Tests: tests/test_batch69_pipeline_routing.py (8 GREEN).
+189 cross-batch tests still green. Zero regression.
+
+After v4.61.0, /vg:next + auto-chain correctly suggest each step.
+/vg:test-spec no longer silently skipped.
+
 ## v4.60.0 — B67: preflight cross-artifact consistency REVISED (codex MAJOR)
 
 Codex MAJOR fix: B67 original "every goal_id has variant" was false.
