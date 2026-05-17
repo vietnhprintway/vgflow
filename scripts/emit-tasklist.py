@@ -852,11 +852,17 @@ def _restore_mode(run_id: str) -> int:
         return 0
 
     # Overlay snapshot status (latest seen state) over contract default.
+    # B71a v4.63.0: snapshot v2 schema persists step_id directly; v1 legacy
+    # rehydration reads .taskcreate-trace.jsonl + resolver. Audit fixes:
+    #   - codex B-1/B-5: legacy numeric snapshots recoverable.
+    #   - agent B-2: content field flows through restore.
     snapshot_path = REPO_ROOT / ".vg" / "runs" / run_id / ".todowrite-snapshot.json"
     snapshot_overrides: dict[str, str] = {}
     snapshot_used = False
     snapshot = _read_json(snapshot_path)
+    snapshot_schema = 0
     if isinstance(snapshot, dict):
+        snapshot_schema = int(snapshot.get("schema_version") or 0)
         snap_items = snapshot.get("items") or []
         if isinstance(snap_items, list):
             for snap in snap_items:
@@ -864,9 +870,97 @@ def _restore_mode(run_id: str) -> int:
                     continue
                 sid = str(snap.get("id") or "").strip()
                 sstatus = str(snap.get("status") or "").strip()
-                if sid and sstatus:
+                if sid and sstatus and not sid.startswith("<unresolved>:"):
                     snapshot_overrides[sid] = sstatus
             snapshot_used = bool(snapshot_overrides)
+
+    # Legacy rehydration: schema v1 with low overlap → try trace replay.
+    contract_ids = {str(it.get("id") or "") for it in items if isinstance(it, dict)}
+    overlap_n = sum(1 for k in snapshot_overrides if k in contract_ids)
+    overlap_pct_pre = (overlap_n / max(len(contract_ids), 1)) * 100 if contract_ids else 0
+    if snapshot_schema < 2 and overlap_pct_pre < 50.0:
+        trace_path = REPO_ROOT / ".vg" / "runs" / run_id / ".taskcreate-trace.jsonl"
+        resolver_loaded = None
+        # Resolver lookup: sibling of THIS script (canonical location), then
+        # parent-of-parent / .claude/scripts/ (mirror). REPO_ROOT may point at
+        # a tmp project root (e.g. during tests) so don't search relative to it.
+        _self_dir = Path(__file__).resolve().parent
+        for cand in [
+            _self_dir / "tasklist_id_resolver.py",
+            _self_dir.parent / ".claude" / "scripts" / "tasklist_id_resolver.py",
+            REPO_ROOT / "scripts" / "tasklist_id_resolver.py",
+            REPO_ROOT / ".claude" / "scripts" / "tasklist_id_resolver.py",
+        ]:
+            if cand.exists():
+                import importlib.util as _il_u
+                _spec = _il_u.spec_from_file_location("tasklist_id_resolver", cand)
+                if _spec and _spec.loader:
+                    resolver_loaded = _il_u.module_from_spec(_spec)
+                    try:
+                        _spec.loader.exec_module(resolver_loaded)
+                        break
+                    except Exception:
+                        resolver_loaded = None
+        if trace_path.exists() and resolver_loaded is not None:
+            tid_to_subject: dict[str, str] = {}
+            tid_to_status: dict[str, str] = {}
+            try:
+                for line in trace_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    act = rec.get("action")
+                    tid = str(rec.get("task_id") or "")
+                    if act == "create" and tid:
+                        tid_to_subject[tid] = rec.get("subject") or ""
+                        tid_to_status[tid] = rec.get("status") or "pending"
+                    elif act == "update" and tid in tid_to_status and rec.get("status"):
+                        tid_to_status[tid] = rec["status"]
+            except Exception:
+                pass
+            contract_items_for_resolver = [
+                {"id": it.get("id"), "kind": it.get("kind") or "step"}
+                for it in items if isinstance(it, dict) and it.get("id")
+            ]
+            rehydrated_overrides: dict[str, str] = {}
+            for tid, subject in tid_to_subject.items():
+                try:
+                    sid, _mc = resolver_loaded.resolve(subject, contract_items_for_resolver)
+                except Exception:
+                    continue
+                if sid and not sid.startswith("<unresolved>:"):
+                    prev = rehydrated_overrides.get(sid)
+                    cur_status = tid_to_status.get(tid, "pending")
+                    if prev is None:
+                        rehydrated_overrides[sid] = cur_status
+                    else:
+                        try:
+                            rehydrated_overrides[sid] = resolver_loaded.status_precedence(prev, cur_status)
+                        except Exception:
+                            pass
+            if rehydrated_overrides:
+                snapshot_overrides.update(rehydrated_overrides)
+                snapshot_used = True
+                print(
+                    f"# (B71a legacy rehydration: recovered {len(rehydrated_overrides)} step status(es) "
+                    f"from .taskcreate-trace.jsonl)",
+                    file=sys.stderr,
+                )
+
+    # B71d: ID schema mismatch warning (recompute after potential rehydration).
+    overlap_n = sum(1 for k in snapshot_overrides if k in contract_ids)
+    overlap_pct = (overlap_n / max(len(contract_ids), 1)) * 100 if contract_ids else 0
+    if snapshot_used and contract_ids and overlap_pct < 50.0:
+        print(
+            f"[WARN] tasklist ID schema mismatch -- snapshot keys {len(snapshot_overrides)}, "
+            f"contract keys {len(contract_ids)}, overlap={overlap_pct:.0f}% "
+            f"(run_id={run_id[:8]}). Snapshot statuses partially applied.",
+            file=sys.stderr,
+        )
 
     # Resolve effective status per item (snapshot wins).
     resolved: list[dict] = []

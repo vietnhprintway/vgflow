@@ -233,20 +233,73 @@ if [ -f "$snap_helper" ]; then
   # Pull the todos[] (TodoWrite path) or reconstruct from the trace
   # (TaskCreate/TaskUpdate path) and pipe to the snapshot helper.
   VG_HOOK_INPUT="$input" VG_RUN_ID="$run_id" python3 - "$snap_helper" <<'PY' >/dev/null 2>&1 || true
-import json, os, subprocess, sys
+# B71a v4.63.0: resolve display labels → contract step_ids before piping to
+# snapshot writer. Snapshot v2 schema persists {id (step_id), content (label),
+# status, match_class}. Caller-side resolution per audit (codex B-3) keeps
+# .taskcreate-trace.jsonl unchanged with raw task_id for TaskUpdate joins.
+import hashlib, importlib.util, json, os, subprocess, sys
 from pathlib import Path
 helper = sys.argv[1]
 hook_input = json.loads(os.environ.get("VG_HOOK_INPUT", "{}") or "{}")
 run_id = os.environ.get("VG_RUN_ID", "")
 if not run_id:
     sys.exit(0)
+
+contract_path = Path(f".vg/runs/{run_id}/tasklist-contract.json")
+contract_items = []
+contract_hash = ""
+if contract_path.exists():
+    try:
+        contract_body = contract_path.read_text(encoding="utf-8")
+        contract = json.loads(contract_body)
+        contract_items = contract.get("projection_items") or []
+        contract_hash = "sha256:" + hashlib.sha256(contract_body.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        contract_items = []
+
+# Locate resolver — canonical scripts/ first, fall back to .claude/scripts.
+resolver_mod = None
+for cand in [Path("scripts/tasklist_id_resolver.py"),
+             Path(".claude/scripts/tasklist_id_resolver.py")]:
+    if cand.exists():
+        spec = importlib.util.spec_from_file_location("tasklist_id_resolver", cand)
+        if spec and spec.loader:
+            resolver_mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(resolver_mod)
+                break
+            except Exception:
+                resolver_mod = None
+
+def _resolve_label(label, fallback_id):
+    if resolver_mod is None or not contract_items:
+        return (str(fallback_id or label or "").strip(), "exact")
+    try:
+        return resolver_mod.resolve(str(label), contract_items)
+    except Exception:
+        return (str(fallback_id or label or "").strip(), "exact")
+
 tool_name = hook_input.get("tool_name") or "TodoWrite"
 todos = []
 if tool_name == "TodoWrite":
-    todos = hook_input.get("tool_input", {}).get("todos") or []
+    raw_todos = hook_input.get("tool_input", {}).get("todos") or []
+    contract_ids_set = {it.get("id") for it in contract_items if it.get("id")}
+    for t in raw_todos:
+        if not isinstance(t, dict):
+            continue
+        content = t.get("content") or t.get("activeForm") or t.get("subject") or ""
+        raw_id = str(t.get("id") or "").strip()
+        if raw_id and raw_id in contract_ids_set:
+            step_id, match_class = raw_id, "exact"
+        else:
+            step_id, match_class = _resolve_label(content, raw_id)
+        todos.append({
+            "id": step_id,
+            "content": str(content),
+            "status": t.get("status", "pending"),
+            "match_class": match_class,
+        })
 else:
-    # TaskCreate / TaskUpdate — reconstruct from per-run trace file we just
-    # appended to. Mirrors the logic above so snapshot stays in sync.
     trace = Path(f".vg/runs/{run_id}/.taskcreate-trace.jsonl")
     if trace.exists():
         items_by_id, items_no_id = {}, []
@@ -261,9 +314,15 @@ else:
             act = rec.get("action")
             tid = rec.get("task_id") or ""
             if act == "create":
-                entry = {"id": tid or rec.get("subject", ""),
-                         "content": rec.get("subject", ""),
-                         "status": rec.get("status", "pending")}
+                subject = rec.get("subject", "") or ""
+                step_id, match_class = _resolve_label(subject, tid)
+                entry = {
+                    "id": step_id,
+                    "content": subject,
+                    "status": rec.get("status", "pending"),
+                    "match_class": match_class,
+                    "_trace_task_id": tid,
+                }
                 if tid:
                     items_by_id[tid] = entry
                 else:
@@ -272,9 +331,35 @@ else:
                 if tid in items_by_id and rec.get("status"):
                     items_by_id[tid]["status"] = rec["status"]
         todos = list(items_by_id.values()) + items_no_id
+
 if not todos:
     sys.exit(0)
-payload = json.dumps({"items": todos})
+
+# Status-precedence dedup: same step_id resolves from multiple labels →
+# in_progress > completed > pending (B71a status_precedence).
+if resolver_mod is not None:
+    by_step = {}
+    for t in todos:
+        sid = t["id"]
+        if sid not in by_step:
+            by_step[sid] = t
+        else:
+            prev = by_step[sid]
+            if resolver_mod.status_precedence(prev["status"], t["status"]) != prev["status"]:
+                by_step[sid] = t
+    todos = list(by_step.values())
+
+for t in todos:
+    t.pop("_trace_task_id", None)
+
+payload = json.dumps({
+    "schema_version": 2,
+    "items": todos,
+    "id_map_provenance": {
+        "contract_path": str(contract_path),
+        "contract_hash": contract_hash,
+    },
+})
 proc = subprocess.run(
     [sys.executable, helper, "--write", "--run-id", run_id],
     input=payload, capture_output=True, text=True,

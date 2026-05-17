@@ -1,5 +1,80 @@
 # Changelog
 
+## v4.63.0 — B71a+B71d: TaskList ID schema mismatch fix (deep-scan root cause)
+
+User report (dogfood RTB): "TaskList vẫn không hiệu quả, vẫn bị ẩn các task
+đang làm việc hoặc chờ làm việc, chỉ hiện mỗi các task đã làm". 4 parallel
+cavecrew-investigator subagents traced the chain end-to-end. Codex + Agent
+dual adversarial audit both returned FAIL on initial plan (7 + 6 BLOCKERs,
+9 unique after dedup). Plan rewritten from scratch per audit recommendations.
+
+**Root cause (CRITICAL, 100% reproduced on 2/2 RTB runs):** Contract
+`projection_items[].id` uses snake_case step IDs from `filter-steps.py`
+(`0_parse_and_validate`, `step5_fix_loop`, ...). Snapshot
+`.todowrite-snapshot.json:items[].id` was being written with either numeric
+backend task IDs (`353-360`) or AI display labels (`↳ 0 Parse And Validate`,
+`↳ test-spec 3_crossai_sweep`). **0% ID overlap between the two**, so
+`emit-tasklist.py:_restore_mode` overlay returned `None` for every item →
+all items fell back to contract default "pending" → on resume/compact the
+TodoWrite UI appeared "reset" with all pending statuses, masking the user's
+actual in-progress and completed work.
+
+Initial plan (B71a-f) tried to deferred-fix this with re-projection
+triggers, contract merges, recon-state invalidates. Audit revealed 9
+BLOCKERs: scripts/ IS mirrored (plan claimed not), snapshot drops `content`
+(resolver has nothing to map), legacy numeric snapshots unrecoverable from
+snapshot alone, resolver semantics under-specified for 5 distinct label
+families, collision handling unsafe (group vs step + status precedence),
+TaskCreate trace schema boundary undefined, contract merge orphan/rename
+implicit, B71b context bloat, empty-snapshot rc=1 cosmetic.
+
+**Plan v2 (this release) ships the audit-blessed slice:**
+
+**B71a — Resolver + snapshot schema v2:**
+  - NEW: `scripts/tasklist_id_resolver.py` (+ `.claude/` mirror byte-identical):
+    pure-stdlib layered matcher. Pipeline: exact → normalized → strip-cmd
+    → strip-decimal → substring → slug → unresolved. NFKD Unicode
+    normalize. Status-precedence helper: `in_progress > completed > pending`.
+    `STEP_ID_ALIASES` versioned dict for legacy renames (B71c hook).
+  - Modified `scripts/hooks/vg-tasklist-snapshot.py` (+ mirror): accepts v2
+    schema `{schema_version, items:[{id, content, status, match_class}],
+    id_map_provenance:{contract_path, contract_hash, snapshot_hash, resolved_at}}`.
+    v1 backward-compat auto-upgrades.
+  - Modified `scripts/hooks/vg-post-tool-use-todowrite.sh` (+ mirror):
+    resolves AI display labels → contract step_ids BEFORE piping to snapshot
+    writer. TaskCreate trace `.taskcreate-trace.jsonl` stays raw (preserves
+    TaskUpdate join semantics per codex audit BLOCKER B-3). Status-precedence
+    dedup applied when multiple labels resolve to same step_id.
+  - Modified `scripts/emit-tasklist.py:_restore_mode` (+ mirror): v2 reader
+    + legacy v1 rehydration via `.taskcreate-trace.jsonl` + resolver
+    (recovers RTB 10faabdb-style numeric-only snapshots).
+    `<unresolved>:` IDs do not pollute overlay dict.
+
+**B71d — Restore overlap validator:**
+  - After overlay attempt, computes overlap_pct.
+  - If < 50%, stderr warning: `[WARN] tasklist ID schema mismatch -- ...`
+    (ASCII chars only for Windows cp1258 compat).
+  - Telemetry surface for future dedup gate.
+
+**Out of scope this release (deferred to v4.63.1+):**
+  - B71b UserPromptSubmit compact digest on non-slash prompts (user reported
+    "khi prompt không phải lệnh, tasklist cũng không được cập nhật").
+  - B71c contract merge with explicit orphan/rename semantics.
+  - B71e empty-snapshot rc=1 (cosmetic per audit B-7).
+  - B71f full integration regression suite (12 cases).
+  - B71g docs.
+
+**Coverage:** 32 resolver unit tests + 14 snapshot/restore integration
+tests = **46 tests** all green. Mirror parity for 3 files (resolver,
+snapshot helper, emit-tasklist). No regression on 2,791 pre-existing
+passing tests.
+
+**Codex audit artifacts:**
+  - `dev-phases/B71-tasklist-reliability/CODEX-AUDIT.md` (FAIL, 7 BLOCKERs)
+  - `dev-phases/B71-tasklist-reliability/AGENT-AUDIT.md` (FAIL, 6 BLOCKERs)
+  - `dev-phases/B71-tasklist-reliability/PLAN-V2.md` (audit-revised, all 9
+    unique BLOCKERs addressed)
+
 ## v4.62.0 — B70: root-cause fix for legacy-phase routing (post-B69 fallout)
 
 User report (dogfood RTB phase 7.16): /vg:next after review suggested
