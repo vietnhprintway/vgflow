@@ -250,9 +250,44 @@ def _entrypoint_hints(spec: dict[str, Any], surfaces: dict[str, Any], profile: s
     for endpoint in _safe_list(spec.get("primary_endpoints")):
         if isinstance(endpoint, dict) and endpoint.get("method") and endpoint.get("path"):
             hints.append(f"{endpoint['method']} {endpoint['path']}")
-    for route in _safe_list(surfaces.get("routes"))[:10]:
-        if isinstance(route, dict) and route.get("route"):
-            hints.append(str(route["route"]))
+    # B74 v4.63.6 (issue #191 C-M2): filter surfaces.routes by goal relevance
+    # instead of blindly slapping top-10. Previously every goal received the
+    # first 10 routes from project source scan → unrelated routes (e.g. /2fa/*)
+    # polluted finance/catalog/admin goals → false navigation failures.
+    # Relevance signal: route's first 1-2 path segments appear in goal title,
+    # primary_endpoints, mutation_evidence, persistence_check, dependencies,
+    # or step descriptions/endpoints.
+    haystack_parts: list[str] = [
+        str(spec.get("title") or ""),
+        str(spec.get("mutation_evidence") or ""),
+        str(spec.get("persistence_check") or ""),
+        str(spec.get("dependencies") or ""),
+    ]
+    for endpoint in _safe_list(spec.get("primary_endpoints")):
+        if isinstance(endpoint, dict):
+            haystack_parts.append(str(endpoint.get("path") or ""))
+    for step in _safe_list(spec.get("steps")):
+        if isinstance(step, dict):
+            haystack_parts.append(str(step.get("description") or ""))
+            haystack_parts.append(str(step.get("endpoint") or ""))
+    haystack = " ".join(p for p in haystack_parts if p and p.strip()).lower()
+    matched_added = 0
+    for route in _safe_list(surfaces.get("routes")):
+        if matched_added >= 10:
+            break
+        if not isinstance(route, dict) or not route.get("route"):
+            continue
+        route_path = str(route["route"]).lower()
+        # Skip when haystack present and no segment overlap. Empty haystack
+        # falls through (preserves prior behavior for goals with sparse meta).
+        if haystack:
+            segments = [s for s in route_path.split("/") if s][:2]
+            if not segments:
+                continue
+            if not any(seg in haystack for seg in segments):
+                continue
+        hints.append(str(route["route"]))
+        matched_added += 1
     strategy = execution_strategy(profile)
     if not hints:
         hints.append(f"derive {strategy['entrypoint_kind']} from built implementation and TEST-GOALS")

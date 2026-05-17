@@ -1,5 +1,56 @@
 # Changelog
 
+## v4.63.6 — B74: fix issue #191 test-spec generator defects (4/8 partial)
+
+Partially closes [#191](https://github.com/vietdev99/vgflow/issues/191) (HIGH,
+test-spec output unusable for /vg:test runtime). Issue reported 8 systemic
+defects after Phase 8.2 PrintwayV3 CrossAI sweep on 200 goals. This release
+ships 4 deterministic fixes; remaining 4 (require deeper refactor) tracked.
+
+**Fixed in this release:**
+
+- **C-M2 (2FA entrypoint contamination):** `scripts/test_spec_ai_expander.py`
+  `_entrypoint_hints()` previously slapped first 10 routes from
+  `surfaces.routes` onto EVERY goal regardless of domain. Finance/catalog/
+  admin goals received `/2fa/challenge`, `/2fa/setup-totp` etc → false
+  navigation failures. **Fix:** filter routes by relevance — route's first
+  1-2 path segments must appear in goal's title, primary_endpoints,
+  mutation_evidence, persistence_check, dependencies, or step
+  descriptions/endpoints. Empty haystack falls through to prior top-10
+  (back-compat for sparse-metadata goals).
+
+- **C-M5 (API contract path validation):** `scripts/generate-lifecycle-specs.py`
+  `_bind_endpoint()` now checks `goal.primary_endpoints[].path` against
+  contracts schema BEFORE accepting. If goal claims a stale/drifted path
+  not in contracts, fall through to verb-fallback instead of propagating
+  phantom path into LIFECYCLE-SPECS.
+
+- **C-M6 (YAML fence pollution):** `scripts/generate-lifecycle-specs.py`
+  `_field()` regex previously parsed Dependencies value inclusive of yaml
+  rcrurdr fence content (lines like `resource/api_endpoint/expectations`
+  leaked from sibling \`\`\`yaml block). **Fix:** strip
+  `\`\`\`[lang]\n...\n\`\`\`` fenced blocks before regex extraction so
+  field values are clean.
+
+- **C-M1 (endpoint=null fallback warning surface):** `_bind_endpoint()`
+  fallback path now tags goal with `_b74_endpoint_fallback_count` so caller
+  can surface count after emission. Step toward proper fix: validators
+  read this field and warn when ratio exceeds threshold.
+
+**Deferred to follow-up (tracked in #191):**
+
+- C-M3 (actor mapping reads canonical role list)
+- C-M4 (RCRURDR per-goal coverage with `immutable: true` flag plumbing)
+- C-M7 (mutation_evidence vs success_status cross-validation)
+- C-M8 (TEST-GOALS source unification G-001..G-226 reconciliation)
+
+Coverage: **14 new tests** verifying 2FA filter, route cap, empty-haystack
+back-compat, YAML fence strip, primary_endpoints validation, fallback
+diagnostic. No regression on 26 pre-existing lifecycle/test-spec tests.
+
+Issue #190 (LOW, Codex CLI prompt-echo) remains deferred — council
+fallback works with single CLI.
+
 ## v4.63.5 — B73: fix issue #189 PreToolUse-tasklist deadlock on run-complete
 
 Closes [#189](https://github.com/vietdev99/vgflow/issues/189) (MEDIUM,

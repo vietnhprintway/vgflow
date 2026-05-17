@@ -187,13 +187,18 @@ def _meaningful(value: Any) -> bool:
 
 
 def _field(body: str, name: str) -> str:
+    # B74 v4.63.6 (issue #191 C-M6): strip fenced code blocks (```yaml ... ```)
+    # before regex extraction so YAML rcrurdr block content does not leak into
+    # adjacent field values (e.g. Dependencies value pulling in
+    # `resource/api_endpoint/expectations` lines from a sibling yaml block).
+    body_clean = re.sub(r"```[\w-]*\n.*?\n```\s*", "", body, flags=re.DOTALL)
     patterns = (
         rf"^\*\*{re.escape(name)}:\*\*\s*(.+?)(?=^\*\*|\n##|\n#\s+G-|\Z)",
         rf"^{re.escape(name)}:\s*(.+?)(?=^\w[\w -]*:|\n##|\n#\s+G-|\Z)",
         rf"^###\s+{re.escape(name)}\s*\n(.+?)(?=^###\s+|\n##\s+|\n#\s+|\Z)",
     )
     for pattern in patterns:
-        match = re.search(pattern, body, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+        match = re.search(pattern, body_clean, re.MULTILINE | re.DOTALL | re.IGNORECASE)
         if match:
             return match.group(1).strip()
     return ""
@@ -667,7 +672,15 @@ def _parse_api_contracts(phase_dir: Path) -> list[dict[str, str]]:
 
 
 def _bind_endpoint(stage: str, goal: dict[str, Any], contracts: list[dict[str, str]]) -> dict[str, str] | None:
-    """Match stage to a contract endpoint via heuristic on stage verb + goal text."""
+    """Match stage to a contract endpoint via heuristic on stage verb + goal text.
+
+    B74 v4.63.6 (issue #191 C-M1 / C-M5): record diagnostic on goal when
+    fallback path is taken (means stage couldn't match a goal-specific
+    endpoint, only verb-fallback). Caller surfaces the count for warning
+    after emission. Path validation guards against drifted/stale contracts:
+    if `goal.primary_endpoints[i].path` is set but NOT present in
+    `contracts`, log + skip that endpoint (don't propagate phantom path).
+    """
     if not contracts:
         return None
     verb_map: dict[str, tuple[str, ...]] = {
@@ -682,15 +695,29 @@ def _bind_endpoint(stage: str, goal: dict[str, Any], contracts: list[dict[str, s
     candidates_methods = verb_map.get(stage, ())
     if not candidates_methods:
         return None
+    contract_paths_set = {c["path"] for c in contracts}
     # First: try match in mutation_evidence + dependencies + persistence_check text
     haystack = " ".join(str(goal.get(k) or "") for k in
                         ("mutation_evidence", "persistence_check", "dependencies", "title"))
     for c in contracts:
         if c["method"] in candidates_methods and c["path"] in haystack:
             return {"method": c["method"], "path": c["path"]}
-    # Fallback: first contract entry whose method matches
+    # Second: explicit primary_endpoints[] on goal if path is known in contracts.
+    for ep in (goal.get("primary_endpoints") or []):
+        if not isinstance(ep, dict):
+            continue
+        ep_method = str(ep.get("method") or "").upper()
+        ep_path = str(ep.get("path") or "")
+        if ep_method in candidates_methods and ep_path in contract_paths_set:
+            return {"method": ep_method, "path": ep_path}
+    # Fallback: first contract entry whose method matches.
+    # B74: tag the goal so caller can surface the count of fallback-bindings
+    # as a warning (the user's complaint was 200/200 endpoint=null which
+    # implies BOTH "no match found" AND the fallback path was empty).
     for c in contracts:
         if c["method"] in candidates_methods:
+            goal.setdefault("_b74_endpoint_fallback_count", 0)
+            goal["_b74_endpoint_fallback_count"] += 1
             return {"method": c["method"], "path": c["path"]}
     return None
 
