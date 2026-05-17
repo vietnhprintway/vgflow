@@ -24,7 +24,10 @@ def load_key() -> bytes:
             f"Run: openssl rand -base64 32 > {key_path} && chmod 600 {key_path}\n"
         )
         sys.exit(2)
-    if (key_path.stat().st_mode & 0o077) != 0:
+    # B79 issue #194 finding #1: Python on Windows synthesizes group+other
+    # mode bits from file attributes; chmod/attrib/icacls cannot zero them.
+    # ACL-based access is the OS contract there — skip the POSIX mode check.
+    if os.name != "nt" and (key_path.stat().st_mode & 0o077) != 0:
         sys.stderr.write(f"ERROR: evidence key {key_path} must be mode 0600\n")
         sys.exit(2)
     # NOTE: key remains in memory for process lifetime; helper is short-lived by design (intentional).

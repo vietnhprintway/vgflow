@@ -1947,7 +1947,27 @@ def cmd_wave_complete(args) -> int:
             print(f"\033[38;5;208mevidence file read error: {e}\033[0m", file=sys.stderr)
             return 1
     else:
+        # B79 issue #194 finding #2: detect operator forgot to pipe evidence.
+        # TTY + empty stdin → emit explicit usage instead of cryptic JSON parse.
+        if sys.stdin.isatty():
+            print(
+                "\033[38;5;208mwave-complete requires evidence JSON via "
+                "--evidence-file <path> or stdin pipe.\n"
+                "  Example: echo '{\"wave\":N,\"tasks\":[...]}' | "
+                "vg-orchestrator wave-complete N\n"
+                "  See `vg-orchestrator wave-complete --help` for the "
+                "required schema.\033[0m",
+                file=sys.stderr,
+            )
+            return 1
         raw = sys.stdin.read()
+        if not raw.strip():
+            print(
+                "\033[38;5;208mwave-complete received empty stdin. "
+                "Pipe evidence JSON or pass --evidence-file <path>.\033[0m",
+                file=sys.stderr,
+            )
+            return 1
 
     try:
         evidence_data = json.loads(raw)

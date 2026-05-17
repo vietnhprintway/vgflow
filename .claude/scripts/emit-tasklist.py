@@ -57,11 +57,36 @@ def _resolve_project_root() -> Path:
 
 
 PROJECT_ROOT = _resolve_project_root()
-VG_HOME = (
-    find_vg_home(__file__)
-    if find_vg_home
-    else Path(os.environ.get("VG_HOME") or PROJECT_ROOT / ".claude").resolve()
-)
+
+
+def _resolve_vg_home() -> Path:
+    """B79 issue #194 finding #5: tolerant VG_HOME resolution.
+
+    Chain:
+      1. VG_HOME env var (explicit)
+      2. find_vg_home() if helper imported and returns OK
+      3. ~/.vgflow (global install canonical location)
+      4. PROJECT_ROOT / .claude (legacy project-local fallback)
+
+    Previous behavior raised RuntimeError or fell to PROJECT_ROOT/.claude
+    silently, leaving emit-tasklist unable to resolve commands/vg/*.md
+    after `/vg:update` pruned project-local mirrors.
+    """
+    env = os.environ.get("VG_HOME")
+    if env:
+        return Path(env).resolve()
+    if find_vg_home:
+        try:
+            return find_vg_home(__file__)
+        except Exception:
+            pass
+    home_vgflow = Path.home() / ".vgflow"
+    if home_vgflow.exists():
+        return home_vgflow
+    return (PROJECT_ROOT / ".claude").resolve()
+
+
+VG_HOME = _resolve_vg_home()
 
 # Backward-compatible alias: state still lives in the project root.
 REPO_ROOT = PROJECT_ROOT
@@ -163,17 +188,37 @@ def _find_matching_active_run(
 
 
 def _resolve_command_file(command: str) -> Path:
-    # "vg:build" → ${VG_HOME}/commands/vg/build.md
+    """Resolve "vg:build" → first existing path in VG_HOME, ~/.vgflow,
+    PROJECT/.claude. Returns primary VG_HOME path even if absent so the
+    caller's error message points at the canonical location.
+    B79 issue #194 finding #5.
+    """
     if ":" in command:
         ns, name = command.split(":", 1)
-        return VG_HOME / "commands" / ns / f"{name}.md"
-    return VG_HOME / "commands" / f"{command}.md"
+        rel = Path("commands") / ns / f"{name}.md"
+    else:
+        rel = Path("commands") / f"{command}.md"
+    primary = VG_HOME / rel
+    if primary.exists():
+        return primary
+    for cand in (Path.home() / ".vgflow" / rel, PROJECT_ROOT / ".claude" / rel):
+        if cand.exists():
+            return cand
+    return primary
 
 
 def _get_step_list(command: str, profile: str, mode: str | None = None) -> list[str]:
     cmd_file = _resolve_command_file(command)
     if not cmd_file.exists():
-        print(f"\033[38;5;208mCommand file not found: {cmd_file}\033[0m", file=sys.stderr)
+        print(
+            f"\033[38;5;208mCommand file not found: {cmd_file}\n"
+            f"  VG_HOME={VG_HOME}\n"
+            f"  Tried also: {Path.home() / '.vgflow'}, "
+            f"{PROJECT_ROOT / '.claude'}\n"
+            f"  Fix: export VG_HOME=~/.vgflow (global install) "
+            f"or run `bash ~/.vgflow/sync.sh` to repair.\033[0m",
+            file=sys.stderr,
+        )
         return []
     filter_cmd = [
         sys.executable, str(FILTER_STEPS),

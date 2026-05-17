@@ -1,3 +1,75 @@
+# v4.63.11 — B79 Windows friction (issue #194 findings 1, 2, 5)
+
+User dogfood report (RTB Phase 8.1 Flow 9 Admin Reports, 2026-05-17/18):
+six harness-friction findings on Windows. Three lowest-risk / highest-pain
+fixes ship here; #3 (reserved-event repair) + #4 (PreToolUse-tasklist
+refresh cycle) + #6 (sync.sh junction) deferred to B80+.
+
+**Findings fixed:**
+
+1. **Finding #1 — `evidence-key must be mode 0600` blocks every TaskUpdate
+   on Windows.** Python on Windows synthesizes group+other mode bits from
+   file attributes (`os.stat()` returns `0o100666` for files chmod 600).
+   `chmod`, `attrib +R`, `icacls /inheritance:r` all leave the bits set —
+   there is no way to satisfy `& 0o077 == 0` short of patching the check.
+   PostToolUse:TaskUpdate hook fails every single mark-step.
+
+   Fix: skip the POSIX mode check on `os.name == "nt"`. ACL-based access
+   is the OS contract there. Mirrors same pattern used in
+   `allow_flag_gate.py` for path-trust decisions.
+
+   Files: `scripts/vg-orchestrator-emit-evidence-signed.py:27` +
+   `.claude/scripts/` mirror.
+
+2. **Finding #5 — `emit-tasklist.py` defaults to project `.claude/` after
+   `/vg:update` prunes project mirrors.** When global install is active
+   (`.vg/.install-target=global`) but `find_vg_home()` raises (HOME
+   resolution edge cases on Windows, missing `_vg_home` import on some
+   sync configurations), VG_HOME fell back to `PROJECT_ROOT / .claude`
+   which has no `commands/vg/*.md` after `/vg:update` legitimately
+   pruned them. Error: `Command file not found: D:\…\.claude\commands\vg\build.md`.
+
+   Fix: new `_resolve_vg_home()` with 4-step chain — VG_HOME env →
+   `find_vg_home()` → `~/.vgflow` → `PROJECT/.claude`. `_resolve_command_file`
+   now probes all three locations and returns the first existing path
+   (primary VG_HOME path even when absent so error message points at
+   canonical location). Error message lists every tried path + suggests
+   `export VG_HOME=~/.vgflow` or `bash ~/.vgflow/sync.sh`.
+
+   Files: `scripts/emit-tasklist.py:42-95` + mirror.
+
+3. **Finding #2 — `wave-complete` empty stdin → cryptic JSON parse
+   error.** Operator calling `vg-orchestrator wave-complete 4` without
+   piping evidence hit `evidence_json parse error: Expecting value:
+   line 1 column 1 (char 0)`. Compounded across a session: every
+   wave-complete printed the orange warning because operator wasn't aware
+   evidence was required.
+
+   Fix: detect `sys.stdin.isatty()` → emit explicit usage block with
+   example pipe + `--help` pointer. Detect empty-string stdin (non-TTY
+   pipe with no payload) → emit `received empty stdin` hint.
+
+   Files: `scripts/vg-orchestrator/__main__.py:1949-1972` + mirror.
+
+**Tests:** `tests/test_batch79_windows_friction.py` — 10 cases (9 text
+presence + mirror parity, 1 behavioral env-var honoring, 1
+platform-skipped behavioral). 9 pass + 1 skip on Windows; 10 pass on
+Linux CI.
+
+**Deferred (issue #194 findings 3, 4, 6):**
+
+- Finding #3 (reserved-event repair subcommand) — design decision
+  needed: `repair-events` vs `emit-event --force` vs documentation-only.
+- Finding #4 (PreToolUse-tasklist refresh cycle) — B73 v4.63.5 partial
+  fix landed only for run-complete; deadlock still fires mid-wave on
+  every `mark-step` → next bash call. Needs deeper trace into PreToolUse
+  block.handled timing semantics.
+- Finding #6 (`sync.sh` Windows junction support) — `ln -s` falls back
+  to `cp -r` without warning under git-bash. Requires `cmd //c mklink /J`
+  branch + smarter `--check` to distinguish stale vs intentional copies.
+
+---
+
 # v4.63.10 — B78 tasklist resilience (macOS bash 3.2 + FK + profile merge)
 
 User dogfood report (PrintwayV3 `/vg:test 8.2` session, 2026-05-18):
