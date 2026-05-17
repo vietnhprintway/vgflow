@@ -769,6 +769,137 @@ def _write_contract(
         },
     }
     path = REPO_ROOT / ".vg" / "runs" / run_id / "tasklist-contract.json"
+
+    # B71c v4.63.1+: merge with existing contract to preserve user progress.
+    # Audit semantics (codex B-4 / agent B-5):
+    #   - New filter-steps.py output is canonical (this `contract`).
+    #   - Common step_ids: copy status from existing snapshot if newer than contract.
+    #   - Step renamed via STEP_ID_ALIASES: migrate status to canonical name.
+    #   - Step removed: drop status. If was in_progress → BLOCK merge with marker.
+    #   - Step added: pending (default already set).
+    # Reads snapshot (not old contract) because snapshot tracks runtime state
+    # while old contract is just the prior projection skeleton.
+    if path.exists():
+        try:
+            existing_body = path.read_text(encoding="utf-8")
+            existing = json.loads(existing_body)
+            existing_cmd = existing.get("command")
+            existing_phase = existing.get("phase")
+            # Only merge when same (command, phase). Different = fresh rewrite.
+            if existing_cmd == command and str(existing_phase) == str(phase):
+                snap_path = path.parent / ".todowrite-snapshot.json"
+                if snap_path.exists():
+                    try:
+                        snap = json.loads(snap_path.read_text(encoding="utf-8"))
+                        snap_items = snap.get("items") or []
+                        snap_status_by_id: dict[str, str] = {}
+                        for it in snap_items:
+                            if not isinstance(it, dict):
+                                continue
+                            sid = str(it.get("id") or "").strip()
+                            sst = str(it.get("status") or "").strip()
+                            if sid and sst and not sid.startswith("<unresolved>:"):
+                                snap_status_by_id[sid] = sst
+                    except Exception:
+                        snap_status_by_id = {}
+                else:
+                    snap_status_by_id = {}
+
+                # Load resolver for alias migration.
+                _resolver = None
+                _self_dir = Path(__file__).resolve().parent
+                for _cand in [
+                    _self_dir / "tasklist_id_resolver.py",
+                    _self_dir.parent / ".claude" / "scripts" / "tasklist_id_resolver.py",
+                ]:
+                    if _cand.exists():
+                        import importlib.util as _il_u_c
+                        _spec_c = _il_u_c.spec_from_file_location("tasklist_id_resolver", _cand)
+                        if _spec_c and _spec_c.loader:
+                            _resolver = _il_u_c.module_from_spec(_spec_c)
+                            try:
+                                _spec_c.loader.exec_module(_resolver)
+                                break
+                            except Exception:
+                                _resolver = None
+
+                new_step_ids = {it["id"] for it in items}
+                merged_statuses: dict[str, str] = {}
+                in_progress_orphans: list[str] = []
+                dropped_completed: list[str] = []
+
+                for old_sid, old_status in snap_status_by_id.items():
+                    if old_sid in new_step_ids:
+                        merged_statuses[old_sid] = old_status
+                        continue
+                    # Try alias migration.
+                    target = None
+                    if _resolver:
+                        try:
+                            target = _resolver.resolve_alias(old_sid)
+                        except Exception:
+                            target = None
+                    if target and target in new_step_ids:
+                        # Renamed step — migrate status. Status-precedence if both alias + canonical present.
+                        existing_status = merged_statuses.get(target)
+                        if existing_status and _resolver:
+                            try:
+                                merged_statuses[target] = _resolver.status_precedence(existing_status, old_status)
+                            except Exception:
+                                merged_statuses[target] = old_status
+                        else:
+                            merged_statuses[target] = old_status
+                        continue
+                    # Orphan — old step not in new contract.
+                    if old_status == "in_progress":
+                        in_progress_orphans.append(old_sid)
+                    elif old_status == "completed":
+                        dropped_completed.append(old_sid)
+                    # pending orphans: silent drop.
+
+                if in_progress_orphans:
+                    # Block merge: write a sidecar marker for slash command preflight
+                    # to detect + prompt user with vg:override-resolve.
+                    orphan_marker = path.parent / ".merge-orphan-blocker.json"
+                    orphan_marker.write_text(json.dumps({
+                        "blocked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "in_progress_orphans": in_progress_orphans,
+                        "old_command": existing_cmd,
+                        "old_phase": existing_phase,
+                        "new_command": command,
+                        "new_phase": phase,
+                        "resolution": "Run /vg:override-resolve to confirm or revert the merge.",
+                    }, indent=2), encoding="utf-8")
+                    print(
+                        f"[WARN] B71c contract merge blocked: in-progress orphan step(s) "
+                        f"{in_progress_orphans} would be dropped. "
+                        f"See {orphan_marker} -- run /vg:override-resolve.",
+                        file=sys.stderr,
+                    )
+                    # Fall through and write anyway (gate is advisory for now).
+
+                if dropped_completed:
+                    print(
+                        f"[WARN] B71c contract merge dropped completed step(s) "
+                        f"{dropped_completed} (not in new contract).",
+                        file=sys.stderr,
+                    )
+
+                # Apply merged statuses to items + projection_items.
+                for it in items:
+                    if it["id"] in merged_statuses:
+                        it["status"] = merged_statuses[it["id"]]
+                for pi in projection_items:
+                    if pi.get("id") in merged_statuses:
+                        pi["status"] = merged_statuses[pi["id"]]
+                contract["items"] = items
+                contract["projection_items"] = reorder_projection_by_status(projection_items)
+                contract["merged_from_existing_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                contract["merged_status_count"] = len(merged_statuses)
+        except Exception:
+            # Any merge failure → fresh write (don't corrupt state).
+            pass
+
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(contract, indent=2), encoding="utf-8")

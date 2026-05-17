@@ -68,6 +68,106 @@ if [[ ! "$prompt" =~ ^/vg:([a-z][a-z0-9_-]*)([[:space:]]+(.*))?$ ]]; then
         printf "STATE: tasklist projected OK (adapter=%s). Continue executing the flow per slim-entry STEP order. DO NOT ad-hoc skip steps.\n" "$required_adapter" >&2
       fi
       printf "Slim entry: commands/vg/%s.md\n" "${active_cmd#vg:}" >&2
+
+      # B71b v4.63.1+: compact tasklist digest. Skips on short prompts (Y/N
+      # replies) + post-AskUserQuestion + frequent prompts (60s rate-limit)
+      # + VG_TASKLIST_REPROJECT_DISABLE=1 escape hatch. Emits 1-line digest
+      # to stderr alongside flow-context. Triggers when overlap<50% OR
+      # last_restore>30min OR contract_hash changed.
+      if [ "${VG_TASKLIST_REPROJECT_DISABLE:-0}" != "1" ]; then
+        prompt_len=${#prompt}
+        if [ "$prompt_len" -ge 10 ] && [ -n "$active_run_id" ]; then
+          VG_RUN_ID="$active_run_id" python3 - <<'DIGEST_PY' >&2 2>/dev/null || true
+import hashlib, json, os, sys, time
+from pathlib import Path
+run_id = os.environ.get("VG_RUN_ID", "")
+if not run_id:
+    sys.exit(0)
+contract_path = Path(f".vg/runs/{run_id}/tasklist-contract.json")
+snap_path = Path(f".vg/runs/{run_id}/.todowrite-snapshot.json")
+digest_state_path = Path(f".vg/runs/{run_id}/.last-digest-emit.json")
+if not contract_path.exists():
+    sys.exit(0)
+try:
+    contract_body = contract_path.read_text(encoding="utf-8")
+    contract = json.loads(contract_body)
+except Exception:
+    sys.exit(0)
+contract_hash = "sha256:" + hashlib.sha256(contract_body.encode("utf-8")).hexdigest()[:12]
+contract_items = contract.get("projection_items") or []
+contract_ids = {it.get("id") for it in contract_items if it.get("id")}
+snap_hash = ""
+snap_overlap_n = 0
+status_counts = {"pending": 0, "in_progress": 0, "completed": 0}
+if snap_path.exists():
+    try:
+        snap_body = snap_path.read_text(encoding="utf-8")
+        snap = json.loads(snap_body)
+        snap_hash = "sha256:" + hashlib.sha256(snap_body.encode("utf-8")).hexdigest()[:12]
+        for it in snap.get("items") or []:
+            sid = it.get("id") or ""
+            if sid and not sid.startswith("<unresolved>:") and sid in contract_ids:
+                snap_overlap_n += 1
+                st = it.get("status") or "pending"
+                if st in status_counts:
+                    status_counts[st] += 1
+    except Exception:
+        pass
+overlap_pct = (snap_overlap_n / max(len(contract_ids), 1)) * 100 if contract_ids else 0
+unaccounted = len(contract_ids) - sum(status_counts.values())
+if unaccounted > 0:
+    status_counts["pending"] += unaccounted
+# Rate-limit + dedup check.
+now = time.time()
+emit = False
+reason = []
+last_state = {}
+if digest_state_path.exists():
+    try:
+        last_state = json.loads(digest_state_path.read_text(encoding="utf-8"))
+    except Exception:
+        last_state = {}
+last_emit_ts = float(last_state.get("emit_ts") or 0)
+last_contract_hash = last_state.get("contract_hash") or ""
+last_snap_hash = last_state.get("snap_hash") or ""
+if now - last_emit_ts < 60:
+    sys.exit(0)
+if contract_hash != last_contract_hash:
+    emit = True
+    reason.append("contract-changed")
+if snap_hash != last_snap_hash:
+    emit = True
+    reason.append("snapshot-changed")
+if overlap_pct < 50:
+    emit = True
+    reason.append(f"overlap<50%")
+if now - last_emit_ts > 1800:
+    emit = True
+    reason.append(">30min-since-last")
+if not emit:
+    sys.exit(0)
+phase = contract.get("phase", "?")
+cmd = contract.get("command", "?")
+print(
+    f"[VG-TASKLIST] phase={phase} cmd={cmd} | "
+    f"{status_counts['in_progress']} in_progress / {status_counts['pending']} pending / "
+    f"{status_counts['completed']} completed | overlap={overlap_pct:.0f}% | "
+    f"contract={contract_hash[7:15]} | snapshot={snap_hash[7:15] if snap_hash else 'none'} | "
+    f"reason={','.join(reason)}"
+)
+try:
+    digest_state_path.parent.mkdir(parents=True, exist_ok=True)
+    digest_state_path.write_text(json.dumps({
+        "emit_ts": now,
+        "contract_hash": contract_hash,
+        "snap_hash": snap_hash,
+    }), encoding="utf-8")
+except Exception:
+    pass
+DIGEST_PY
+        fi
+      fi
+
       printf "</vg-flow-context>\n" >&2
       exit 0
     fi

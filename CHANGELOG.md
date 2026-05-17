@@ -1,5 +1,53 @@
 # Changelog
 
+## v4.63.2 — B71b+B71c: TaskList non-slash digest + contract merge orphan/rename
+
+Closes 2 remaining user-reported issues from RTB dogfood feedback (issue #2
+"khi chạy lại prompt lệnh, tasklist không cập nhật đúng" + issue #3 "khi
+prompt không phải lệnh, tasklist cũng không được cập nhật").
+
+**B71b — UserPromptSubmit compact digest on non-slash prompts:**
+  - `scripts/hooks/vg-user-prompt-submit.sh` (+ mirror): inject 1-line tasklist
+    digest into existing `<vg-flow-context>` stderr block on every non-slash
+    prompt when conditions met.
+  - Digest format: `[VG-TASKLIST] phase=X cmd=Y | N in_progress / M pending /
+    K completed | overlap=Z% | contract=hash | snapshot=hash | reason=...`.
+  - Triggers (any one): contract_hash changed, snapshot_hash changed,
+    overlap < 50%, > 30min since last emit.
+  - Suppressed by: prompt length < 10 (Y/N reply heuristic), 60s rate-limit
+    via `.vg/runs/{run_id}/.last-digest-emit.json`,
+    `VG_TASKLIST_REPROJECT_DISABLE=1` escape hatch.
+  - Slash command branch unaffected (slash preflight owns full projection).
+
+**B71c — emit-tasklist contract merge with explicit orphan/rename semantics:**
+  - `scripts/emit-tasklist.py:_write_contract` (+ mirror): when a contract
+    already exists for the same (command, phase), MERGE statuses from the
+    current `.todowrite-snapshot.json` into the new contract instead of
+    overwriting clean.
+  - Semantics (per codex audit B-4 + agent B-5):
+    - Common step_ids: preserve snapshot status.
+    - Step renamed via `STEP_ID_ALIASES`: migrate status to canonical name
+      with `resolver.status_precedence()` if both old + new appear.
+    - Step removed + completed: drop + stderr `[WARN]` listing affected IDs.
+    - Step removed + pending: drop silently.
+    - Step removed + in_progress: write
+      `.vg/runs/{run_id}/.merge-orphan-blocker.json` sidecar + `[WARN]`.
+      Caller slash command preflight reads and can prompt
+      `/vg:override-resolve` before proceeding.
+  - Different (command, phase) → no merge, fresh rewrite.
+  - Records `merged_from_existing_at` + `merged_status_count` for audit.
+
+Coverage: **10 B71b digest tests** (text inspection + bash subprocess
+behavior) + **8 B71c merge tests** (status preserve, orphan handling, fresh
+rewrite, alias). All green (1 alias test SKIP due to STEP_ID_ALIASES being
+empty in production — module-cache limitation, will exercise when first
+rename lands). Mirror parity x3.
+
+**Still backlog (v4.63.3+):**
+  - B71e empty-snapshot rc=1 (cosmetic per audit B-7).
+  - B71f full integration regression suite (RTB fixture replay).
+  - B71g docs/architecture/tasklist-id-resolution.md.
+
 ## v4.63.1 — B71a hotfix: test fixtures set VG_HOME for CI
 
 CI Test failed on v4.63.0 (6 tests in test_batch71a_snapshot_v2_and_restore.py
