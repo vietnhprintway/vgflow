@@ -1,5 +1,56 @@
 # Changelog
 
+## v4.63.3 — B71f+B71g: RTB fixture regression + TaskList architecture doc
+
+Final B71 ship. Closes remaining backlog (B71f integration + B71g docs).
+B71e (cosmetic empty-snapshot rc) skipped per codex audit B-7: rc=1 with
+`|| true` is semantically equivalent to rc=0 with stderr log. No surface
+change needed.
+
+**B71f — RTB-anonymized fixture regression suite:**
+  - `tests/fixtures/tasklist-rtb-c1a5/` — display-label snapshot pattern.
+    Mirrors real RTB `c1a5edc3` shape: contract has 9 projection_items
+    with snake_case step_ids (`0_parse_and_validate`, `3_crossai_sweep`,
+    ...); snapshot has 18 items with 5 distinct label families (`↳ 0 Parse
+    And Validate`, `↳ 3.5 CrossAI Sweep`, `↳ test-spec 0_parse_and_validate`,
+    `↳ test-spec 4_codegen — Spawn ...`, group rows).
+  - `tests/fixtures/tasklist-rtb-10fa/` — legacy numeric tid pattern.
+    Mirrors real RTB `10faabdb`: contract has step5_fix_loop +
+    step7_matrix_verdict; snapshot has only numeric tids (353-360); trace
+    has TaskCreate `subject` field with `↳ step5_fix_loop` content for
+    rehydration.
+  - `tests/test_batch71f_rtb_fixture_replay.py` — **9 tests**:
+    1-2. Fixture sanity (files present).
+    3. c1a5 resolver maps ≥14/18 snapshot IDs to contract step_ids.
+    4. c1a5 status_precedence resolves collisions (`in_progress` wins).
+    5. c1a5 restore-mode overlay produces non-zero in_progress + completed
+       counts (regression test against user symptom).
+    6. 10fa naive overlay = 0% (proves bug existed pre-fix).
+    7. 10fa trace rehydration recovers contract step_ids.
+    8. 10fa end-to-end restore-mode with auto-rehydration on v1 snapshot.
+    9. **Regression assertion: user symptom NOT reproducible on c1a5
+       fixture** — output contains in_progress + pending + completed
+       counts, not all-pending.
+
+**B71g — Architecture doc:**
+  - `docs/architecture/tasklist-id-resolution.md` — explains v2 snapshot
+    schema, resolver pipeline (7 layers), legacy rehydration, hook flow
+    diagrams (write + restore paths), B71b digest behavior, B71c merge
+    semantics, troubleshooting (3 common symptoms with debug recipes),
+    cross-references to commits + tests.
+
+**B71 final summary (4 ships v4.63.0 → v4.63.3):**
+  - 7 sub-batches shipped, 1 deferred (B71e cosmetic).
+  - **73 new tests** (32 resolver + 14 snapshot/restore + 10 digest +
+    8 merge + 9 RTB fixture). All green except 1 documented skip.
+  - **3 user-reported symptoms** all fixed:
+    1. "Ẩn task in_progress/pending" → B71a ID resolver + v2 schema.
+    2. "Slash command rerun không cập nhật" → B71c contract merge.
+    3. "Non-command prompt không cập nhật" → B71b compact digest.
+  - **Codex + Agent dual audit cycle:** v1 plan FAILED with 7+6 BLOCKERs.
+    Plan v2 (audit-revised) addressed all 9 unique. Documented in
+    `dev-phases/B71-tasklist-reliability/`.
+
 ## v4.63.2 — B71b+B71c: TaskList non-slash digest + contract merge orphan/rename
 
 Closes 2 remaining user-reported issues from RTB dogfood feedback (issue #2

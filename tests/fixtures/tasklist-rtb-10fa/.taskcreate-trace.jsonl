@@ -1,0 +1,10 @@
+{"action": "create", "task_id": "353", "subject": "↳ step5_fix_loop", "status": "pending"}
+{"action": "create", "task_id": "354", "subject": "Other Workflow Steps — test 7.16", "status": "pending"}
+{"action": "create", "task_id": "355", "subject": "↳ step7_matrix_verdict", "status": "pending"}
+{"action": "create", "task_id": "356", "subject": "↳ Spawn subagent — rewrite specs", "status": "pending"}
+{"action": "create", "task_id": "357", "subject": "↳ Run full test suite headless", "status": "pending"}
+{"action": "create", "task_id": "358", "subject": "↳ Fix-loop on real failures (max 5 iter)", "status": "pending"}
+{"action": "create", "task_id": "359", "subject": "↳ MATRIX-VERDICT.json + close run", "status": "pending"}
+{"action": "update", "task_id": "353", "status": "completed"}
+{"action": "update", "task_id": "354", "status": "completed"}
+{"action": "update", "task_id": "355", "status": "in_progress"}

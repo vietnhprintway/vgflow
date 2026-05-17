@@ -1,0 +1,40 @@
+{
+  "schema": "native-tasklist.v2",
+  "run_id": "c1a5edc3-anon-fixture",
+  "command": "vg:test-spec",
+  "phase": "7.16",
+  "profile": "web-fullstack",
+  "mode": "full",
+  "created_at": "2026-05-17T10:46:47Z",
+  "projection_required": true,
+  "projection_mode": "hierarchical",
+  "checklists": [
+    {
+      "id": "workflow_other",
+      "title": "Other Workflow Steps",
+      "items": [
+        "0_parse_and_validate",
+        "1_build_artifact_gate",
+        "2_generate_deep_specs",
+        "3_validate_deep_specs",
+        "3_crossai_sweep",
+        "4_codegen",
+        "4_self_review",
+        "5_complete"
+      ],
+      "status": "pending"
+    }
+  ],
+  "projection_items": [
+    {"kind": "group", "id": "workflow_other", "parent": null, "title": "Other Workflow Steps", "status": "pending"},
+    {"kind": "step", "id": "0_parse_and_validate", "parent": "workflow_other", "title": "  ↳ 0 Parse And Validate", "status": "pending"},
+    {"kind": "step", "id": "1_build_artifact_gate", "parent": "workflow_other", "title": "  ↳ 1 Build Artifact Gate", "status": "pending"},
+    {"kind": "step", "id": "2_generate_deep_specs", "parent": "workflow_other", "title": "  ↳ 2 Generate Deep Specs", "status": "pending"},
+    {"kind": "step", "id": "3_validate_deep_specs", "parent": "workflow_other", "title": "  ↳ 3 Validate Deep Specs", "status": "pending"},
+    {"kind": "step", "id": "3_crossai_sweep", "parent": "workflow_other", "title": "  ↳ 3.5 CrossAI Sweep", "status": "pending"},
+    {"kind": "step", "id": "4_codegen", "parent": "workflow_other", "title": "  ↳ 4 Codegen", "status": "pending"},
+    {"kind": "step", "id": "4_self_review", "parent": "workflow_other", "title": "  ↳ 4.5 Self Review", "status": "pending"},
+    {"kind": "step", "id": "5_complete", "parent": "workflow_other", "title": "  ↳ 5 Complete", "status": "pending"}
+  ],
+  "projection_item_count": 9
+}
