@@ -1,3 +1,57 @@
+# v4.64.3 — B86 Issue #194 finding #6 Windows junction support (closes issue)
+
+Final deferred item from issue #194. Issue can now be closed.
+
+User dogfood (RTB, 2026-05-17): on Windows git-bash, `ln -s` falls back
+to silent `cp -R` without warning. Dispatcher then prints
+"vgflow: linked …" even though no symlink exists. The `--check` step
+later flags the resulting real directory as stale because global-install
+doctrine forbids project-local copies.
+
+**Fix:**
+
+New `_vg_is_windows` + `_vg_link_dir` helpers in `bin/vg-cli-dispatcher.sh`:
+
+  1. Detect Windows via `OS=Windows_NT` env OR `uname -o` returning
+     MSYS/MINGW64/MSYS_NT/Cygwin variants.
+  2. On Windows, try `cmd //c mklink /J <dst> <src>` FIRST (directory
+     junction — no admin or developer mode required).
+  3. Fall back to `ln -s` (POSIX path).
+  4. Fall back to `cp -R` only if both link strategies fail.
+
+**Honest log messages** replace the misleading "linked":
+
+  - `vgflow: linked (junction) <dst> -> <src>`     ← Windows junction
+  - `vgflow: linked (symlink) <dst> -> <src>`     ← POSIX symlink
+  - `vgflow: copied (no dir link support) <src> -> <dst>` ← last-resort copy
+
+Both `link_project_orchestrator_shim` (`.claude/scripts/vg-orchestrator`)
+and `refresh_global_claude_commands` (`~/.claude/commands/vg`) call the
+new helper. Existing `cygpath -w` conversion handles path translation
+between MSYS-style and Windows-style for the `cmd` invocation.
+
+**Out of scope** (per finding #6 last paragraph): `--check` distinction
+between stale project-local managed copies and intentional user files.
+That requires a separate gate-logic refactor.
+
+Tests: `tests/test_batch86_windows_junction_support.py` — 6 cases
+(Windows detection helper, junction helper, honest messages, both
+callers use helper, bash syntax valid).
+
+**Issue #194 status**: all 6 findings now have fixes shipped or
+documented bypass:
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | evidence-key mode check on Windows | v4.63.11 B79 |
+| 2 | wave-complete empty stdin | v4.63.11 B79 |
+| 3 | reserved-event repair | v4.64.2 B85 (--force --reason) |
+| 4 | PreToolUse-tasklist refresh cycle | v4.64.2 B84 (contract sha bypass) |
+| 5 | emit-tasklist VG_HOME fallback | v4.63.11 B79 |
+| 6 | sync.sh Windows junction support | v4.64.3 B86 (this release) |
+
+---
+
 # v4.64.2 — B84+B85 issue #194 deferred items 4 + 3
 
 Closes the remaining 2 of 3 deferred items from issue #194 (RTB Windows

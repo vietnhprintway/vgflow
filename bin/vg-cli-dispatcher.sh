@@ -199,6 +199,53 @@ exec \"\$PY\" \"\$VGH/scripts/vg-orchestrator\" \"\$@\"
   echo "vgflow: vg-orchestrator wrapper installed at ${dst}"
 }
 
+# B86 v4.64.4 (issue #194 finding #6): Windows-aware directory linking.
+# `ln -s` on git-bash/MinGW falls back to silent cp -R on Windows without
+# warning, then prints "linked" even though no symlink was created — the
+# `--check` step downstream then flags the resulting real dir as stale.
+# Try `cmd //c mklink /J` (junction, no admin needed) BEFORE plain ln -s
+# on Windows. Honest messages: "linked (junction)" vs "linked (symlink)"
+# vs "copied (no dir link support)".
+_vg_is_windows() {
+  case "${OS:-}" in
+    Windows_NT) return 0 ;;
+  esac
+  case "$(uname -o 2>/dev/null || uname -s 2>/dev/null)" in
+    Msys|MSYS_NT*|MINGW*|MINGW64*|MINGW32*|Cygwin) return 0 ;;
+  esac
+  return 1
+}
+
+_vg_link_dir() {
+  # Usage: _vg_link_dir <src> <dst> <label>
+  # Returns 0 on success, prints status message in either case.
+  local src="$1" dst="$2" label="$3"
+  if _vg_is_windows && command -v cmd >/dev/null 2>&1; then
+    local src_win dst_win
+    if command -v cygpath >/dev/null 2>&1; then
+      src_win="$(cygpath -w "$src" 2>/dev/null || printf '%s' "$src")"
+      dst_win="$(cygpath -w "$dst" 2>/dev/null || printf '%s' "$dst")"
+    else
+      src_win="$src"
+      dst_win="$dst"
+    fi
+    # `mklink /J` (directory junction) does NOT require admin or developer
+    # mode on Windows. Quiet stdout — print our own message on success.
+    if cmd //c "mklink /J \"$dst_win\" \"$src_win\"" >/dev/null 2>&1; then
+      echo "vgflow: linked (junction) ${dst} -> ${src}"
+      return 0
+    fi
+  fi
+  if ln -s "$src" "$dst" 2>/dev/null; then
+    echo "vgflow: linked (symlink) ${dst} -> ${src}"
+    return 0
+  fi
+  mkdir -p "$dst"
+  cp -R "$src"/. "$dst"/ 2>/dev/null || true
+  echo "vgflow: copied (no dir link support) ${src} -> ${dst}"
+  return 0
+}
+
 # Project-local .claude/scripts/vg-orchestrator/ shim for skill bash blocks that
 # still use the relative path. Symlinks the directory to the global package so
 # the project never holds a stale copy. Falls back to `cp -R` on filesystems
@@ -226,13 +273,7 @@ link_project_orchestrator_shim() {
     mv "$dst" "$backup" 2>/dev/null && echo "vgflow: backed up stale ${dst} -> ${backup}"
   fi
 
-  if ln -s "$src" "$dst" 2>/dev/null; then
-    echo "vgflow: linked ${dst} -> ${src}"
-  else
-    mkdir -p "$dst"
-    cp -R "$src"/. "$dst"/ 2>/dev/null || true
-    echo "vgflow: copied vg-orchestrator into ${dst} (dir symlink unsupported)"
-  fi
+  _vg_link_dir "$src" "$dst" "vg-orchestrator"
 }
 
 refresh_global_claude_commands() {
@@ -265,14 +306,8 @@ refresh_global_claude_commands() {
     echo "vgflow: backed up stale ~/.claude/commands/vg to ${backup}"
   fi
 
-  if ln -s "$src" "$dst" 2>/dev/null; then
-    echo "vgflow: linked Claude commands ~/.claude/commands/vg -> ${src}"
-    return 0
-  fi
-
-  mkdir -p "$dst"
-  cp -R "$src"/. "$dst"/
-  echo "vgflow: copied Claude commands into ~/.claude/commands/vg"
+  # B86 v4.64.4: Windows-aware (junction → symlink → copy)
+  _vg_link_dir "$src" "$dst" "Claude commands"
 }
 
 codex_config_path() {
