@@ -275,5 +275,14 @@ def test_b77_threshold_definition():
     helper = POST_HOOK.parent / "_vg_tasklist_evidence_payload.py"
     helper_body = helper.read_text(encoding="utf-8") if helper.is_file() else ""
     body = hook_body + "\n" + helper_body
-    assert "contract_projection_count * 1.5" in body
-    assert "contract_projection_count + 3" in body
+    # B80 v4.63.12: counter variable renamed projection_count_full to use
+    # projection_items count (groups + sub-steps) instead of checklists
+    # count (groups only). Accept either legacy or B80 form.
+    assert any(
+        v + " * 1.5" in body
+        for v in ("contract_projection_count", "projection_count_full")
+    ), "threshold ×1.5 multiplier missing"
+    assert any(
+        v + " + 3" in body
+        for v in ("contract_projection_count", "projection_count_full")
+    ), "threshold +3 floor missing"

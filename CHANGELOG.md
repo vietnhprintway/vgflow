@@ -1,3 +1,51 @@
+# v4.63.12 — B80 PR #195 TaskCreate camelCase taskId + threshold count
+
+PR #195 (vietnhprintway) surfaced two latent bugs in
+`_vg_tasklist_evidence_payload.py` that hit simultaneously on every
+hierarchical TodoWrite projection (Claude Code v2.51+ TaskCreate/TaskUpdate
+adapter). Dogfood evidence: PrintwayV3 `/vg:blueprint 8.3` session
+2026-05-18 with 7 groups × ~5 sub-steps = 38 todos.
+
+**Bugs fixed:**
+
+1. **TaskCreate `task_id` always empty** — helper read `tool_response`
+   field as snake_case `task_id`/`id`. Claude TaskCreate response is
+   camelCase **`taskId`**. Every trace `create` row got `task_id=""` →
+   later TaskUpdate could never pair against create row → status stuck
+   `pending` forever → `latest_marked_status_valid: false` even after
+   explicit TaskUpdate→completed.
+
+   Fix: probe `taskId` first, fall back to `task_id` then `id` for
+   legacy compatibility. `scripts/hooks/_vg_tasklist_evidence_payload.py:63`.
+
+2. **Accumulation threshold compared against wrong count** —
+   `accumulation_threshold = max(contract_projection_count × 1.5,
+   contract_projection_count + 3)` where `contract_projection_count =
+   len(checklists)` (group headers only). For 7-group × 5-substep
+   contract → 38 hierarchical todos. Threshold = max(10.5, 10) = 10.5.
+   38 > 10.5 → false-positive `accumulation_suspected=true` →
+   PreToolUse-tasklist BLOCK fires accusing operator of failing
+   replace-on-start when projection was fully correct.
+
+   Fix: new `projection_count_full = len(projection_items) if
+   projection_items else contract_projection_count`. Threshold compares
+   against full count (groups + sub-steps). Legacy contracts without
+   `projection_items` fall back to checklists count.
+   `scripts/hooks/_vg_tasklist_evidence_payload.py:205-217`.
+
+**Tests:** `tests/test_batch80_taskid_and_threshold.py` — 7 cases
+(taskId presence + order + behavioral both formats; threshold variable
+present + hierarchical no-false-positive + real-accumulation trip +
+legacy fallback; mirror parity). B77 `test_b77_threshold_definition`
+updated to accept either legacy `contract_projection_count` or B80
+`projection_count_full` form.
+
+**Credit:** PR #195 by @vietnhprintway. Original PR rebased onto current
+main (post-v4.63.11) since PR #195 base was pre-B78 and conflicted on
+VERSION + CHANGELOG. Real fix logic preserved unchanged.
+
+---
+
 # v4.63.11 — B79 Windows friction (issue #194 findings 1, 2, 5)
 
 User dogfood report (RTB Phase 8.1 Flow 9 Admin Reports, 2026-05-17/18):
