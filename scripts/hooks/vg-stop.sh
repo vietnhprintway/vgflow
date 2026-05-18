@@ -90,7 +90,19 @@ if [ "$command" = "vg:build" ] || [ "$command" = "build" ]; then
   # Locate phase_dir from active-run
   phase_dir="$(parse_field phase_dir 2>/dev/null || echo "")"
   if [ -n "$phase_dir" ] && [ -d "$phase_dir/.step-markers" ]; then
-    waves_done=$(ls "$phase_dir/.step-markers"/wave-*.done 2>/dev/null | wc -l | tr -d ' ')
+    # B82 v4.63.14: previously checked `wave-*.done` markers which DO NOT
+    # exist (waves don't drop per-wave marker files — they emit wave.completed
+    # events + drop the single 8_execute_waves.done marker after the wave
+    # block finishes). Wrong filename made waves_done=0 always, which made
+    # gate 4a never fire — AI could end turn after waves without continuing
+    # to STEP 5. RTB dogfood evidence: 6 of 8 phase 8.1 build sessions on
+    # 2026-05-17 stopped at last_step=8_execute_waves with no 9_post_execution.
+    # Fix: use the canonical 8_execute_waves marker. Falls back to legacy
+    # wave-*.done count for any future per-wave marker scheme.
+    waves_done="0"
+    [ -f "$phase_dir/.step-markers/8_execute_waves.done" ] && waves_done="1"
+    legacy_count=$(ls "$phase_dir/.step-markers"/wave-*.done 2>/dev/null | wc -l | tr -d ' ')
+    [ "${legacy_count:-0}" -gt 0 ] && waves_done="$legacy_count"
     post_exec_done="0"
     [ -f "$phase_dir/.step-markers/9_post_execution.done" ] && post_exec_done="1"
     crossai_done="0"

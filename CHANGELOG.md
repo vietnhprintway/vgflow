@@ -1,3 +1,63 @@
+# v4.63.14 — B82 Stop hook wave-done marker filename fix
+
+User dogfood follow-up (RTB phase 8.1, 2026-05-17/18):
+"vấn đề là AI bỏ qua Step nằm trong flow build, nghĩa là chạy build,
+chạy hết wave là dừng, trong khi còn các step khác như 5.x v.v cần
+chạy, thì AI không tự kích hoạt chúng để chạy."
+
+Forensics (events.db SELECT on phase 8.1 build runs):
+
+  6 of 8 sessions on 2026-05-17 ended at `last_step=8_execute_waves` —
+  AI marked wave execution done then ended turn without continuing to
+  step 9 / 5_1 / 10 / 11 / 7_1_5 / 12_run_complete. User aborted each
+  manually with `run-abort --reason "Wave N done"` to recover.
+
+Stop hook gate 4a (POST-WAVE CONTINUATION) was supposed to BLOCK the
+turn-end with "STEP 5 post-execution not run", forcing AI to continue.
+It never fired.
+
+**Root cause** `scripts/hooks/vg-stop.sh:93`:
+
+```bash
+waves_done=$(ls "$phase_dir/.step-markers"/wave-*.done 2>/dev/null | wc -l | tr -d ' ')
+```
+
+The `wave-*.done` filename pattern does NOT exist. `waves-overview.md`
+writes only the single `8_execute_waves.done` marker after the wave
+block finishes (line 1311). No per-wave-N marker files exist.
+`waves_done=0` always. Gate 4a precondition
+`[ "$waves_done" -gt 0 ]` always false. Gate 4a never fires.
+
+Cascade gates 4b/4c/4d/4e have downstream preconditions (need 9/10/11/12
+already done), so when AI stops at step 8 NONE of the gates fire. AI
+freely ends turn. User has to manually restart build.
+
+**Fix**: detect waves done via the canonical `8_execute_waves.done`
+marker. Legacy `wave-*.done` glob preserved as fallback for any future
+per-wave marker scheme:
+
+```bash
+waves_done="0"
+[ -f "$phase_dir/.step-markers/8_execute_waves.done" ] && waves_done="1"
+legacy_count=$(ls "$phase_dir/.step-markers"/wave-*.done 2>/dev/null | wc -l | tr -d ' ')
+[ "${legacy_count:-0}" -gt 0 ] && waves_done="$legacy_count"
+```
+
+Files: `scripts/hooks/vg-stop.sh:90-104` + `.claude/scripts/` mirror.
+
+**Tests**: `tests/test_batch82_stop_hook_wave_marker.py` — 4 cases
+(canonical marker present, ordering canonical-before-legacy-fallback,
+mirror parity, behavioral run on POSIX simulating RTB scenario; behavioral
+test skipped on Windows lacking POSIX bash).
+
+**Impact**: next time RTB phase build runs `/vg:build 8.1` (no --wave
+flag, IS_FINAL_WAVE=true default), AI cannot end turn after wave
+execution without explicitly running post-execution (step 9 + 5_1) +
+crossai (step 6) + close (step 7 / 10 + 12_run_complete + actual
+orchestrator run-complete).
+
+---
+
 # v4.63.13 — B81 orchestrator-owned PIPELINE-STATE flip
 
 User dogfood report (RTB Phase 8.1 Flow 9 Admin Reports, 2026-05-18):
