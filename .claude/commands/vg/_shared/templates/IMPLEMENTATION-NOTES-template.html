@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<!--
+  B87 v4.65.0 — IMPLEMENTATION-NOTES.html template
+  Self-contained AI decision/tradeoff capture per phase.
+
+  WHY THIS FILE EXISTS:
+    Captures information that no other VG artifact does:
+      1. Decisions AI made beyond specs (CONTEXT.md decisions)
+      2. Changes from original requirements during implementation
+      3. Tradeoffs AI considered (alternatives + chosen + reason)
+      4. Anything else operator needs to know to review the code
+
+    Sibling artifacts cover adjacent concerns but not this:
+      .vg/OVERRIDE-DEBT.md       — operator-forced reserved-event override
+      .final-review/verdict.md   — cross-task integration gaps
+      reflection-*.yaml          — post-hoc learnings (not implementation-time)
+      SUMMARY.md                 — what was done (not why)
+
+  HOW TO APPEND (AI directive — copy-paste below template):
+    1. Locate the closing </main> tag.
+    2. Insert a new <article> block BEFORE </main>:
+
+       <article data-task-id="task-NN" data-ts="YYYY-MM-DDTHH:MM:SSZ"
+                data-category="decision|deviation|tradeoff|note">
+         <h3>Title: <code>short description</code></h3>
+         <section class="what">
+           <h4>1. What AI decided (beyond specs)</h4>
+           <p>...prose, code refs, spec refs...</p>
+         </section>
+         <section class="why">
+           <h4>2. Change from original requirement</h4>
+           <p>...or <p class="na">N/A</p> if none...</p>
+         </section>
+         <section class="tradeoff">
+           <h4>3. Tradeoff considered</h4>
+           <p>Considered X, Y, Z. Chose X because ...</p>
+         </section>
+         <section class="other">
+           <h4>4. Other notes for operator</h4>
+           <p>...or N/A...</p>
+         </section>
+         <footer>
+           <span>code-refs: <code>apps/api/src/foo.ts:42-67</code></span>
+           <span>spec-refs: <code>CONTEXT.md D-12</code></span>
+           <span>related: <code>OVERRIDE-DEBT.md#L4</code></span>
+         </footer>
+       </article>
+
+    3. Each article MUST have ≥1 non-N/A section among (what / why / tradeoff).
+       Each non-N/A section MUST have ≥50 chars of substantive content.
+
+  WHEN TO APPEND:
+    During wave execution, BEFORE marking the task step done. The validator
+    fires at build close: if OVERRIDE-DEBT.md is non-empty OR
+    .final-review/verdict.md gaps are non-empty, this file MUST have ≥1
+    valid <article>. Otherwise build close BLOCKS run-complete.
+
+  ENFORCEMENT:
+    scripts/validators/verify-implementation-notes.py runs at
+    commands/vg/_shared/build/close.md STEP 7.2 before run-complete.
+-->
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Implementation Notes — Phase ${PHASE_NUMBER}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+           max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6;
+           color: #222; }
+    header.page { border-bottom: 2px solid #333; padding-bottom: 0.5rem;
+                  margin-bottom: 1.5rem; }
+    header.page h1 { margin: 0 0 0.25rem 0; font-size: 1.5rem; }
+    header.page .meta { color: #666; font-size: 0.875rem; }
+    article { background: #f9f9f9; border-left: 4px solid #4a90e2;
+              padding: 1rem 1.25rem; margin: 1.5rem 0; border-radius: 4px; }
+    article[data-category="deviation"] { border-left-color: #e26a4a; }
+    article[data-category="tradeoff"]  { border-left-color: #d4a017; }
+    article[data-category="note"]      { border-left-color: #888; }
+    article h3 { margin: 0 0 0.5rem 0; font-size: 1.1rem; }
+    article h3 code { background: #fff; padding: 1px 6px; border-radius: 3px;
+                      font-size: 0.95em; }
+    article section { margin: 0.75rem 0; }
+    article section h4 { margin: 0 0 0.25rem 0; font-size: 0.95rem;
+                         color: #444; font-weight: 600; }
+    article section p { margin: 0.25rem 0; }
+    article section p.na { color: #999; font-style: italic; }
+    article footer { margin-top: 0.75rem; padding-top: 0.5rem;
+                     border-top: 1px solid #ddd; font-size: 0.825rem;
+                     color: #555; display: flex; flex-wrap: wrap; gap: 1rem; }
+    article footer code { background: #fff; padding: 1px 4px;
+                          border-radius: 3px; font-size: 0.95em; }
+    .empty-state { color: #888; font-style: italic; padding: 2rem;
+                   text-align: center; background: #fafafa; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header class="page">
+    <h1>Implementation Notes — Phase ${PHASE_NUMBER}</h1>
+    <div class="meta">
+      Captures AI decisions, requirement changes, tradeoffs, and operator notes
+      during blueprint + build. Append-only. Validated at build close.
+    </div>
+  </header>
+  <main>
+    <p class="empty-state">
+      No implementation notes yet. AI appends <code>&lt;article&gt;</code>
+      entries here as decisions / deviations / tradeoffs arise during wave
+      execution. See the HTML comment at the top of this file for the
+      append syntax.
+    </p>
+  </main>
+</body>
+</html>

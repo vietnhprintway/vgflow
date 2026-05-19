@@ -1,3 +1,71 @@
+# v4.65.0 — B87 IMPLEMENTATION-NOTES.html capture (AI decision + tradeoff log)
+
+User request (2026-05-19): require AI to write a per-phase implementation
+note capturing what existing VG artifacts do not — specifically:
+
+  1. Decisions AI made beyond specs
+  2. Changes from original requirements during implementation
+  3. Tradeoffs considered (alternatives + chosen + reason)
+  4. Anything else the operator needs to know to review the code
+
+**Why this is a real gap** (existing artifacts cover adjacent concerns):
+
+  - `.vg/OVERRIDE-DEBT.md` — logs **operator-forced** override events only
+    (cli-forced via `--force` flag); not AI-side implementation decisions
+  - `${PHASE_DIR}/.final-review/verdict.md` — logs **cross-task integration
+    gaps**; not the rationale that produced them
+  - `reflection-blueprint-*.yaml` — **post-hoc learnings** from vg-reflector;
+    not implementation-time decisions
+  - `SUMMARY.md` — **what** was built; not **why**
+
+**Ships:**
+
+- `commands/vg/_shared/templates/IMPLEMENTATION-NOTES-template.html` — NEW
+  self-contained HTML with embedded CSS, 4-section per-article schema,
+  append-syntax in HTML comment so AI can copy-paste during wave execution
+- `commands/vg/_shared/blueprint/close.md` — emits the stub at
+  `${PHASE_DIR}/IMPLEMENTATION-NOTES.html` after the existing PIPELINE-STATE
+  flip; idempotent (skips if file already exists)
+- `commands/vg/_shared/build/waves-overview.md` — extends the B72
+  AUTO_CONTINUE_DIRECTIVE block with explicit per-task append rule covering
+  all 4 user criteria
+- `commands/vg/_shared/build/close.md` STEP 7.2 — wires
+  `verify-implementation-notes.py` BEFORE `vg-orchestrator run-complete`;
+  3-tier fallback (VG_SCRIPT_ROOT → REPO_ROOT → VG_HOME); BLOCK with
+  diagnostic on validator exit 1; operator escape via
+  `--allow-impl-notes-shortfall` flag OR CONTEXT.md
+  `implementation_notes_waiver: true`
+- `scripts/validators/verify-implementation-notes.py` — NEW stdlib-only
+  validator (html.parser); cross-checks `.vg/OVERRIDE-DEBT.md` line count +
+  `.final-review/verdict.md` `gaps:` count; enforces ≥1 substantive section
+  (≥50 chars, non-N/A) per article; emits `build.implementation_notes_blocked`
+  telemetry event on BLOCK
+
+**Enforcement rules** (verify-implementation-notes.py):
+
+  - `override_debt == 0 AND verdict_gaps == 0` → PASS (notes can be empty)
+  - `override_debt > 0 OR verdict_gaps > 0` → require ≥1 valid `<article>`
+    in `IMPLEMENTATION-NOTES.html`. Else BLOCK exit 1
+  - Each `<article>` requires ≥1 substantive section (≥50 chars, not
+    `<p class="na">N/A</p>`) among `class="what"`, `class="why"`,
+    `class="tradeoff"`
+  - Malformed HTML (existing file fails html.parser) → exit 2
+  - Missing file when there's nothing to document → still PASS
+
+**Tests:** `tests/test_batch87_implementation_notes.py` — 13 cases (4
+artifact-presence: template + 3 wiring spots; 7 validator-behavioral:
+empty-no-overrides PASS, overrides-no-notes BLOCK, valid-article PASS,
+shallow-article BLOCK, context-waiver PASS, --allow-shortfall PASS,
+verdict-gaps-no-notes BLOCK; 2 mirror parity).
+
+**Out of scope** (deferred):
+
+- Markdown-to-HTML pipeline (user chose HTML-only canonical)
+- LLM-judged "quality" of note content (validator checks structure only)
+- Cross-phase memory of prior notes (future cross-phase work)
+
+---
+
 # v4.64.4 — B84 hotfix — update pre-existing staleness test for contract bypass
 
 CI Test on v4.64.2/v4.64.3 failed:

@@ -459,6 +459,24 @@ state["next_command_emitted_at"] = datetime.datetime.utcnow().isoformat() + "Z"
 p.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 PY
 
+# B87 v4.65.0: copy IMPLEMENTATION-NOTES.html template into phase dir (idempotent
+# — skip if already exists from a prior blueprint re-run). Build's per-task
+# append directive writes into this file; build/close validator gates run-complete
+# on its consistency against OVERRIDE-DEBT + verdict gaps. Template lives at
+# commands/vg/_shared/templates/IMPLEMENTATION-NOTES-template.html.
+IMPL_NOTES_DST="${PHASE_DIR}/IMPLEMENTATION-NOTES.html"
+if [ ! -f "$IMPL_NOTES_DST" ]; then
+  IMPL_NOTES_SRC="${VG_COMMAND_ROOT:-${VG_HOME:-$HOME/.vgflow}/commands/vg/_shared}/templates/IMPLEMENTATION-NOTES-template.html"
+  [ -f "$IMPL_NOTES_SRC" ] || IMPL_NOTES_SRC="${REPO_ROOT:-.}/commands/vg/_shared/templates/IMPLEMENTATION-NOTES-template.html"
+  [ -f "$IMPL_NOTES_SRC" ] || IMPL_NOTES_SRC=".claude/commands/vg/_shared/templates/IMPLEMENTATION-NOTES-template.html"
+  if [ -f "$IMPL_NOTES_SRC" ]; then
+    sed "s/\${PHASE_NUMBER}/${PHASE_NUMBER}/g" "$IMPL_NOTES_SRC" > "$IMPL_NOTES_DST"
+    echo "vg:blueprint: emitted IMPLEMENTATION-NOTES.html stub (B87)"
+  else
+    echo "⚠ B87: IMPLEMENTATION-NOTES template missing — skipping stub emit" >&2
+  fi
+fi
+
 # Terminal telemetry per runtime_contract
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event "blueprint.completed" \
   --payload "{\"phase\":\"${PHASE_NUMBER}\",\"plans\":${PLAN_COUNT},\"endpoints\":${ENDPOINT_COUNT}}" >/dev/null

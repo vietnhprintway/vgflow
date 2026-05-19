@@ -815,6 +815,32 @@ if [ -f "$MARKER_LIB" ]; then
   fi
 fi
 
+# B87 v4.65.0: validate IMPLEMENTATION-NOTES.html against OVERRIDE-DEBT + verdict.
+# BLOCKs run-complete when overrides/gaps exist but no valid <article> documents
+# the AI decisions/tradeoffs/deviations behind them. Allow-shortfall + CONTEXT.md
+# `implementation_notes_waiver: true` for transitional phases.
+IMPL_NOTES_VAL="${VG_SCRIPT_ROOT:-${VG_HOME:-$HOME/.vgflow}/scripts}/validators/verify-implementation-notes.py"
+[ -f "$IMPL_NOTES_VAL" ] || IMPL_NOTES_VAL="${REPO_ROOT:-.}/scripts/validators/verify-implementation-notes.py"
+[ -f "$IMPL_NOTES_VAL" ] || IMPL_NOTES_VAL=".claude/scripts/validators/verify-implementation-notes.py"
+if [ -f "$IMPL_NOTES_VAL" ]; then
+  IMPL_FLAGS=""
+  [[ "${ARGUMENTS:-}" =~ --allow-impl-notes-shortfall ]] && IMPL_FLAGS="--allow-shortfall"
+  "${PYTHON_BIN:-python3}" "$IMPL_NOTES_VAL" --phase "${PHASE_NUMBER:-${PHASE_ARG}}" $IMPL_FLAGS
+  IMPL_RC=$?
+  if [ "$IMPL_RC" != "0" ]; then
+    echo "⛔ IMPLEMENTATION-NOTES.html gate failed (B87)." >&2
+    echo "   AI must append <article> entries documenting decisions/tradeoffs/" >&2
+    echo "   deviations to ${PHASE_DIR}/IMPLEMENTATION-NOTES.html before" >&2
+    echo "   run-complete. See HTML comment at top of file for syntax." >&2
+    echo "   Operator escape: re-run /vg:build with --allow-impl-notes-shortfall" >&2
+    echo "   OR set CONTEXT.md implementation_notes_waiver: true." >&2
+    "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator emit-event \
+      "build.implementation_notes_blocked" \
+      --payload "{\"phase\":\"${PHASE_NUMBER:-${PHASE_ARG}}\"}" >/dev/null 2>&1 || true
+    exit $IMPL_RC
+  fi
+fi
+
 "${PYTHON_BIN:-python3}" .claude/scripts/vg-orchestrator run-complete
 RUN_RC=$?
 if [ $RUN_RC -ne 0 ]; then

@@ -1398,6 +1398,28 @@ Continue IMMEDIATELY with:
 
 The Stop hook will BLOCK this turn-end with cascade gates 4a/4b/4c/4d/4e if
 you try to exit before all four markers are present and run state is completed.
+
+---
+[B87 v4.65.0 — IMPLEMENTATION-NOTES.html append directive]
+
+During wave execution (and throughout build), if you make ANY of:
+  1. Decision beyond what specs (CONTEXT.md / API-CONTRACTS.md / PLAN.md) say
+  2. Change from the original requirement (deviation)
+  3. Tradeoff (considered ≥2 options, chose one)
+  4. Anything else operator needs to know to review the code
+
+→ You MUST append a new `<article>` block to
+  `${PHASE_DIR}/IMPLEMENTATION-NOTES.html` BEFORE marking the task step done.
+
+Template + exact append syntax is in the HTML comment at the top of the file.
+Each `<article>` needs ≥1 substantive section (≥50 chars) among
+(what / why / tradeoff). N/A markers (`<p class="na">N/A</p>`) are allowed for
+sections that don't apply.
+
+Build/close STEP 7.2 runs `verify-implementation-notes.py`. If
+`.vg/OVERRIDE-DEBT.md` is non-empty OR `.final-review/verdict.md` reports gaps,
+the validator BLOCKS run-complete unless this file has ≥1 valid article OR
+CONTEXT.md sets `implementation_notes_waiver: true`.
 </system-reminder>
 
 AUTO_CONTINUE_DIRECTIVE
