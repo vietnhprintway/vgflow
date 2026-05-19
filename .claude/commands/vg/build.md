@@ -54,6 +54,15 @@ runtime_contract:
     # Missing here = silent drift; resume after compact loses the file.
     - path: "${PHASE_DIR}/PIPELINE-STATE.json"
       content_min_bytes: 80
+    # B87 v4.65.0: IMPLEMENTATION-NOTES.html — AI decision/tradeoff capture.
+    # Blueprint close emits stub. AI appends <article> entries during waves.
+    # Build close validator (verify-implementation-notes.py) BLOCKs run-complete
+    # when OVERRIDE-DEBT or verdict gaps exist but no valid articles documented.
+    # Operator escape: CONTEXT.md `implementation_notes_waiver: true` or
+    # `/vg:build --allow-impl-notes-shortfall`. Min size = stub template
+    # body without articles (~3KB rendered HTML).
+    - path: "${PHASE_DIR}/IMPLEMENTATION-NOTES.html"
+      content_min_bytes: 500
       content_required_sections: ["steps.build.status", "built-complete"]
   must_touch_markers:
     # OHOK Batch 4 C3 (2026-04-22): contract 8 → 15 markers.

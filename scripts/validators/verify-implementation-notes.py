@@ -144,19 +144,83 @@ def parse_notes(path: Path) -> tuple[list[dict], list[str]]:
 # ---------------------------------------------------------------------------
 
 def count_override_debt(phase_dir: Path, repo_root: Path) -> int:
-    """OVERRIDE-DEBT.md lives at repo .vg/OVERRIDE-DEBT.md (shared across
-    phases). Count entries (lines starting with `- `).
+    """Count entries across both OVERRIDE-DEBT.md formats.
+
+    B88 v4.65.1 fix: original implementation only matched `- ` bullet form
+    used by B85 cli-forced reserved-event override (`__main__.py:1761`).
+    The PRIMARY production writer is
+    `commands/vg/_shared/lib/override-debt.sh:log_override_debt()` which
+    emits markdown TABLE ROWS — `| DEBT-id | severity | phase | step | flag |
+    reason | logged | OPEN | gate_id |  | false |`. Original validator
+    missed all real-world entries → gate never fired in production.
+
+    Counts BOTH:
+      - bullet entries starting with `- ` (B85 cli-forced format)
+      - table rows starting with `| DEBT-` (log_override_debt.sh format)
+
+    Searches BOTH locations:
+      - repo_root/.vg/OVERRIDE-DEBT.md (default PLANNING_DIR=.vg)
+      - phase_dir/OVERRIDE-DEBT.md (per-phase opt-in)
+
+    `CONFIG_DEBT_REGISTER_PATH` env override honored for custom locations.
     """
-    candidates = [repo_root / ".vg" / "OVERRIDE-DEBT.md",
-                  phase_dir / "OVERRIDE-DEBT.md"]
+    import os
+    candidates = []
+    custom = os.environ.get("CONFIG_DEBT_REGISTER_PATH")
+    if custom:
+        candidates.append(Path(custom))
+    candidates.extend([
+        repo_root / ".vg" / "OVERRIDE-DEBT.md",
+        phase_dir / "OVERRIDE-DEBT.md",
+    ])
     total = 0
     for p in candidates:
         if not p.exists():
             continue
         for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.lstrip().startswith("- "):
+            stripped = line.lstrip()
+            # B85 cli-forced bullet entries
+            if stripped.startswith("- ") and "`" in stripped:
+                total += 1
+                continue
+            # log_override_debt.sh table rows — require the DEBT-id token to
+            # avoid counting the table header (`| ID | Severity | ... |`).
+            if stripped.startswith("| DEBT-"):
                 total += 1
     return total
+
+
+# B88 v4.65.1: structural integrity guards in addition to the existing
+# html.parser. Detect raw <script> tags (XSS / injected payload) and ensure
+# the closing tags `</main>`, `</body>`, `</html>` remain intact — AI-side
+# append-only edits must NOT corrupt the document end.
+SCRIPT_TAG_RE = re.compile(r"<\s*script\b", re.IGNORECASE)
+
+
+def check_html_integrity(notes_path: Path) -> list[str]:
+    """Return list of integrity errors. Empty list = OK."""
+    errors: list[str] = []
+    if not notes_path.exists():
+        return errors
+    try:
+        body = notes_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return [f"read error: {e}"]
+    if SCRIPT_TAG_RE.search(body):
+        errors.append(
+            "raw <script> tag detected in IMPLEMENTATION-NOTES.html — "
+            "AI must NOT embed executable script content. Strip the tag or "
+            "encode the snippet inside <code>...</code>."
+        )
+    for closing in ("</main>", "</body>", "</html>"):
+        if closing not in body:
+            errors.append(
+                f"closing tag {closing} missing — append-only edit likely "
+                f"corrupted the document end. Reset from "
+                f"templates/IMPLEMENTATION-NOTES-template.html and re-add "
+                f"articles before </main>."
+            )
+    return errors
 
 
 def count_verdict_gaps(phase_dir: Path) -> int:
@@ -231,6 +295,14 @@ def evaluate(phase_dir: Path, repo_root: Path,
     if notes_exists and parse_errs:
         msgs.extend(f"  parse: {e}" for e in parse_errs)
         return 2, msgs
+
+    # B88 v4.65.1: structural integrity (script-tag detection +
+    # closing-tag preservation). Failures here always BLOCK.
+    if notes_exists:
+        integrity = check_html_integrity(notes_path)
+        if integrity:
+            msgs.extend(f"  integrity: {e}" for e in integrity)
+            return 2, msgs
 
     if override_count == 0 and gap_count == 0:
         msgs.append("✓ no overrides/gaps → notes can be empty → PASS")

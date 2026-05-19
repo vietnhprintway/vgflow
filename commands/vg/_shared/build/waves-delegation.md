@@ -301,6 +301,31 @@ The full rendered prompt is also persisted to
 `${PHASE_DIR}/.build/wave-${wave_id}/executor-prompts/${task_id}.prompt.md`
 for the D-06 task-fidelity audit (post-spawn 3-way hash compare).
 
+### B87 v4.65.0 — IMPLEMENTATION-NOTES.html append directive (REQUIRED)
+
+The orchestrator MUST append the following block to every rendered executor
+prompt BEFORE spawning the subagent. The vg-build-task-executor SKILL.md
+documents the syntax in detail; the prompt-level reminder ensures the
+agent sees it even when SKILL.md is not in its context window.
+
+```text
+ADDITIONAL TASK-EXECUTION RULE — IMPLEMENTATION-NOTES.html (B87):
+
+If during this task you (1) make a decision beyond what specs explicitly
+say, (2) change a binding_requirement, (3) consider ≥2 options before
+choosing one, or (4) produce anything the operator needs to know to review
+your code, append an <article> block to
+${PHASE_DIR}/IMPLEMENTATION-NOTES.html BEFORE marking the task done.
+
+Insert your article BEFORE the closing </main> tag. The HTML comment at
+the top of the file documents the exact syntax. Each <article> must have
+≥1 substantive section (≥50 chars, non-N/A) among class="what",
+class="why", class="tradeoff".
+
+NEVER embed raw <script> tags. Wrap snippets in <code> or <pre>.
+NEVER corrupt the document end (...</main></body></html>).
+```
+
 ---
 
 ## Output JSON contract (subagent returns)

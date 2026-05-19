@@ -362,3 +362,53 @@ with tempfile.TemporaryDirectory(prefix="vg-test-sandbox-") as sandbox:
 - Tests that need real repo state (e.g., git history, file fingerprints) — these are NOT isolatable
 
 Document choice in commit message if you sandboxed: `(sandbox: tmpdir for DB exec)`.
+
+---
+
+## IMPLEMENTATION-NOTES.html append rule (B87 v4.65.0)
+
+If during this task you make ANY of:
+
+  1. Decision beyond what specs (CONTEXT.md / API-CONTRACTS.md / PLAN.md / task slice) explicitly say
+  2. Change from the original requirement (deviation from binding_requirements)
+  3. Tradeoff (considered ≥2 options, chose one)
+  4. Anything else operator needs to know to review your code
+
+→ You MUST append a new `<article>` block to `${PHASE_DIR}/IMPLEMENTATION-NOTES.html` BEFORE marking the task done. The blueprint close.md emits a stub at the start of build. Insert your article BEFORE the closing `</main>` tag.
+
+Exact append syntax (HTML comment at top of the file shows full template):
+
+```html
+<article data-task-id="task-NN" data-ts="YYYY-MM-DDTHH:MM:SSZ"
+         data-category="decision|deviation|tradeoff|note">
+  <h3>Title: <code>short description</code></h3>
+  <section class="what">
+    <h4>1. What AI decided (beyond specs)</h4>
+    <p>...substantive prose, ≥50 chars, no placeholder...</p>
+  </section>
+  <section class="why">
+    <h4>2. Change from original requirement</h4>
+    <p class="na">N/A</p>
+  </section>
+  <section class="tradeoff">
+    <h4>3. Tradeoff considered</h4>
+    <p class="na">N/A</p>
+  </section>
+  <section class="other">
+    <h4>4. Other notes for operator</h4>
+    <p class="na">N/A</p>
+  </section>
+  <footer>
+    <span>code-refs: <code>apps/api/src/foo.ts:42-67</code></span>
+    <span>spec-refs: <code>CONTEXT.md D-12</code></span>
+  </footer>
+</article>
+```
+
+**Constraints:**
+- Each `<article>` must have ≥1 substantive section (≥50 chars, not `<p class="na">N/A</p>`) among `class="what"`, `class="why"`, `class="tradeoff"`.
+- Do NOT embed raw `<script>` tags. Wrap code snippets in `<code>...</code>` or `<pre>...</pre>`.
+- Do NOT corrupt the document end. The file ends `...</main></body></html>`; insert your article BEFORE `</main>`.
+- Append-only. Never reformat existing articles.
+
+**Enforcement:** `verify-implementation-notes.py` runs at build close STEP 7.2. If `.vg/OVERRIDE-DEBT.md` is non-empty OR `.final-review/verdict.md` gaps are non-empty AND no valid articles are present, build close BLOCKS run-complete. Operator escape via `--allow-impl-notes-shortfall` or `CONTEXT.md implementation_notes_waiver: true`.

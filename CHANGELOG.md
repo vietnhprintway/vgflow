@@ -1,3 +1,104 @@
+# v4.65.1 — B88 post-ship audit fixes for B87 IMPLEMENTATION-NOTES.html
+
+User-requested audit (2026-05-20): check B87 ship for gaps. Found 4
+critical + 3 important + 2 minor. B88 ships 4 critical + 3 important.
+Minor (#8 /vg:accept reading notes, #9 emit-event 3-tier fallback)
+deferred — non-blocking.
+
+## Fixes
+
+**C1 — validator count_override_debt() missed log_override_debt.sh entries**
+
+Original implementation only matched `- ` bullet form used by B85
+cli-forced reserved-event override (`__main__.py:1761`). The PRIMARY
+production writer
+`commands/vg/_shared/lib/override-debt.sh:log_override_debt()` emits
+markdown TABLE rows starting with `| DEBT-`. Original validator missed
+all real-world entries → gate would NEVER fire in production scenarios
+because override_count stayed at 0.
+
+Fix: count BOTH formats. Bullet lines must include a backtick (` ``
+event-type wrapping per B85 format) to avoid false-positives on prose
+bullets in header text. Table rows must start with `| DEBT-` to skip
+the markdown table header.
+
+**C2 — CONFIG_DEBT_REGISTER_PATH env override not honored**
+
+`override-debt.sh:27` resolves the register path as
+`${CONFIG_DEBT_REGISTER_PATH:-${PLANNING_DIR}/OVERRIDE-DEBT.md}` but
+the validator hardcoded `.vg/OVERRIDE-DEBT.md`. Custom register
+locations missed.
+
+Fix: validator probes `CONFIG_DEBT_REGISTER_PATH` env var first, then
+falls back to `.vg/OVERRIDE-DEBT.md` + `${PHASE_DIR}/OVERRIDE-DEBT.md`.
+
+**C3 — build.md frontmatter must_write missing IMPLEMENTATION-NOTES.html**
+
+Plan said add it; ship omitted. Stop hook wouldn't catch missing-file
+case if blueprint stub-emit silently failed.
+
+Fix: added entry with `content_min_bytes: 500` (stub template body
+without articles renders ~3KB; 500 guards against empty / truncated
+file).
+
+**C4 — vg-build-task-executor agent + waves-delegation did not propagate
+append directive**
+
+The B87 directive lived in `waves-overview.md` AUTO_CONTINUE_DIRECTIVE
+block (visible to Claude main loop). But each TASK spawns
+`vg-build-task-executor` subagent which makes the bulk of implementation
+decisions and never saw the directive. Agent SKILL.md had zero mention
+of IMPLEMENTATION-NOTES.html.
+
+Fix: appended full append-rule + syntax example to
+`agents/vg-build-task-executor/SKILL.md`. Added explicit "orchestrator
+MUST append this block BEFORE spawn" directive to
+`commands/vg/_shared/build/waves-delegation.md` prompt-template section.
+
+**I5 — LIFECYCLE.md did not list IMPLEMENTATION-NOTES.html**
+
+Operator discoverability gap. Extended the build row in the lifecycle
+table to mention the artifact + the gate semantics.
+
+**I7 — Validator did not detect raw `<script>` tags or guard closing-tag
+chain**
+
+AI could inject `<script>alert(1)</script>` (XSS if file rendered in
+stakeholder review) or accidentally append BEYOND `</main></body></html>`
+boundaries, corrupting the document.
+
+Fix: new `check_html_integrity()` helper. Detects `<script` (regex,
+case-insensitive). Verifies `</main>`, `</body>`, `</html>` all present.
+Failures exit 2 (structural BLOCK).
+
+## Tests
+
+`tests/test_batch88_implementation_notes_audit.py` — 12 cases:
+  - C1: table rows counted (×3), mixed bullet+table, header NOT counted
+  - C2: CONFIG_DEBT_REGISTER_PATH honored
+  - C3: build.md frontmatter contains entry
+  - C4: agent SKILL.md + waves-delegation document the rule (covers
+        all 4 criteria + B87 marker + spawn-time directive)
+  - I5: LIFECYCLE.md mentions artifact
+  - I7: script-tag BLOCK + missing-closing-tag BLOCK
+  - Mirror parity (×4): validator + agent + waves-delegation + LIFECYCLE
+
+B87 test fixture `_mk_phase` updated to emit B85 format with backtick
+wrapping (matching production output of cli-forced override).
+
+## Deferred to v4.66.x
+
+- #6 concurrent-write file lock for multiple task executors writing
+  same wave (parallel append corruption window). Bash skill execution
+  is serialized by the Claude bash tool in practice; defer until proven
+  problem.
+- #8 /vg:accept reading IMPLEMENTATION-NOTES.html (build/close already
+  gates upstream).
+- #9 emit-event `build.implementation_notes_blocked` 3-tier fallback
+  for global-install paths.
+
+---
+
 # v4.65.0 — B87 IMPLEMENTATION-NOTES.html capture (AI decision + tradeoff log)
 
 User request (2026-05-19): require AI to write a per-phase implementation

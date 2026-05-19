@@ -106,12 +106,15 @@ def _mk_phase(tmp_path: Path, phase: str = "9.9",
     (repo / ".git").mkdir(parents=True)
     pdir = repo / ".vg" / "phases" / f"{phase}-test"
     pdir.mkdir(parents=True)
-    # OVERRIDE-DEBT lives at repo .vg/ root per the helper canonical path
+    # OVERRIDE-DEBT lives at repo .vg/ root per the helper canonical path.
+    # B85 cli-forced format: line starts `- <ts> <event_type-in-backticks> ...`.
+    # B88: validator requires backticks to distinguish entries from prose
+    # bullets in header text.
     if override_count > 0:
         od = repo / ".vg" / "OVERRIDE-DEBT.md"
         od.write_text(
             "# Override Debt\n\n" + "\n".join(
-                f"- 2026-05-19 example_event run=abc phase={phase} reason=test"
+                f"- 2026-05-19 `example.event` run=abc phase={phase} cli-forced reason='test'"
                 for _ in range(override_count)
             ) + "\n",
             encoding="utf-8",

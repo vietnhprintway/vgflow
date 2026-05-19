@@ -25,8 +25,21 @@ You CANNOT skip the typecheck step. typecheck failure = error JSON
 return, NOT a commit. Do NOT use `--no-verify` on `apps/**/src/**` or
 `packages/**/src/**`.
 
-You MUST NOT ask user questions — your input envelope (capsule + plan
-slice + contract slices + interface standards) is the contract. Self-
+**You MAY ask user questions ONLY when capsule + plan slice contain
+genuine ambiguity that prevents correct implementation** (v2.66.1 B2
+relaxation). Examples of valid questions:
+- Two API contract slices conflict on response shape (impossible to satisfy both)
+- Plan task references a file path that doesn't exist (typo? renamed?)
+- Capsule binding shows API-CONTRACTS.md goal G-04 but plan task says G-03
+
+**You MUST NOT ask questions for:**
+- Stylistic preferences (just follow existing patterns)
+- Whether to add tests (always add per plan)
+- Whether to bump VERSION (NO unless task is explicit release task)
+- Whether to mirror canonical→.claude/ (ALWAYS yes)
+
+When no genuine ambiguity exists, your input envelope (capsule + plan
+slice + contract slices + interface standards) is the contract — self-
 resolve or return error JSON.
 
 You MUST NOT spawn nested subagents. The Agent tool is intentionally
@@ -43,6 +56,30 @@ concats per-task logs into BUILD-LOG.md (Layer 3) and writes
 BUILD-LOG/index.md (Layer 2). Skipping this write breaks downstream
 log aggregation.
 </HARD-GATE>
+
+<SELF-REVIEW>
+**Mandatory self-review before commit (v2.66.1 B2):** After implementation +
+typecheck pass, BEFORE running `git add` + `git commit`, perform self-review
+of the diff:
+
+1. Read full diff: `git diff` (unstaged) + `git diff --cached` (if any).
+2. Verify against this 7-item checklist:
+   - [ ] All required files modified per plan task spec? (no missing edits)
+   - [ ] No scope creep — touched ONLY files plan task names
+   - [ ] All required tests added/updated? (no missing test cases)
+   - [ ] Mirror byte-identity: `commands/` ↔ `.claude/commands/`,
+     `scripts/` ↔ `.claude/scripts/` (run `diff -q <pair>` for each
+     mirrored pair touched)
+   - [ ] No VERSION/package.json bump (unless this IS the release task)
+   - [ ] No `--no-verify` or `--amend` flags snuck into git invocations
+   - [ ] Test count matches plan spec (3 tests required → 3 added, not 2)
+3. If checklist reveals an issue: fix BEFORE staging. Do NOT commit and
+   amend afterward — make a clean single commit per the ONE-commit rule.
+
+The self-review checklist is enforced by reviewer agents (B1 spec
+reviewer + B4 cumulative reviewer in v2.66.1+) and operator audit;
+skipping self-review is a plan-fidelity violation.
+</SELF-REVIEW>
 
 ## Input envelope (from main agent)
 
@@ -294,3 +331,84 @@ written here, indexed and concatenated by the post-executor
 read `BUILD-LOG/index.md` (Layer 2, ~30 lines) to plan their work
 without loading the full `BUILD-LOG.md` (Layer 3, 1000+ lines for
 25-task phase).
+
+## Sandbox runtime (v2.68.0 C5)
+
+When running tests that touch shared state (DB connections, ports, filesystem
+outside repo), wrap the test exec in a sandbox tempdir. Pattern (mirrors the
+mkdtemp + env scrub used by CrossAI runners in `scripts/crossai-runner.py`):
+
+```python
+import tempfile
+import os
+import subprocess
+from pathlib import Path
+
+with tempfile.TemporaryDirectory(prefix="vg-test-sandbox-") as sandbox:
+    env = os.environ.copy()
+    env["TMPDIR"] = sandbox
+    env["XDG_CACHE_HOME"] = sandbox
+    # Do NOT chdir — keep cwd at repo root for relative imports
+    subprocess.run(["pytest", "..."], env=env, check=True)
+```
+
+**When to sandbox** (test exec specifically — not the whole task):
+- pytest / jest / vitest tests that write to `/tmp` or `~/.cache`
+- Tests that bind to network ports (use sandbox-allocated port)
+- Tests that touch DB (use ephemeral schema/db_name in sandbox)
+
+**When NOT to sandbox:**
+- Pure unit tests with no I/O — sandbox overhead unnecessary
+- Tests that need real repo state (e.g., git history, file fingerprints) — these are NOT isolatable
+
+Document choice in commit message if you sandboxed: `(sandbox: tmpdir for DB exec)`.
+
+---
+
+## IMPLEMENTATION-NOTES.html append rule (B87 v4.65.0)
+
+If during this task you make ANY of:
+
+  1. Decision beyond what specs (CONTEXT.md / API-CONTRACTS.md / PLAN.md / task slice) explicitly say
+  2. Change from the original requirement (deviation from binding_requirements)
+  3. Tradeoff (considered ≥2 options, chose one)
+  4. Anything else operator needs to know to review your code
+
+→ You MUST append a new `<article>` block to `${PHASE_DIR}/IMPLEMENTATION-NOTES.html` BEFORE marking the task done. The blueprint close.md emits a stub at the start of build. Insert your article BEFORE the closing `</main>` tag.
+
+Exact append syntax (HTML comment at top of the file shows full template):
+
+```html
+<article data-task-id="task-NN" data-ts="YYYY-MM-DDTHH:MM:SSZ"
+         data-category="decision|deviation|tradeoff|note">
+  <h3>Title: <code>short description</code></h3>
+  <section class="what">
+    <h4>1. What AI decided (beyond specs)</h4>
+    <p>...substantive prose, ≥50 chars, no placeholder...</p>
+  </section>
+  <section class="why">
+    <h4>2. Change from original requirement</h4>
+    <p class="na">N/A</p>
+  </section>
+  <section class="tradeoff">
+    <h4>3. Tradeoff considered</h4>
+    <p class="na">N/A</p>
+  </section>
+  <section class="other">
+    <h4>4. Other notes for operator</h4>
+    <p class="na">N/A</p>
+  </section>
+  <footer>
+    <span>code-refs: <code>apps/api/src/foo.ts:42-67</code></span>
+    <span>spec-refs: <code>CONTEXT.md D-12</code></span>
+  </footer>
+</article>
+```
+
+**Constraints:**
+- Each `<article>` must have ≥1 substantive section (≥50 chars, not `<p class="na">N/A</p>`) among `class="what"`, `class="why"`, `class="tradeoff"`.
+- Do NOT embed raw `<script>` tags. Wrap code snippets in `<code>...</code>` or `<pre>...</pre>`.
+- Do NOT corrupt the document end. The file ends `...</main></body></html>`; insert your article BEFORE `</main>`.
+- Append-only. Never reformat existing articles.
+
+**Enforcement:** `verify-implementation-notes.py` runs at build close STEP 7.2. If `.vg/OVERRIDE-DEBT.md` is non-empty OR `.final-review/verdict.md` gaps are non-empty AND no valid articles are present, build close BLOCKS run-complete. Operator escape via `--allow-impl-notes-shortfall` or `CONTEXT.md implementation_notes_waiver: true`.
